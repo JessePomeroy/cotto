@@ -148,6 +148,34 @@ final class ViewSnapshotTests: XCTestCase {
             }
         }
         PreviewState.ready.apply(to: controller)
+        let originalMicrophones = controller.microphones.preferences
+        let originalDevices = controller.microphones.availableDevices
+        let originalDefault = controller.microphones.systemDefaultUID
+        let deskMicrophone = AudioInputDevice(uid: "preview-usb", name: "USB microphone", transport: .usb)
+        let builtInMicrophone = AudioInputDevice(uid: "synthetic-input", name: "MacBook microphone", transport: .builtIn)
+        let travelMicrophone = AudioInputDevice(uid: "preview-headset", name: "Travel headset", transport: .bluetooth)
+        controller.microphones.update(devices: [deskMicrophone, builtInMicrophone], systemDefaultUID: builtInMicrophone.uid)
+        _ = controller.microphones.addProfile(named: "Desk")
+        for device in [deskMicrophone, builtInMicrophone, travelMicrophone] {
+            controller.microphones.addToPriority(device)
+        }
+        controller.microphones.select(.automatic)
+        for (appearanceName, colorScheme, label) in [
+            (NSAppearance.Name.aqua, ColorScheme.light, "light"),
+            (NSAppearance.Name.darkAqua, ColorScheme.dark, "dark"),
+        ] {
+            let appearance = try XCTUnwrap(NSAppearance(named: appearanceName))
+            app.appearance = appearance
+            for width in [700, 520] {
+                measurements.append(try await render(
+                    MicrophonePage(controller: controller).tint(SottoPalette.accent).background(SottoPalette.canvas),
+                    size: NSSize(width: width, height: 620), appearance: appearance, colorScheme: colorScheme,
+                    file: output.appendingPathComponent("native-preview-microphone-priorities-\(width)-\(label).png")
+                ))
+            }
+        }
+        configuration.update { $0.microphones = originalMicrophones }
+        controller.microphones.update(devices: originalDevices, systemDefaultUID: originalDefault)
         try await seedHistoryPreview(controller: controller, fixtureRoot: fixtureRoot)
         for (appearanceName, colorScheme, label) in [
             (NSAppearance.Name.aqua, ColorScheme.light, "light"),

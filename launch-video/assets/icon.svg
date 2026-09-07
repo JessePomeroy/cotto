@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
+  <title>Sotto app icon</title>
+  <defs>
+    <linearGradient id="paper" x1="80" y1="20" x2="420" y2="500" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FCF9F2"/>
+      <stop offset="1" stop-color="#E8D9D4"/>
+    </linearGradient>
+    <linearGradient id="edge" x1="180" y1="0" x2="300" y2="512" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF" stop-opacity=".9"/>
+      <stop offset="1" stop-color="#352D3A" stop-opacity=".12"/>
+    </linearGradient>
+  </defs>
+  <rect x="12" y="12" width="488" height="488" rx="112" fill="url(#paper)"/>
+  <rect x="13" y="13" width="486" height="486" rx="111" stroke="url(#edge)" stroke-width="2"/>
+  <g transform="translate(83 83) scale(2.7)" fill="#352D3A">
+    <path d="M102 18H62C38 18 22 31 22 50C22 67 33 76 49 81L60 59C50 56 47 53 47 48C47 43 53 40 63 40H102V18Z"/>
+    <path d="M26 110H66C90 110 106 97 106 78C106 61 95 52 79 47L68 69C78 72 81 75 81 80C81 85 75 88 65 88H26V110Z"/>
+  </g>
+</svg>
