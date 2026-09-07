@@ -1,0 +1,21 @@
+{
+  "cpu": "Apple M5 Max",
+  "memoryBytes": 137438953472,
+  "logicalCPUs": 18,
+  "macOS": "27.0 (26A5425a)",
+  "baselineCommit": "fd7d7a2",
+  "mlxVersion": "0.32.2",
+  "mlxLMVersion": "0.31.3",
+  "pythonVersion": "3.12.13",
+  "gpuInference": true,
+  "concurrentModelInference": false,
+  "personalTranscriptsUsed": false,
+  "appSettingsChanged": false,
+  "weightsBytes": 6373886445,
+  "ggufSHA256": "3605803b982cb64aead44f6c1b2ae36e3acdb41d8e46c8a94c6533bc4c67e597",
+  "notes": [
+    "Fresh model loads used a warm OS file cache, not a cold boot.",
+    "MLX model-load timing excludes Python/MLX imports; GGUF load includes helper spawn.",
+    "GPU and CPU activity from normal desktop use were not forcibly stopped."
+  ]
+}

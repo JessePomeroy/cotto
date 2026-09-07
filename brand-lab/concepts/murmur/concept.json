@@ -1,0 +1,27 @@
+{
+  "id": "murmur",
+  "name": "Murmur",
+  "tagline": "A little less typing.",
+  "descriptor": "The quiet companion",
+  "rationale": "Keep the warmth of Murmur and give it a more tactile identity. A folded lowercase m feels like a small object you keep on your desk: useful, familiar, and beautifully made. Warm paper, deep evergreen ink, and a restrained clay accent bring character without competing with the Mac around it.",
+  "logoIdea": "Two soft arches become a folded lowercase m. Their diagonal endings suggest a continuous ribbon, turning a voice into a line of text. The solid silhouette stays readable in the menu bar; enlarged folds become a calm graphic language.",
+  "personality": ["Warm", "Considered", "Quiet"],
+  "palette": [
+    {"name": "Paper", "hex": "#F7F3EB", "role": "Canvas"},
+    {"name": "Evergreen ink", "hex": "#28362F", "role": "Type and symbol"},
+    {"name": "Fired clay", "hex": "#A44F36", "role": "Accent and active states"},
+    {"name": "Linen", "hex": "#EADFD3", "role": "Inset surfaces"}
+  ],
+  "ui": {
+    "accent": "#A44F36",
+    "accentInk": "#FFFFFF",
+    "tint": "#EADFD3",
+    "ink": "#28362F",
+    "paper": "#F7F3EB"
+  },
+  "names": [
+    {"name": "Murmur", "reason": "The strongest continuity: human, memorable, and naturally quiet."},
+    {"name": "Morrow", "reason": "A nearby, softer productivity name with room to grow beyond dictation."}
+  ],
+  "watchout": "The quiet name needs crisp product language: make dictation obvious, and use the clay accent sparingly. Name availability has not been checked."
+}

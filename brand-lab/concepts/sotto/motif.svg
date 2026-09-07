@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 360" fill="none">
+  <title>Sotto rhythm study</title>
+  <desc>A study of the ribbon symbol in paper, plum ink, and vermilion, with generous editorial space.</desc>
+  <defs>
+    <g id="ribbon">
+      <path d="M102 18H62C38 18 22 31 22 50C22 67 33 76 49 81L60 59C50 56 47 53 47 48C47 43 53 40 63 40H102V18Z"/>
+      <path d="M26 110H66C90 110 106 97 106 78C106 61 95 52 79 47L68 69C78 72 81 75 81 80C81 85 75 88 65 88H26V110Z"/>
+    </g>
+    <clipPath id="canvas"><path d="M0 0H600V360H0Z"/></clipPath>
+  </defs>
+  <g clip-path="url(#canvas)">
+    <path d="M0 0H600V360H0Z" fill="#F4F0E8"/>
+    <path d="M0 304H600" stroke="#352D3A" stroke-opacity=".16"/>
+    <path d="M424 0H600V360H424Z" fill="#352D3A"/>
+    <path d="M424 262H600V360H424Z" fill="#C5513E"/>
+    <use href="#ribbon" transform="translate(-76 -124) scale(3.6)" fill="#352D3A"/>
+    <use href="#ribbon" transform="translate(172 164) scale(1.27)" fill="#C5513E"/>
+    <use href="#ribbon" transform="translate(447 55) scale(.96)" fill="#F4F0E8"/>
+    <path d="M448 231H576" stroke="#F4F0E8" stroke-opacity=".24"/>
+    <path d="M38 333H120" stroke="#352D3A" stroke-width="3"/>
+    <path d="M136 333H164" stroke="#C5513E" stroke-width="3"/>
+    <path d="M448 311H576" stroke="#F4F0E8" stroke-width="3"/>
+  </g>
+</svg>

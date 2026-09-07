@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Sotto · A voice of its own</title>
+  <link rel="icon" href="concepts/sotto/menu.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <header class="site-header wrap">
+    <a class="lab-name" href="#top" aria-label="Sotto brand lab home"><img src="concepts/sotto/menu.svg" alt="" width="22" height="22"><strong>Sotto</strong><span class="header-divider"></span><span>Brand lab</span></a>
+    <span class="edition"><span class="small-dot"></span> An exploration, September 2026</span>
+  </header>
+  <main id="top">
+    <section class="intro wrap">
+      <div><h1>A voice of its own.</h1><p>Three possible futures for a little Mac app.<br>Names, marks, and colors. A feeling to build around.</p></div>
+      <a class="intro-link" href="sotto/">Explore the Sotto prototype <span aria-hidden="true">↗</span></a>
+    </section>
+
+    <section class="directions wrap" aria-label="Choose a brand direction" id="directions">
+      <div class="loading-note">Laying out the artboards…</div>
+    </section>
+    <div class="selection-note wrap"><span>Choose a direction to explore it below.</span><span>Original SVGs · Nothing in the app has changed</span></div>
+
+    <section class="context-section wrap" id="in-context">
+      <div class="section-heading"><h2>Small details. Distinct character.</h2><div class="appearance segmented" role="group" aria-label="Preview appearance"><button data-theme="light" aria-pressed="true">Light</button><button data-theme="dark" aria-pressed="false">Dark</button></div></div>
+      <div class="workbench" id="workbench">
+        <div class="preview-stage" id="preview-stage" data-theme="light" data-view="app" data-state="ready">
+          <div class="stage-topline"><span class="preview-brand"><span id="preview-direction">Murmur</span> / In context</span><div class="view-tabs" role="tablist" aria-label="Preview surface"><button role="tab" id="tab-app" data-view="app" aria-selected="true" aria-controls="surface-app">App</button><button role="tab" id="tab-menu" data-view="menu" aria-selected="false" aria-controls="surface-menu" tabindex="-1">Menu bar</button><button role="tab" id="tab-icon" data-view="icon" aria-selected="false" aria-controls="surface-icon" tabindex="-1">App icon</button></div></div>
+          <div class="desktop">
+            <div class="desktop-grain" aria-hidden="true"></div>
+            <div class="surface surface-app" id="surface-app" role="tabpanel" aria-labelledby="tab-app">
+              <div class="mock-window">
+                <aside class="mock-sidebar">
+                  <div class="traffic" aria-hidden="true"><i></i><i></i><i></i></div>
+                  <div class="app-identity"><img data-asset="icon.svg" alt="" width="43" height="43"><b data-name>Murmur</b></div>
+                  <div class="mock-navigation"><span class="chosen"><svg><use href="#i-wave"/></svg>Dictation</span><span><svg><use href="#i-mic"/></svg>Microphone</span><span><svg><use href="#i-book"/></svg>Dictionary</span><span><svg><use href="#i-model"/></svg>Models</span><span><svg><use href="#i-sliders"/></svg>General</span></div>
+                  <div class="sidebar-foot"><span class="status-dot"></span><span data-status-label>Ready when you are</span></div>
+                </aside>
+                <div class="mock-detail">
+                  <div class="mock-toolbar"><b>Dictation</b><svg aria-hidden="true"><use href="#i-sidebar"/></svg></div>
+                  <div class="detail-content">
+                    <div class="hold-row"><div><h3>Hold to dictate.</h3><span>Your thoughts, in your own words.</span></div><button class="keycap" data-play aria-label="Play a simulated dictation"><span>fn</span></button></div>
+                    <div class="mic-row"><svg><use href="#i-mic"/></svg><span>Studio microphone</span><span class="mic-signal"><i></i><i></i><i></i><i></i></span></div>
+                    <div class="transcript-head"><span>Last dictation</span><svg aria-hidden="true"><use href="#i-copy"/></svg></div>
+                    <div class="mock-transcript"><p id="transcript-copy">Make space for a good idea.<br>The words will follow.</p><div class="transcript-footer"><span data-delivery>Saved on this Mac</span><span>4.2 s audio · 0.2 s processing</span></div></div>
+                    <div class="privacy-note"><svg><use href="#i-lock"/></svg>Your voice stays with you.</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="surface surface-menu" id="surface-menu" role="tabpanel" aria-labelledby="tab-menu" hidden>
+              <div class="fake-menubar"><span class="apple-glyph">●</span><b>Notes</b><span>File</span><span>Edit</span><span class="menubar-space"></span><img data-asset="menu.svg" width="18" height="18" alt="Concept menu-bar mark"><svg><use href="#i-sliders"/></svg><span>9:41</span></div>
+              <div class="paper-note"><span>Something worth saying.</span><p>That little thought<br>before it slips away.</p><i aria-hidden="true"></i></div>
+              <div class="mock-popover"><div class="popover-status"><span class="status-dot"></span><span data-status-label>Ready when you are</span></div><h3>Hold <kbd>fn</kbd> to dictate.</h3><div class="popover-mic"><svg><use href="#i-mic"/></svg><span>Studio microphone</span><span>Test</span></div><div class="popover-snippet">Make space for a good idea.<svg><use href="#i-copy"/></svg></div><div class="popover-menu-row"><svg><use href="#i-window"/></svg><span>Open <span data-name>Murmur</span></span><span>⌘ ,</span></div><div class="popover-menu-row"><svg><use href="#i-power"/></svg><span>Quit</span><span>⌘ Q</span></div></div>
+            </div>
+            <div class="surface surface-icon" id="surface-icon" role="tabpanel" aria-labelledby="tab-icon" hidden>
+              <div class="icon-presentation"><img data-asset="icon.svg" width="190" height="190" alt="App icon concept"><span data-name>Murmur</span><p>At home in the Dock.</p></div>
+              <div class="mock-dock" aria-hidden="true"><span class="dock-generic finder">⌁</span><span class="dock-generic note">≡</span><img data-asset="icon.svg" width="61" height="61" alt=""><span class="dock-generic terminal">›_</span><span class="dock-divider"></span><span class="dock-folder"></span></div>
+            </div>
+            <div class="listening-hud" id="hud"><div class="wave" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div><div class="hud-copy"><b id="hud-title">Listening</b><span id="hud-subtitle">Your voice, right here.</span></div><span class="hud-time" id="hud-time">0:04</span><span class="hud-close" aria-hidden="true">×</span></div>
+          </div>
+          <div class="stage-bottomline"><div class="state-picker" role="group" aria-label="Preview dictation state"><button data-state="ready" aria-pressed="true"><i></i>Ready</button><button data-state="listening" aria-pressed="false"><i></i>Listening</button><button data-state="processing" aria-pressed="false"><i></i>Processing</button></div><button class="play-button" data-play><svg><use href="#i-play"/></svg>Play interaction</button></div>
+          <div class="simulation-note">Interface study · Simulated audio, no microphone access</div>
+        </div>
+        <aside class="direction-notes"><div class="direction-label"><span id="direction-number">01</span><span id="descriptor"></span></div><h3 id="direction-title">Murmur</h3><p class="direction-tagline" id="tagline"></p><p id="rationale"></p><div class="personality" id="personality"></div><div class="editor-note"><span class="note-rule"></span><b id="recommendation-title"></b><p id="recommendation"></p></div><button id="save-direction" class="save-button" aria-pressed="false"><svg><use href="#i-star"/></svg><span>Add to shortlist</span></button></aside>
+      </div>
+    </section>
+
+    <section class="identity-section wrap" id="identity"><div class="section-heading"><h2>A mark with range.</h2><a class="download-link" id="download-set" href="downloads/murmur-svg-set.zip" download>Download SVG set <span aria-hidden="true">↗</span></a></div><div class="identity-grid"><div class="logo-artboard logo-positive"><img data-asset="mark.svg" width="124" height="124" alt="Primary logo"><span>Primary mark</span></div><div class="logo-artboard logo-inverse"><img data-asset="menu.svg" width="116" height="116" alt="Inverse monochrome logo"><span>One color</span></div><div class="logo-artboard logo-sizes"><div class="size-row"><div><img data-asset="menu.svg" width="16" height="16" alt="Logo at 16 pixels"><span>16</span></div><div><img data-asset="menu.svg" width="24" height="24" alt="Logo at 24 pixels"><span>24</span></div><div><img data-asset="menu.svg" width="32" height="32" alt="Logo at 32 pixels"><span>32</span></div></div><span>Made for the menu bar</span></div></div><p class="logo-explanation" id="logo-idea"></p></section>
+
+    <section class="color-section wrap"><div class="section-heading"><h2>A little color goes a long way.</h2><span class="quiet-label">Click a swatch to copy its value</span></div><div class="swatches" id="swatches"></div><div class="type-sheet"><div><span class="quiet-label">The voice in writing</span><p id="type-sample">A little less typing.</p></div><div class="type-details"><b id="type-style">System sans, with softer edges.</b><p id="type-notes">Let the name have personality.<br>Let the interface feel familiar.</p><span>Aa &nbsp; Bb &nbsp; Cc &nbsp; 0123</span></div></div></section>
+
+    <section class="names-section wrap"><div class="section-heading"><h2>Names on the table.</h2><span class="quiet-label">Six starting points, three developed directions</span></div><div id="names-list" class="names-list"></div><p class="availability-note">Working names. Availability hasn’t been checked.</p></section>
+
+    <section class="closing-section wrap"><div><h2>The Mac is still the main character.</h2><p>Keep system typography, familiar controls, and quiet surfaces. Let the icon, a single accent, and a few well-chosen words carry the brand.</p><div class="principles"><span>Recognizable at 16 px</span><span>Personality in small doses</span><span>Clear recording states</span></div></div><div class="notes-pad"><label for="personal-notes">What feels right?</label><textarea id="personal-notes" rows="4" placeholder="Keep the name, try the Sotto colors…"></textarea><span id="notes-status">Notes stay in this browser.</span></div></section>
+    <footer class="wrap"><span>Murmur / Brand lab</span><span>Made to discuss, mix, and make our own.</span><a href="#top">Back to the artboard ↑</a></footer>
+  </main>
+  <div class="toast" role="status" id="toast"></div>
+  <svg class="symbol-library" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><defs>
+    <symbol id="i-wave" viewBox="0 0 24 24"><path d="M4 10v4m4-7v10m4-13v16m4-13v10m4-7v4"/></symbol>
+    <symbol id="i-mic" viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="12" rx="3"/><path d="M6 10v2a6 6 0 0 0 12 0v-2m-6 8v3m-3 0h6"/></symbol>
+    <symbol id="i-book" viewBox="0 0 24 24"><path d="M12 5v15m0-15C9 3 5 3 3 4v14c3-1 6-1 9 2 3-3 6-3 9-2V4c-2-1-6-1-9 1Z"/></symbol>
+    <symbol id="i-model" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="3"/><path d="M9 2v4m6-4v4M9 18v4m6-4v4M2 9h4m-4 6h4m12-6h4m-4 6h4"/></symbol>
+    <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M3 6h7m4 0h7M3 12h12m4 0h2M3 18h3m4 0h11"/><circle cx="12" cy="6" r="2"/><circle cx="17" cy="12" r="2"/><circle cx="8" cy="18" r="2"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="13" rx="2"/><path d="M15 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h3"/></symbol>
+    <symbol id="i-lock" viewBox="0 0 24 24"><rect x="6" y="10" width="12" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3m-4 8v-3"/></symbol>
+    <symbol id="i-sidebar" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M9 4v16"/></symbol>
+    <symbol id="i-window" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M3 9h18m-8 7 4-4m-4 0h4v4"/></symbol>
+    <symbol id="i-power" viewBox="0 0 24 24"><path d="M12 3v9M6.3 5.7a8 8 0 1 0 11.4 0"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24"><path d="m8 5 11 7-11 7Z"/></symbol>
+    <symbol id="i-star" viewBox="0 0 24 24"><path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2-5.6-2.9-5.6 2.9 1.1-6.2L3 9.6l6.2-.9Z"/></symbol>
+  </defs></svg>
+</body>
+</html>

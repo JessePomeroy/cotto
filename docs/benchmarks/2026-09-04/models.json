@@ -1,0 +1,26 @@
+[
+  {
+    "id": "mlx-community/Qwen3-4B-Instruct-2507-4bit",
+    "revision": "50d427756c6b1b2fe0c0a10f67fbda1fc8e82c1b",
+    "weightBytes": 2263022417,
+    "license": "apache-2.0"
+  },
+  {
+    "id": "mlx-community/Qwen3.5-2B-4bit",
+    "revision": "674aaa7240b91e8012fcad5d791b7dfe5ba90207",
+    "weightBytes": 1722271785,
+    "license": "apache-2.0"
+  },
+  {
+    "id": "mlx-community/LFM2.5-1.2B-Instruct-4bit",
+    "revision": "dee2f8a2786e6648bb644a7ca40652842490034b",
+    "weightBytes": 658540250,
+    "license": "other"
+  },
+  {
+    "id": "mlx-community/SmolLM3-3B-4bit",
+    "revision": "d3a7e0594d6642dbcfb7d149bed8b0bdf49f95ce",
+    "weightBytes": 1730051993,
+    "license": "apache-2.0"
+  }
+]

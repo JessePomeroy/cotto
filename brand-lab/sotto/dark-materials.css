@@ -1,0 +1,189 @@
+/* Study controls live outside the mock. Light mode and the original finish are unchanged. */
+.material-study {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  margin: 0 0 22px;
+  padding: 0 0 22px;
+  border-bottom: 1px solid #ded8d8;
+}
+
+.material-options { display: flex; flex-shrink: 0; gap: 6px; }
+.material-options button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 8px 12px;
+  min-height: 38px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: transparent;
+  color: #756e75;
+  font-size: 12px;
+}
+.material-options button:hover { background: #eae5e0; }
+.material-options button[aria-pressed="true"] {
+  background: #fffdf9;
+  border-color: #d5cfc9;
+  box-shadow: 0 2px 5px #352d3a08;
+  color: #352d3a;
+}
+.material-options button:focus-visible { outline-color: #686b70; }
+.material-swatch {
+  width: 19px;
+  height: 19px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #a4a8ab, #464b50 48%, #23262a);
+  border: 1px solid #ffffff55;
+  box-shadow: inset 0 1px 2px #ffffff50, 0 0 0 1px #0000000a;
+}
+[data-material="glacier"] .material-swatch { background: linear-gradient(135deg, #a5d6ee, #4f7188 48%, #233341); }
+[data-material="moss"] .material-swatch { background: linear-gradient(135deg, #b5c7ad, #626f60 48%, #2b3530); }
+[data-material="original"] .material-swatch { background: linear-gradient(135deg, #e48c79, #72525f 48%, #302a33); }
+.material-study p {
+  color: #827a80;
+  font-size: 11px;
+  line-height: 1.6;
+  margin: 0;
+  max-width: 290px;
+  min-height: 36px;
+  display: flex;
+  align-items: center;
+}
+
+/* Palettes share the same glass construction; only light, tint, and ink change. */
+body[data-theme="dark"][data-dark-material="graphite"] {
+  --surface: #202225;
+  --surface-raised: #ffffff08;
+  --ink: #f1f2f3;
+  --secondary: #a9adb3;
+  --accent: #d7e0e8;
+  --accent-ink: #20272d;
+  --tint: #ffffff12;
+  --sidebar: #373c42;
+  --glass: #292e34b8;
+  --pane: #202225e8;
+  --wallpaper: radial-gradient(ellipse at 14% 100%, #8c959c80, transparent 60%), linear-gradient(135deg, #65717c, #303941 53%, #151a20);
+  --loop: #c3cdd325;
+  --loop-secondary: #aebfce17;
+}
+body[data-theme="dark"][data-dark-material="glacier"] {
+  --surface: #1b252e;
+  --surface-raised: #d1eaff09;
+  --ink: #edf5fa;
+  --secondary: #a4b8c7;
+  --accent: #a7d6f5;
+  --accent-ink: #192c3a;
+  --tint: #b2dfff14;
+  --sidebar: #2b3e4d;
+  --glass: #223949b5;
+  --pane: #1b252ee8;
+  --wallpaper: radial-gradient(ellipse at 12% 100%, #97d2ed80, transparent 60%), linear-gradient(135deg, #557d96, #29495f 53%, #122435);
+  --loop: #c7eafa29;
+  --loop-secondary: #9ed6f523;
+}
+body[data-theme="dark"][data-dark-material="moss"] {
+  --surface: #202622;
+  --surface-raised: #e0f1d608;
+  --ink: #eef3ec;
+  --secondary: #adb9ab;
+  --accent: #c0d4b4;
+  --accent-ink: #243122;
+  --tint: #d4e4c714;
+  --sidebar: #354136;
+  --glass: #303d32b5;
+  --pane: #202622e8;
+  --wallpaper: radial-gradient(ellipse at 12% 100%, #b5bea180, transparent 60%), linear-gradient(135deg, #727c68, #424e42 53%, #1c2825);
+  --loop: #e1e7c827;
+  --loop-secondary: #bcd0b21c;
+}
+
+body[data-theme="dark"][data-dark-material]:not([data-dark-material="original"]) {
+  --line: #ffffff0f;
+  --shadow: #03060966;
+
+  & .desktop {
+    color-scheme: dark;
+    background: var(--surface);
+    border-color: #282c32;
+  }
+  & .wallpaper { background: var(--wallpaper); }
+  & .wallpaper-loop {
+    border-color: var(--loop);
+    box-shadow: 40px 50px 100px #03070b1a, inset 20px 20px 70px #e5f4ff0d;
+  }
+  & .wallpaper-loop.second { border-color: var(--loop-secondary); }
+  & .mac-menubar { background: #0e151c38; }
+  & .desktop-caption { color: color-mix(in srgb, var(--ink) 24%, transparent); }
+
+  & .app-window {
+    background: color-mix(in srgb, var(--sidebar) 54%, transparent);
+    backdrop-filter: blur(40px) saturate(1.12);
+    border-color: #ffffff30;
+    box-shadow: 0 26px 64px -12px #03060980, 0 2px 8px #00000024, inset 0 1px 0 #ffffff14;
+  }
+  & .app-sidebar {
+    background: linear-gradient(155deg, #ffffff0d, #ffffff00 60%);
+    backdrop-filter: none;
+    border-right-color: #ffffff0a;
+  }
+  & .app-detail { background: var(--pane); }
+  & .app-toolbar { background: #ffffff03; }
+  & .settings-navigation button[aria-current="page"] {
+    background: var(--tint);
+    box-shadow: inset 0 1px 0 #ffffff0d, 0 1px 2px #0000000d;
+  }
+  & .hold-key {
+    background: linear-gradient(155deg, #ffffff12, #ffffff05);
+    border-color: #ffffff1a;
+    box-shadow: 0 4px 0 #ffffff0a, inset 0 1px 0 #ffffff10;
+  }
+  & .hold-key.pressed { background: var(--tint); }
+  & .dictation-mic-button {
+    background: linear-gradient(175deg, #ffffff0c, #ffffff05);
+    border-color: #ffffff16;
+    box-shadow: inset 0 1px 0 #ffffff08;
+  }
+  & .dictation-mic-button:hover:not(:disabled) { background: var(--tint); }
+  & .last-transcript { background: var(--surface-raised); }
+
+  /* The floating surfaces use stronger highlights, without tinting entire rows. */
+  & :is(.menu-popover, .listening-hud, .desktop-record, .clipboard-sheet) {
+    background: linear-gradient(150deg, #ffffff12, #ffffff00 48%), var(--glass);
+    backdrop-filter: blur(36px) saturate(1.25);
+    border-color: #ffffff38;
+    box-shadow: 0 16px 40px #03060955, 0 2px 5px #0000001a, inset 0 1px 0 #ffffff21, inset 0 -1px 0 #ffffff08;
+  }
+  & .menu-preview { background: #00000012; }
+  & .menu-row:hover { background: #ffffff0a; }
+  & .notes-window {
+    background: color-mix(in srgb, var(--surface) 87%, transparent);
+    backdrop-filter: blur(30px);
+    color: var(--ink);
+    border-color: #ffffff1a;
+    box-shadow: 0 20px 45px #03060930;
+  }
+  & .notes-toolbar { background: #ffffff05; border-color: var(--line); }
+  & :is(.notes-toolbar, .note-date, .note-hint) { color: var(--secondary); }
+
+  @media (prefers-reduced-transparency: reduce) {
+    & :is(.app-window, .menu-popover, .listening-hud, .desktop-record, .clipboard-sheet, .notes-window) {
+      background: var(--surface);
+      backdrop-filter: none;
+    }
+    & .app-sidebar { background: var(--sidebar); }
+  }
+}
+
+@media (max-width: 900px) {
+  .material-study { align-items: flex-start; flex-direction: column; gap: 9px; margin-bottom: 16px; padding-bottom: 16px; }
+  .material-study p { max-width: none; min-height: 18px; }
+}
+@media (max-width: 500px) {
+  .material-options { width: 100%; gap: 3px; }
+  .material-options button { flex: 1; gap: 6px; padding: 8px 5px; font-size: 11px; }
+  .material-swatch { width: 15px; height: 15px; }
+  .material-study p { font-size: 10px; min-height: 32px; }
+}
