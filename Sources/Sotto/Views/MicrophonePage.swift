@@ -18,7 +18,9 @@ private struct MicrophoneSettingsView: View {
     @State private var confirmingRemoval = false
     @State private var dropTargetUID: String?
     @State private var draggedPriority: MicrophonePriorityDrag?
+    @State private var priorityDragOffset: CGFloat = 0
     @State private var priorityRowFrames: [String: CGRect] = [:]
+    @GestureState private var isPriorityDragging = false
 
     var body: some View {
         let profile = store.activeProfile
@@ -230,8 +232,17 @@ private struct MicrophoneSettingsView: View {
             }
             .accessibilityElement(children: .contain)
         }
+        .overlay(alignment: .topLeading) {
+            priorityDragOverlay(profile: profile, connected: connected)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+        }
         .coordinateSpace(name: "microphone-priorities")
         .onPreferenceChange(MicrophonePriorityFrames.self) { priorityRowFrames = $0 }
+        .onChange(of: isPriorityDragging) { _, active in
+            if !active { resetPriorityDrag() }
+        }
+        .onDisappear(perform: resetPriorityDrag)
         .padding(.horizontal, 16)
         .frame(height: 270)
         .accessibilityIdentifier("microphone.priorities")
@@ -290,31 +301,26 @@ private struct MicrophoneSettingsView: View {
 
     private func preferredRow(_ device: AudioInputDevice, position: Int, count: Int,
                               connected: AudioInputDevice?, isSelected: Bool) -> some View {
-        HStack(spacing: 12) {
-            Text("\(position + 1)")
-                .font(.callout.monospacedDigit())
-                .foregroundStyle(SottoPalette.muted)
-                .frame(width: 18, alignment: .leading)
-            deviceLabel(connected ?? device, available: connected != nil)
-            Spacer(minLength: 8)
-            Text(connected == nil ? "Disconnected" : "Connected")
-                .font(.caption)
-                .foregroundStyle(SottoPalette.muted)
-                .fixedSize()
-            MicrophoneReorderHandle()
-                .help("Drag to reorder \(device.name)")
-                .highPriorityGesture(priorityDragGesture(uid: device.uid))
-        }
-        .frame(minHeight: 64)
+        let isDragged = draggedPriority?.uid == device.uid && draggedPriority?.profileID == store.activeProfile.id
+        return priorityRowContent(device, position: position, connected: connected)
+        .opacity(isDragged ? 0.22 : 1)
         .contentShape(Rectangle())
-        .background(dropTargetUID == device.uid && draggedPriority?.uid != device.uid ? SottoPalette.tint : .clear)
+        .background {
+            if isDragged {
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(SottoPalette.tint)
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 8)
+                            .strokeBorder(SottoPalette.muted.opacity(0.55), style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
+                    }
+            }
+        }
         .background {
             GeometryReader { geometry in
                 Color.clear.preference(key: MicrophonePriorityFrames.self,
                     value: [device.uid: geometry.frame(in: .named("microphone-priorities"))])
             }
         }
-        .opacity(draggedPriority?.uid == device.uid ? 0.55 : 1)
         .overlay(alignment: .bottom) { Divider() }
         .contextMenu {
             Button("Move up") { store.movePriority(uid: device.uid, by: -1) }
@@ -343,21 +349,82 @@ private struct MicrophoneSettingsView: View {
         .accessibilityIdentifier("microphone.priority.\(device.uid)")
     }
 
+    private func priorityRowContent(_ device: AudioInputDevice, position: Int,
+                                    connected: AudioInputDevice?) -> some View {
+        HStack(spacing: 12) {
+            Text("\(position + 1)")
+                .font(.callout.monospacedDigit())
+                .foregroundStyle(SottoPalette.muted)
+                .frame(width: 18, alignment: .leading)
+            deviceLabel(connected ?? device, available: connected != nil)
+            Spacer(minLength: 8)
+            Text(connected == nil ? "Disconnected" : "Connected")
+                .font(.caption)
+                .foregroundStyle(SottoPalette.muted)
+                .fixedSize()
+            MicrophoneReorderHandle()
+                .help("Drag to reorder \(device.name)")
+                .highPriorityGesture(priorityDragGesture(uid: device.uid))
+        }
+        .frame(minHeight: 64)
+    }
+
+    @ViewBuilder
+    private func priorityDragOverlay(profile: MicrophoneProfile, connected: [String: AudioInputDevice]) -> some View {
+        if let item = draggedPriority, item.profileID == profile.id,
+           let source = profile.priority.firstIndex(where: { $0.uid == item.uid }),
+           let sourceFrame = priorityRowFrames[item.uid] {
+            let device = profile.priority[source]
+            ZStack(alignment: .topLeading) {
+                priorityRowContent(device, position: source, connected: connected[device.uid])
+                    .padding(.horizontal, 10)
+                    .frame(width: sourceFrame.width, height: sourceFrame.height)
+                    .background(SottoPalette.surface, in: RoundedRectangle(cornerRadius: 8))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 8)
+                            .strokeBorder(SottoPalette.accentInk.opacity(0.65), lineWidth: 1)
+                    }
+                    .shadow(color: .black.opacity(0.22), radius: 12, y: 6)
+                    .position(x: sourceFrame.midX, y: sourceFrame.midY + priorityDragOffset)
+
+                // Draw last so the exact insertion edge remains visible above the lifted row.
+                if let targetUID = dropTargetUID,
+                   let target = profile.priority.firstIndex(where: { $0.uid == targetUID }),
+                   let targetFrame = priorityRowFrames[targetUID] {
+                    HStack(spacing: 0) {
+                        Circle().frame(width: 7, height: 7)
+                        Rectangle().frame(height: 3)
+                        Circle().frame(width: 7, height: 7)
+                    }
+                    .foregroundStyle(SottoPalette.accentInk)
+                    .frame(width: targetFrame.width, height: 7)
+                    .position(x: targetFrame.midX, y: target > source ? targetFrame.maxY : targetFrame.minY)
+                }
+            }
+        }
+    }
+
     private func priorityDragGesture(uid: String) -> some Gesture {
         DragGesture(minimumDistance: 3, coordinateSpace: .named("microphone-priorities"))
+            .updating($isPriorityDragging) { _, active, _ in active = true }
             .onChanged { value in
                 if draggedPriority == nil {
                     draggedPriority = MicrophonePriorityDrag(profileID: store.activeProfile.id, uid: uid)
                 }
+                priorityDragOffset = value.translation.height
                 dropTargetUID = priorityUID(at: value.location.y)
             }
             .onEnded { value in
-                let item = draggedPriority
-                draggedPriority = nil
-                dropTargetUID = nil
-                guard let item, let targetUID = priorityUID(at: value.location.y) else { return }
+                defer { resetPriorityDrag() }
+                guard let item = draggedPriority, let targetUID = priorityUID(at: value.location.y) else { return }
                 movePriority(item, to: targetUID)
             }
+    }
+
+    private func resetPriorityDrag() {
+        draggedPriority = nil
+        dropTargetUID = nil
+        priorityDragOffset = 0
     }
 
     private func priorityUID(at y: CGFloat) -> String? {
