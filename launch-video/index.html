@@ -1,0 +1,719 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=1920, height=1080" />
+    <title>Sotto — Thought, softly spoken.</title>
+    <script src="assets/gsap.min.js"></script>
+    <link rel="stylesheet" href="film.css" />
+  </head>
+  <body>
+    <main
+      id="film"
+      data-composition-id="sotto-launch"
+      data-start="0"
+      data-duration="51"
+      data-width="1920"
+      data-height="1080"
+      data-fps="30"
+    >
+      <section
+        id="dictation"
+        class="clip glacier"
+        data-start="0"
+        data-duration="9"
+        data-track-index="2"
+      >
+        <div class="ambient ambient-blue" data-layout-ignore></div>
+        <div class="brand pale">
+          <img
+            data-start="0"
+            data-duration="9"
+            id="dictation-image-1"
+            src="assets/mark.svg"
+            alt=""
+          /><span>Sotto</span>
+        </div>
+        <div class="dictation-copy">
+          <h2>
+            <span id="hold-word">Hold.</span><span id="speak-word">Speak.</span
+            ><span id="release-word">Release.</span>
+          </h2>
+          <div class="shortcut">
+            <div id="keycap">fn</div>
+            <span id="key-hint">Your shortcut.<br />Your flow.</span>
+          </div>
+        </div>
+        <div id="dictation-demo" class="demo-group">
+          <div class="note-window">
+            <div class="window-bar">
+              <span class="traffic"><i></i><i></i><i></i></span
+              ><span>Notes</span><span class="window-tool">↗</span>
+            </div>
+            <div class="note-content">
+              <h3>A little room to think.</h3>
+              <div class="note-rule"></div>
+              <p id="dictated-sentence">
+                Let’s make a little room for<br />the next good idea.<span
+                  class="caret"
+                ></span>
+              </p>
+              <span id="empty-caret" class="caret"></span>
+              <div id="inserted-badge">
+                <span>✓</span> Inserted at your cursor
+              </div>
+            </div>
+          </div>
+          <div class="hud" id="dictation-hud">
+            <svg
+              class="ribbon-svg"
+              xmlns="http://www.w3.org/2000/svg"
+              viewBox="0 0 128 128"
+              fill="none"
+            >
+              <title>Sotto ribbon mark</title>
+              <desc>
+                Two opposing ribbon turns form an open geometric S, separated by
+                a diagonal pause.
+              </desc>
+              <g fill="#352D3A">
+                <path
+                  d="M102 18H62C38 18 22 31 22 50C22 67 33 76 49 81L60 59C50 56 47 53 47 48C47 43 53 40 63 40H102V18Z"
+                />
+                <path
+                  d="M26 110H66C90 110 106 97 106 78C106 61 95 52 79 47L68 69C78 72 81 75 81 80C81 85 75 88 65 88H26V110Z"
+                />
+              </g>
+            </svg>
+            <div class="hud-wave" id="dictation-wave" data-wave></div>
+            <div id="processing-dots">•••</div>
+            <span id="hud-time">0:04</span>
+          </div>
+          <p class="delivery-note">
+            At your cursor. Or on your clipboard, ready to paste.
+          </p>
+        </div>
+      </section>
+
+      <section
+        id="privacy"
+        class="clip frost"
+        data-start="9"
+        data-duration="7"
+        data-track-index="3"
+      >
+        <div class="ambient ambient-frost" data-layout-ignore></div>
+        <div class="brand">
+          <img
+            data-start="9"
+            data-duration="7"
+            id="privacy-image-1"
+            src="assets/mark.svg"
+            alt=""
+          /><span>Sotto</span>
+        </div>
+        <div class="privacy-copy">
+          <h2>
+            Your voice.<br /><span class="serif">Stays on your Mac.</span>
+          </h2>
+          <div class="privacy-promises">
+            <span>No account.</span><span>No subscription.</span
+            ><span>No cloud transcription.</span>
+          </div>
+        </div>
+        <div class="local-machine" data-layout-ignore>
+          <div class="local-orbit"></div>
+          <div class="laptop">
+            <div class="laptop-screen">
+              <div class="chip">
+                <svg
+                  class="ribbon-svg"
+                  xmlns="http://www.w3.org/2000/svg"
+                  viewBox="0 0 128 128"
+                  fill="none"
+                >
+                  <title>Sotto ribbon mark</title>
+                  <desc>
+                    Two opposing ribbon turns form an open geometric S,
+                    separated by a diagonal pause.
+                  </desc>
+                  <g fill="#352D3A">
+                    <path
+                      d="M102 18H62C38 18 22 31 22 50C22 67 33 76 49 81L60 59C50 56 47 53 47 48C47 43 53 40 63 40H102V18Z"
+                    />
+                    <path
+                      d="M26 110H66C90 110 106 97 106 78C106 61 95 52 79 47L68 69C78 72 81 75 81 80C81 85 75 88 65 88H26V110Z"
+                    />
+                  </g>
+                </svg>
+                <span class="chip-pin p1"></span
+                ><span class="chip-pin p2"></span
+                ><span class="chip-pin p3"></span
+                ><span class="chip-pin p4"></span>
+              </div>
+              <div class="inside-wave" data-wave></div>
+            </div>
+            <div class="laptop-base"></div>
+          </div>
+          <div class="local-badge">
+            <svg viewBox="0 0 24 24">
+              <rect x="5" y="10" width="14" height="11" rx="3" />
+              <path d="M8 10V7a4 4 0 0 1 8 0v3" /></svg
+            >Offline after model setup
+          </div>
+        </div>
+        <div class="bottom-line">
+          <span>Only listens when you start a recording.</span
+          ><span>Built for Apple Silicon</span>
+        </div>
+      </section>
+
+      <section
+        id="lists"
+        class="clip paper"
+        data-start="16"
+        data-duration="8"
+        data-track-index="4"
+      >
+        <div class="ambient ambient-paper" data-layout-ignore></div>
+        <div class="brand">
+          <img
+            data-start="16"
+            data-duration="8"
+            id="lists-image-1"
+            src="assets/mark.svg"
+            alt=""
+          /><span>Sotto</span>
+        </div>
+        <div class="list-copy">
+          <h2>Say it.<br /><span class="serif">Give it structure.</span></h2>
+          <div class="spoken-quote" id="list-quote-one">
+            “Make a list.<br />One, explore.<br />Two, build.”
+          </div>
+          <div class="spoken-quote" id="list-quote-two">
+            “Next item,<br />launch.”
+          </div>
+        </div>
+        <div id="list-demo" class="list-paper">
+          <div class="list-paper-top">
+            <span>Room for what’s next</span><span>↗</span>
+          </div>
+          <div class="list-rule"></div>
+          <div class="list-row" id="list-row-one">
+            <span>1.</span><strong>Explore</strong>
+          </div>
+          <div class="list-row" id="list-row-two">
+            <span>2.</span><strong>Build</strong>
+          </div>
+          <div class="list-row" id="list-row-three">
+            <span>3.</span><strong>Launch</strong><span class="caret"></span>
+          </div>
+          <div class="continuation">
+            <span>↳</span> Pick up where you left off.
+          </div>
+        </div>
+        <div class="bottom-line">
+          <span>Spoken lists. Natural continuation.</span
+          ><span>English list commands</span>
+        </div>
+      </section>
+
+      <section
+        id="dictionary"
+        class="clip glacier"
+        data-start="24"
+        data-duration="7"
+        data-track-index="5"
+      >
+        <div class="ambient ambient-blue" data-layout-ignore></div>
+        <div class="brand pale">
+          <img
+            data-start="24"
+            data-duration="7"
+            id="dictionary-image-1"
+            src="assets/mark.svg"
+            alt=""
+          /><span>Sotto</span>
+        </div>
+        <div class="dictionary-copy">
+          <h2>Your words.<br /><span class="serif">Spelled your way.</span></h2>
+          <div class="word-demo">
+            <span id="word-before">minimax + codex</span
+            ><span id="word-after">MiniMax + Codex</span>
+          </div>
+          <div class="proofreading">
+            <span class="toggle"><i></i></span
+            ><span>Optional local proofreading</span>
+          </div>
+        </div>
+        <div id="dictionary-native" class="native-window">
+          <div class="native-bar">
+            <span class="traffic"><i></i><i></i><i></i></span><span>Sotto</span>
+          </div>
+          <div class="native-crop dictionary-crop" data-layout-allow-overflow>
+            <img
+              data-start="24"
+              data-duration="7"
+              id="dictionary-image-2"
+              src="assets/dictionary.png"
+              alt="Sotto personal dictionary with MiniMax and Codex preferred spellings"
+            />
+            <div class="term-focus term-one" data-layout-ignore></div>
+            <div class="term-focus term-two" data-layout-ignore></div>
+          </div>
+        </div>
+        <div class="bottom-line">
+          <span>Preferred spellings and your own word lists.</span
+          ><span>Always on, always local.</span>
+        </div>
+      </section>
+
+      <section
+        id="microphones"
+        class="clip glacier"
+        data-start="31"
+        data-duration="7"
+        data-track-index="6"
+      >
+        <div class="ambient ambient-blue" data-layout-ignore></div>
+        <div class="brand pale">
+          <img
+            data-start="31"
+            data-duration="7"
+            id="microphones-image-1"
+            src="assets/mark.svg"
+            alt=""
+          /><span>Sotto</span>
+        </div>
+        <div class="mic-copy">
+          <h2>The right mic.<br /><span class="serif">Ready for you.</span></h2>
+          <p>Set your order.<br />Sotto follows your setup.</p>
+          <div class="mic-fallback">
+            <span class="status-dot"></span>Automatic fallback. Easy reconnects.
+          </div>
+        </div>
+        <div id="mic-demo" class="mic-window">
+          <div class="native-bar">
+            <span class="traffic"><i></i><i></i><i></i></span
+            ><span>Microphone</span>
+          </div>
+          <div class="mic-body">
+            <div class="mic-tabs">
+              <span class="selected">Desk</span><span>Travel</span
+              ><span class="plus">+</span>
+            </div>
+            <div class="mic-mode">
+              Automatic <span>· priority list</span><b>⌄</b>
+            </div>
+            <div class="mic-row" id="mic-usb">
+              <span class="rank">1</span
+              ><svg viewBox="0 0 24 24">
+                <rect x="8" y="2" width="8" height="12" rx="4" />
+                <path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3M8 22h8" /></svg
+              ><span>USB microphone</span
+              ><span class="device-status" id="usb-state">Connected</span
+              ><span class="grip">⠿</span>
+            </div>
+            <div class="mic-row" id="mic-built-in">
+              <span class="rank">2</span
+              ><svg viewBox="0 0 24 24"><path d="M5 17V5h14v12M2 18h20" /></svg
+              ><span>MacBook microphone</span
+              ><span class="device-status">Connected</span
+              ><span class="grip">⠿</span>
+            </div>
+            <div class="mic-next">
+              <span>Next dictation</span
+              ><strong id="next-usb">USB microphone</strong
+              ><strong id="next-mac">MacBook microphone</strong>
+            </div>
+            <div class="mic-event">
+              <span id="event-disconnected"
+                >USB disconnected. Your Mac steps in.</span
+              ><span id="event-reconnected"
+                >Reconnected. Your favorite is back.</span
+              >
+            </div>
+          </div>
+        </div>
+        <div class="bottom-line">
+          <span>Separate priority lists for desk and travel.</span
+          ><span>Changes apply to your next take.</span>
+        </div>
+      </section>
+
+      <section
+        id="history"
+        class="clip paper"
+        data-start="38"
+        data-duration="7"
+        data-track-index="7"
+      >
+        <div class="ambient ambient-paper" data-layout-ignore></div>
+        <div class="brand">
+          <img
+            data-start="38"
+            data-duration="7"
+            id="history-image-1"
+            src="assets/mark.svg"
+            alt=""
+          /><span>Sotto</span>
+        </div>
+        <div class="history-copy">
+          <h2>
+            A good thought<br /><span class="serif">is worth keeping.</span>
+          </h2>
+          <div class="history-actions">
+            <span id="history-find">Find it.</span
+            ><span id="history-copy">Copy it.</span
+            ><span id="history-replay">Hear it again.</span>
+          </div>
+          <p>Transcripts and recordings.<br />Saved locally, when you want.</p>
+        </div>
+        <div id="history-demo" class="history-window">
+          <div class="native-bar">
+            <span class="traffic"><i></i><i></i><i></i></span
+            ><span>History</span><span class="history-folder">↗</span>
+          </div>
+          <div class="history-records">
+            <div class="history-record selected">
+              <span class="record-icon" data-wave></span>
+              <div>
+                <strong>A little room to think.</strong
+                ><small>Today, 9:41 AM</small>
+              </div>
+              <span>↗</span>
+            </div>
+            <div class="history-record">
+              <span class="record-icon" data-wave></span>
+              <div>
+                <strong>The next good idea.</strong
+                ><small>Today, 9:26 AM</small>
+              </div>
+            </div>
+            <div class="history-record">
+              <span class="record-icon" data-wave></span>
+              <div>
+                <strong>Explore. Build. Launch.</strong
+                ><small>Today, 9:14 AM</small>
+              </div>
+            </div>
+          </div>
+          <div class="history-transcript">
+            <p>Let’s make a little room for<br />the next good idea.</p>
+            <div class="history-tools">
+              <span class="saved-local">⌁ &nbsp;Saved on this Mac</span
+              ><span class="copy-control"
+                >Copy <span id="copy-check">✓</span></span
+              >
+            </div>
+          </div>
+          <div class="audio-replay">
+            <span class="play-symbol">▶</span
+            ><span class="replay-wave" data-wave></span
+            ><span>Open recording</span>
+          </div>
+        </div>
+        <div class="bottom-line">
+          <span>Your words, there when you need them.</span
+          ><span>Local history is optional.</span>
+        </div>
+      </section>
+
+      <section
+        id="outro"
+        class="clip glacier"
+        data-start="45"
+        data-duration="6"
+        data-track-index="8"
+      >
+        <div class="ambient ambient-outro" data-layout-ignore></div>
+        <div class="end-orbit" data-layout-ignore></div>
+        <div class="outro-lockup">
+          <img
+            data-start="45"
+            data-duration="6"
+            id="outro-icon"
+            src="assets/icon.svg"
+            alt="Sotto app icon"
+          />
+          <h2 id="outro-wordmark">Sotto</h2>
+          <p id="outro-tagline">Thought, softly spoken.</p>
+          <div id="outro-line"></div>
+          <p id="outro-detail">Local dictation for Apple Silicon Macs.</p>
+        </div>
+        <div class="bottom-line">
+          <span>No account. No subscription.</span
+          ><span>Hold a key. Make room for a thought.</span>
+        </div>
+      </section>
+      <audio
+        id="score"
+        src="assets/score.m4a"
+        data-start="0"
+        data-duration="51"
+        data-track-index="9"
+        data-volume="1"
+      ></audio>
+    </main>
+    <script id="motion-source">
+      window.__timelines = window.__timelines || {};
+      const tl = gsap.timeline({ paused: true });
+      const duration = 51;
+      const heights = [0.28, 0.5, 0.78, 0.43, 1, 0.61, 0.82, 0.35, 0.55];
+      document.querySelectorAll("[data-wave]").forEach((wave) => {
+        const count = wave.classList.contains("record-icon")
+          ? 5
+          : wave.classList.contains("replay-wave")
+            ? 23
+            : 9;
+        for (let i = 0; i < count; i += 1) {
+          const bar = document.createElement("i");
+          bar.style.transform = `scaleY(${heights[i % heights.length]})`;
+          wave.appendChild(bar);
+        }
+      });
+      const enter = (selector, at, options = {}) => {
+        const targets = gsap.utils.toArray(selector);
+        if (targets.length)
+          tl.fromTo(
+            targets,
+            { opacity: 0, y: 32, ...options.from },
+            {
+              opacity: 1,
+              y: 0,
+              duration: 0.85,
+              ease: "power3.out",
+              ...options.to,
+            },
+            at,
+          );
+        return tl;
+      };
+      const wave = (selector, start, length) => {
+        document.querySelectorAll(selector + " i").forEach((bar, index) => {
+          const beats = Math.floor(length / 0.48);
+          for (let n = 0; n < beats; n += 1) {
+            tl.to(
+              bar,
+              {
+                scaleY: heights[(index * 3 + n * 5) % heights.length],
+                duration: 0.48,
+                ease: "sine.inOut",
+              },
+              start + n * 0.48,
+            );
+          }
+        });
+      };
+      const scenes = [
+        ["#dictation", 0, 9],
+        ["#privacy", 9, 7],
+        ["#lists", 16, 8],
+        ["#dictionary", 24, 7],
+        ["#microphones", 31, 7],
+        ["#history", 38, 7],
+        ["#outro", 45, 6],
+      ];
+      scenes.forEach(([id, start, length], index) => {
+        tl.fromTo(
+          `${id} .ambient`,
+          { x: -15, y: 0, scale: 1 },
+          { x: 15, y: -20, scale: 1.06, duration: length, ease: "none" },
+          start,
+        );
+        if (document.querySelector(id + " .brand"))
+          enter(id + " .brand", start + 0.14, {
+            from: { y: 0 },
+            to: { duration: 0.55 },
+          });
+        enter(`${id} .bottom-line`, start + 0.9, {
+          from: { y: 12 },
+          to: { duration: 0.7 },
+        });
+      });
+      enter(".dictation-copy", 0.4);
+      enter("#dictation-demo", 0.5, {
+        from: { y: 55, scale: 0.97 },
+        to: { duration: 1.15, scale: 1 },
+      });
+      tl.set(["#speak-word", "#release-word"], { opacity: 0.26 }, 0);
+      tl.to(
+        "#keycap",
+        { y: 6, backgroundColor: "#45697f", duration: 0.16 },
+        1.4,
+      );
+      enter("#dictation-hud", 1.35, {
+        from: { y: 12, scale: 0.85 },
+        to: { duration: 0.5, scale: 1 },
+      });
+      tl.to("#hold-word", { opacity: 0.26, duration: 0.3 }, 2);
+      tl.to("#speak-word", { opacity: 1, color: "#bde4fa", duration: 0.3 }, 2);
+      wave("#dictation-wave", 1.5, 3.6);
+      tl.to("#keycap", { y: 0, duration: 0.25 }, 4.5);
+      tl.to("#speak-word", { opacity: 0.26, duration: 0.3 }, 4.5);
+      tl.to(
+        "#release-word",
+        { opacity: 1, color: "#bde4fa", duration: 0.3 },
+        4.5,
+      );
+      tl.to("#dictation-wave", { opacity: 0, duration: 0.15 }, 4.5);
+      tl.fromTo(
+        "#processing-dots",
+        { opacity: 0 },
+        { opacity: 1, duration: 0.15 },
+        4.55,
+      );
+      tl.to("#processing-dots", { opacity: 0, duration: 0.2 }, 5.25);
+      tl.to("#dictation-hud", { opacity: 0, scale: 0.92, duration: 0.4 }, 5.45);
+      tl.to("#empty-caret", { opacity: 0, duration: 0.05 }, 5.4);
+      enter("#dictated-sentence", 5.42, {
+        from: { y: 10 },
+        to: { duration: 0.5 },
+      });
+      enter("#inserted-badge", 6, { from: { y: 6 } });
+      enter(".delivery-note", 6.5, { from: { y: 10 } });
+      tl.to("#dictation-demo", { y: -9, duration: 6.8, ease: "none" }, 2);
+      enter(".privacy-copy h2", 9.5, {
+        from: { y: 38 },
+        to: { duration: 1.1 },
+      });
+      enter(".privacy-promises span", 10.1, { to: { stagger: 0.6 } });
+      enter(".local-machine", 9.4, {
+        from: { y: 50, scale: 0.9 },
+        to: { scale: 1, duration: 1.3 },
+      });
+      wave(".inside-wave", 10, 6);
+      tl.to(".laptop", { y: -13, duration: 5.8, ease: "sine.inOut" }, 10.3);
+      tl.to(".local-orbit", { rotation: 2, duration: 7.5, ease: "none" }, 9);
+      enter(".local-badge", 11, { from: { y: 15 } });
+      enter(".list-copy h2", 16.45);
+      enter("#list-demo", 16.6, {
+        from: { y: 60, rotation: 3 },
+        to: { rotation: -1.4, duration: 1.15 },
+      });
+      enter("#list-quote-one", 17.1);
+      enter("#list-row-one", 18.15, {
+        from: { y: 18, x: 15 },
+        to: { x: 0, duration: 0.5 },
+      });
+      enter("#list-row-two", 18.45, {
+        from: { y: 18, x: 15 },
+        to: { x: 0, duration: 0.5 },
+      });
+      tl.to("#list-quote-one", { opacity: 0, y: -12, duration: 0.3 }, 20);
+      enter("#list-quote-two", 20.4, { from: { y: 12 } });
+      enter("#list-row-three", 21.35, {
+        from: { y: 20, x: 15 },
+        to: { x: 0, duration: 0.5 },
+      });
+      enter(".continuation", 22.05, { from: { y: 12 } });
+      tl.to(
+        "#list-demo",
+        { y: -8, rotation: 0, duration: 5.9, ease: "none" },
+        17.8,
+      );
+      enter(".dictionary-copy h2", 24.45);
+      enter("#dictionary-native", 24.5, {
+        from: { y: 45, scale: 0.96 },
+        to: { scale: 1, duration: 1.1 },
+      });
+      enter("#word-before", 25.35, { from: { y: 12 } });
+      tl.to("#word-before", { opacity: 0, y: -12, duration: 0.3 }, 26.7);
+      enter("#word-after", 27.05, { from: { y: 12 }, to: { duration: 0.55 } });
+      tl.fromTo(
+        ".term-one",
+        { opacity: 0 },
+        { opacity: 1, duration: 0.4 },
+        26.4,
+      );
+      tl.fromTo(
+        ".term-two",
+        { opacity: 0 },
+        { opacity: 1, duration: 0.4 },
+        27.1,
+      );
+      tl.to([".term-one", ".term-two"], { opacity: 0, duration: 0.6 }, 29.2);
+      enter(".proofreading", 28.6, { from: { y: 12 } });
+      tl.fromTo(
+        ".toggle i",
+        { x: 0 },
+        { x: 26, duration: 0.35, ease: "power2.out" },
+        29.1,
+      );
+      tl.to("#dictionary-native", { y: -7, duration: 5.8, ease: "none" }, 25.7);
+      enter(".mic-copy h2", 31.5);
+      enter(".mic-copy p", 32);
+      enter(".mic-fallback", 33, { from: { y: 12 } });
+      enter("#mic-demo", 31.5, {
+        from: { y: 45, scale: 0.97 },
+        to: { scale: 1, duration: 1.1 },
+      });
+      tl.set("#usb-state", { textContent: "Disconnected" }, 33.4);
+      tl.to("#mic-usb", { opacity: 0.45, duration: 0.4 }, 33.4);
+      tl.to("#next-usb", { opacity: 0, y: -9, duration: 0.25 }, 33.4);
+      enter("#next-mac", 33.75, { from: { y: 9 }, to: { duration: 0.35 } });
+      enter("#event-disconnected", 33.8, {
+        from: { y: 8 },
+        to: { duration: 0.35 },
+      });
+      tl.to("#event-disconnected", { opacity: 0, duration: 0.2 }, 35.5);
+      tl.set("#usb-state", { textContent: "Connected" }, 35.75);
+      tl.to("#mic-usb", { opacity: 1, duration: 0.35 }, 35.75);
+      tl.to("#next-mac", { opacity: 0, y: -9, duration: 0.25 }, 35.75);
+      tl.to("#next-usb", { opacity: 1, y: 0, duration: 0.35 }, 36.05);
+      enter("#event-reconnected", 36.2, {
+        from: { y: 8 },
+        to: { duration: 0.35 },
+      });
+      tl.to("#mic-demo", { y: -7, duration: 5.8, ease: "none" }, 32.7);
+      enter(".history-copy h2", 38.45);
+      enter(".history-copy>p", 39.1);
+      enter("#history-demo", 38.55, {
+        from: { y: 50, rotation: 1.5 },
+        to: { rotation: 0, duration: 1.1 },
+      });
+      enter(".history-actions span", 39.1, { to: { stagger: 0.5 } });
+      tl.fromTo(
+        ".history-record.selected",
+        { backgroundColor: "#233641" },
+        { backgroundColor: "#3a5668", duration: 0.4 },
+        39.8,
+      );
+      tl.to("#history-find", { color: "#352d3a", duration: 0.3 }, 39.8);
+      tl.to("#history-copy", { color: "#352d3a", duration: 0.3 }, 41);
+      enter("#copy-check", 41, {
+        from: { y: 0, x: 5 },
+        to: { x: 0, duration: 0.3 },
+      });
+      tl.to("#history-replay", { color: "#352d3a", duration: 0.3 }, 42.3);
+      wave(".replay-wave", 42.3, 2.7);
+      tl.to(".audio-replay", { color: "#e2f5ff", duration: 0.3 }, 42.3);
+      tl.to("#history-demo", { y: -8, duration: 5.3, ease: "none" }, 39.7);
+      enter("#outro-icon", 45.3, {
+        from: { y: 40, scale: 0.85 },
+        to: { scale: 1, duration: 1.15 },
+      });
+      enter("#outro-wordmark", 45.5, {
+        from: { y: 35 },
+        to: { duration: 1.1 },
+      });
+      enter("#outro-tagline", 46.1, { from: { y: 20 }, to: { duration: 0.9 } });
+      tl.fromTo(
+        "#outro-line",
+        { scaleX: 0, opacity: 0 },
+        { scaleX: 1, opacity: 1, duration: 0.8, ease: "power3.out" },
+        46.85,
+      );
+      enter("#outro-detail", 47.1, { from: { y: 14 } });
+      tl.to("#outro-icon", { y: -6, duration: 3.9, ease: "sine.inOut" }, 46.7);
+      tl.to(
+        ".end-orbit",
+        { rotation: -8, scale: 1.08, duration: 6, ease: "none" },
+        45,
+      );
+      // A finite end hold lets every renderer seek the complete 51-second film.
+      tl.to({}, { duration: 0.01 }, duration - 0.01);
+      window.__timelines["sotto-launch"] = tl;
+    </script>
+  </body>
+</html>

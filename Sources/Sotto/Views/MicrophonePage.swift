@@ -16,6 +16,9 @@ private struct MicrophoneSettingsView: View {
     var recordingInputName: String?
     @State private var editingProfile: ProfileEdit?
     @State private var confirmingRemoval = false
+    @State private var dropTargetUID: String?
+    @State private var draggedPriority: MicrophonePriorityDrag?
+    @State private var priorityRowFrames: [String: CGRect] = [:]
 
     var body: some View {
         let profile = store.activeProfile
@@ -37,9 +40,9 @@ private struct MicrophoneSettingsView: View {
                     SottoSettingsGroup {
                         VStack(spacing: 0) {
                             profileToolbar(profile)
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 9)
-                            Divider().padding(.horizontal, 10)
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 12)
+                            Divider().padding(.horizontal, 16)
                             priorityList(profile: profile, connected: connected, otherDevices: otherDevices,
                                          selectedUID: store.preferences.selection == .automatic ? resolution.device?.uid : nil)
                         }
@@ -172,14 +175,13 @@ private struct MicrophoneSettingsView: View {
 
     private func priorityList(profile: MicrophoneProfile, connected: [String: AudioInputDevice],
                               otherDevices: [AudioInputDevice], selectedUID: String?) -> some View {
-        List {
-            if profile.priority.isEmpty && connected.isEmpty {
-                ContentUnavailableView("No microphones connected", systemImage: "mic.slash",
-                                       description: Text("Connect an audio input to add it to this list."))
-                    .frame(maxWidth: .infinity, minHeight: 160)
-                    .listRowSeparator(.hidden)
-            } else {
-                Section {
+        ScrollView {
+            VStack(spacing: 0) {
+                if profile.priority.isEmpty && connected.isEmpty {
+                    ContentUnavailableView("No microphones connected", systemImage: "mic.slash",
+                                           description: Text("Connect an audio input to add it to this list."))
+                        .frame(maxWidth: .infinity, minHeight: 160)
+                } else {
                     if profile.priority.isEmpty {
                         VStack(alignment: .leading, spacing: 4) {
                             Text("No priorities yet")
@@ -187,44 +189,50 @@ private struct MicrophoneSettingsView: View {
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
-                        .frame(minHeight: 50, alignment: .leading)
+                        .frame(maxWidth: .infinity, minHeight: 64, alignment: .leading)
                     }
+
                     ForEach(Array(profile.priority.enumerated()), id: \.element.uid) { position, device in
                         preferredRow(device, position: position, count: profile.priority.count,
                                      connected: connected[device.uid], isSelected: selectedUID == device.uid)
                     }
-                    .onMove(perform: store.movePriority)
-                } header: {
-                    Text("Preferred order").textCase(nil)
-                }
 
-                Section {
-                    if otherDevices.isEmpty {
-                        Text(connected.isEmpty ? "No inputs connected." : "All connected inputs are in this list.")
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                            .frame(minHeight: 50, alignment: .leading)
-                    }
-                    ForEach(otherDevices) { device in
-                        HStack(spacing: 12) {
-                            deviceLabel(device, available: true)
-                            Spacer(minLength: 8)
-                            Button { store.addToPriority(device) } label: {
-                                SottoControlIcon(systemName: "plus.circle")
+                    if !otherDevices.isEmpty {
+                        VStack(alignment: .leading, spacing: 0) {
+                            Text("Connected inputs")
+                                .font(.caption)
+                                .foregroundStyle(SottoPalette.muted)
+                                .padding(.top, 18)
+                                .padding(.bottom, 4)
+                            ForEach(otherDevices) { device in
+                                HStack(spacing: 12) {
+                                    deviceLabel(device, available: true)
+                                        .padding(.leading, 30)
+                                    Spacer(minLength: 8)
+                                    Text("Connected")
+                                        .font(.caption)
+                                        .foregroundStyle(SottoPalette.muted)
+                                        .fixedSize()
+                                    Button { store.addToPriority(device) } label: {
+                                        SottoControlIcon(systemName: "plus")
+                                    }
+                                    .buttonStyle(.borderless)
+                                    .foregroundStyle(SottoPalette.accentInk)
+                                    .help("Add \(device.name) to \(profile.name)")
+                                    .accessibilityLabel("Add \(device.name) to priority list")
+                                }
+                                .frame(minHeight: 64)
+                                .overlay(alignment: .bottom) { Divider() }
                             }
-                            .buttonStyle(.borderless)
-                            .help("Add \(device.name) to \(profile.name)")
-                            .accessibilityLabel("Add \(device.name) to priority list")
                         }
-                        .frame(minHeight: 50)
                     }
-                } header: {
-                    Text("Connected inputs").textCase(nil)
                 }
             }
+            .accessibilityElement(children: .contain)
         }
-        .listStyle(.inset)
-        .scrollContentBackground(.hidden)
+        .coordinateSpace(name: "microphone-priorities")
+        .onPreferenceChange(MicrophonePriorityFrames.self) { priorityRowFrames = $0 }
+        .padding(.horizontal, 16)
         .frame(height: 270)
         .accessibilityIdentifier("microphone.priorities")
     }
@@ -235,7 +243,7 @@ private struct MicrophoneSettingsView: View {
                 Image(systemName: "exclamationmark.circle")
                     .frame(width: 14)
             }
-            Text(store.storageError ?? "Drag to reorder. Disconnected microphones keep their place.")
+            Text(store.storageError ?? "Drag a handle to reorder. Disconnected microphones keep their place.")
                 .lineLimit(2)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -284,68 +292,133 @@ private struct MicrophoneSettingsView: View {
                               connected: AudioInputDevice?, isSelected: Bool) -> some View {
         HStack(spacing: 12) {
             Text("\(position + 1)")
-                .font(.caption.monospacedDigit())
-                .foregroundStyle(.secondary)
-                .frame(width: 18, alignment: .trailing)
-            deviceLabel(connected ?? device, available: connected != nil, isSelected: isSelected)
-            Spacer(minLength: 6)
-            HStack(spacing: 2) {
-                Button { store.movePriority(uid: device.uid, by: -1) } label: {
-                    SottoControlIcon(systemName: "chevron.up")
-                }
-                    .disabled(position == 0)
-                    .help("Move up")
-                    .accessibilityLabel("Move \(device.name) up")
-                Button { store.movePriority(uid: device.uid, by: 1) } label: {
-                    SottoControlIcon(systemName: "chevron.down")
-                }
-                    .disabled(position == count - 1)
-                    .help("Move down")
-                    .accessibilityLabel("Move \(device.name) down")
-                Button { store.removeFromPriority(uid: device.uid) } label: {
-                    SottoControlIcon(systemName: "minus.circle")
-                }
-                    .help("Remove from this priority list")
-                    .accessibilityLabel("Remove \(device.name) from priority list")
-            }
-            .buttonStyle(.borderless)
-            .foregroundStyle(.secondary)
+                .font(.callout.monospacedDigit())
+                .foregroundStyle(SottoPalette.muted)
+                .frame(width: 18, alignment: .leading)
+            deviceLabel(connected ?? device, available: connected != nil)
+            Spacer(minLength: 8)
+            Text(connected == nil ? "Disconnected" : "Connected")
+                .font(.caption)
+                .foregroundStyle(SottoPalette.muted)
+                .fixedSize()
+            MicrophoneReorderHandle()
+                .help("Drag to reorder \(device.name)")
+                .highPriorityGesture(priorityDragGesture(uid: device.uid))
         }
-        .frame(minHeight: 56)
+        .frame(minHeight: 64)
+        .contentShape(Rectangle())
+        .background(dropTargetUID == device.uid && draggedPriority?.uid != device.uid ? SottoPalette.tint : .clear)
+        .background {
+            GeometryReader { geometry in
+                Color.clear.preference(key: MicrophonePriorityFrames.self,
+                    value: [device.uid: geometry.frame(in: .named("microphone-priorities"))])
+            }
+        }
+        .opacity(draggedPriority?.uid == device.uid ? 0.55 : 1)
+        .overlay(alignment: .bottom) { Divider() }
         .contextMenu {
+            Button("Move up") { store.movePriority(uid: device.uid, by: -1) }
+                .disabled(position == 0)
+            Button("Move down") { store.movePriority(uid: device.uid, by: 1) }
+                .disabled(position == count - 1)
             Button("Move to top") {
                 store.movePriority(fromOffsets: IndexSet(integer: position), toOffset: 0)
             }
             .disabled(position == 0)
+            Divider()
             Button("Remove from priority list") { store.removeFromPriority(uid: device.uid) }
         }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Priority \(position + 1), \((connected ?? device).name)")
+        .accessibilityValue(connected == nil ? "Disconnected" : isSelected ? "Connected, next dictation" : "Connected")
+        .accessibilityActions {
+            if position > 0 {
+                Button("Move up") { store.movePriority(uid: device.uid, by: -1) }
+            }
+            if position < count - 1 {
+                Button("Move down") { store.movePriority(uid: device.uid, by: 1) }
+            }
+            Button("Remove from priority list") { store.removeFromPriority(uid: device.uid) }
+        }
+        .accessibilityIdentifier("microphone.priority.\(device.uid)")
     }
 
-    private func deviceLabel(_ device: AudioInputDevice, available: Bool, isSelected: Bool = false) -> some View {
+    private func priorityDragGesture(uid: String) -> some Gesture {
+        DragGesture(minimumDistance: 3, coordinateSpace: .named("microphone-priorities"))
+            .onChanged { value in
+                if draggedPriority == nil {
+                    draggedPriority = MicrophonePriorityDrag(profileID: store.activeProfile.id, uid: uid)
+                }
+                dropTargetUID = priorityUID(at: value.location.y)
+            }
+            .onEnded { value in
+                let item = draggedPriority
+                draggedPriority = nil
+                dropTargetUID = nil
+                guard let item, let targetUID = priorityUID(at: value.location.y) else { return }
+                movePriority(item, to: targetUID)
+            }
+    }
+
+    private func priorityUID(at y: CGFloat) -> String? {
+        store.activeProfile.priority.compactMap { device -> (uid: String, distance: CGFloat)? in
+            guard let frame = priorityRowFrames[device.uid] else { return nil }
+            return (device.uid, abs(frame.midY - y))
+        }.min(by: { $0.distance < $1.distance })?.uid
+    }
+
+    private func movePriority(_ item: MicrophonePriorityDrag, to targetUID: String) {
+        let profile = store.activeProfile
+        guard item.profileID == profile.id,
+              let source = profile.priority.firstIndex(where: { $0.uid == item.uid }),
+              let target = profile.priority.firstIndex(where: { $0.uid == targetUID }) else { return }
+        store.movePriority(fromOffsets: IndexSet(integer: source), toOffset: target > source ? target + 1 : target)
+    }
+
+    private func deviceLabel(_ device: AudioInputDevice, available: Bool) -> some View {
         HStack(spacing: 10) {
             Image(systemName: device.transport.symbol)
                 .font(.system(size: 15))
-                .foregroundStyle(available ? SottoPalette.ink : SottoPalette.muted)
-                .frame(width: 30, height: 30)
-                .background(SottoPalette.canvas, in: RoundedRectangle(cornerRadius: 7))
+                .foregroundStyle(available ? SottoPalette.accentInk : SottoPalette.muted)
+                .frame(width: 20, height: 24)
                 .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(device.name)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .foregroundStyle(available ? .primary : .secondary)
-                HStack(spacing: 5) {
-                    if isSelected {
-                        Circle().fill(SottoPalette.accent).frame(width: 5, height: 5)
-                            .accessibilityHidden(true)
-                    }
-                    Text(isSelected ? "In use" : available ? device.transport.label : "Disconnected")
-                        .font(.caption)
-                        .foregroundStyle(SottoPalette.muted)
+            Text(device.name)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .foregroundStyle(available ? SottoPalette.ink : SottoPalette.muted)
+        }
+        .accessibilityElement(children: .combine)
+    }
+}
+
+private struct MicrophonePriorityDrag {
+    var profileID: String
+    var uid: String
+}
+
+private struct MicrophonePriorityFrames: PreferenceKey {
+    static var defaultValue: [String: CGRect] = [:]
+
+    static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, next in next })
+    }
+}
+
+private struct MicrophoneReorderHandle: View {
+    var body: some View {
+        VStack(spacing: 2.5) {
+            ForEach(0..<3) { _ in
+                HStack(spacing: 2.5) {
+                    Circle().frame(width: 2.5, height: 2.5)
+                    Circle().frame(width: 2.5, height: 2.5)
                 }
             }
         }
-        .accessibilityElement(children: .combine)
+        .foregroundStyle(SottoPalette.muted)
+        .frame(width: 28, height: 28)
+        .background(SottoPalette.surface.opacity(0.001))
+        .contentShape(Rectangle())
+        .accessibilityHidden(true)
     }
 }
 
@@ -412,22 +485,11 @@ private extension AudioInputTransport {
     var symbol: String {
         switch self {
         case .builtIn: "laptopcomputer"
-        case .usb: "cable.connector"
+        case .usb: "mic"
         case .bluetooth: "headphones"
         case .virtual: "waveform.path"
         case .aggregate: "square.stack.3d.up"
         case .other: "mic"
-        }
-    }
-
-    var label: String {
-        switch self {
-        case .builtIn: "Built-in microphone"
-        case .usb: "USB audio"
-        case .bluetooth: "Bluetooth audio"
-        case .virtual: "Virtual input"
-        case .aggregate: "Aggregate device"
-        case .other: "Audio input"
         }
     }
 }

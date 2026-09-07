@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" fill="none">
+  <title>Sotto ribbon mark</title>
+  <desc>Two opposing ribbon turns form an open geometric S, separated by a diagonal pause.</desc>
+  <g fill="#352D3A">
+    <path d="M102 18H62C38 18 22 31 22 50C22 67 33 76 49 81L60 59C50 56 47 53 47 48C47 43 53 40 63 40H102V18Z"/>
+    <path d="M26 110H66C90 110 106 97 106 78C106 61 95 52 79 47L68 69C78 72 81 75 81 80C81 85 75 88 65 88H26V110Z"/>
+  </g>
+</svg>

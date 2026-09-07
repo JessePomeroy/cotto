@@ -35,10 +35,12 @@ final class HistoryBrowser: ObservableObject {
 }
 
 struct HistoryPage: View {
+    @Environment(\.colorSchemeContrast) private var contrast
     @ObservedObject private var history: DictationHistoryStore
     @StateObject private var browser: HistoryBrowser
     @State private var selectedID: URL?
     @State private var actionError: String?
+    @State private var copiedID: URL?
 
     init(controller: SottoController) {
         history = controller.history
@@ -65,7 +67,7 @@ struct HistoryPage: View {
                         .accessibilityLabel("Open history folder")
                 }
 
-                SottoSettingsGroup {
+                Group {
                     if browser.entries.isEmpty {
                         VStack(spacing: 10) {
                             Image(systemName: "clock.arrow.circlepath").font(.system(size: 25, weight: .light))
@@ -81,15 +83,23 @@ struct HistoryPage: View {
                         ScrollView {
                             LazyVStack(spacing: 0) {
                                 ForEach(browser.entries) { entry in
-                                    Button { selectedID = entry.id; actionError = nil } label: {
+                                    Button {
+                                        selectedID = entry.id
+                                        actionError = nil
+                                        copiedID = nil
+                                    } label: {
                                         historyRow(entry)
-                                            .background(selected?.id == entry.id ? SottoPalette.tint : .clear)
                                     }
                                     .buttonStyle(.plain)
                                     .accessibilityAddTraits(selected?.id == entry.id ? .isSelected : [])
-                                    if entry.id != browser.entries.last?.id { Divider().padding(.horizontal, 14) }
+                                    .contextMenu {
+                                        Button("Reveal in Finder") {
+                                            NSWorkspace.shared.activateFileViewerSelecting([entry.folder])
+                                        }
+                                    }
                                 }
                             }
+                            .padding(1)
                         }
                         .frame(height: 210)
                     }
@@ -120,74 +130,139 @@ struct HistoryPage: View {
     }
 
     private func historyRow(_ entry: DictationHistoryEntry) -> some View {
-        HStack(spacing: 12) {
+        let isSelected = selected?.id == entry.id
+        let shape = RoundedRectangle(cornerRadius: 10, style: .continuous)
+        return HStack(spacing: 14) {
             Image(systemName: entry.record.outcome == .failed ? "exclamationmark.circle" : "waveform")
+                .font(.system(size: 18, weight: .regular))
                 .foregroundStyle(SottoPalette.accentInk)
-                .frame(width: 18)
-            VStack(alignment: .leading, spacing: 4) {
+                .frame(width: 26)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 5) {
                 Text(entry.record.transcriptText.isEmpty ? emptyTitle(entry.record) : entry.record.transcriptText)
-                    .font(.system(size: 12, weight: .medium)).lineLimit(1)
+                    .font(.system(size: 13, weight: .medium)).lineLimit(1)
+                    .foregroundStyle(SottoPalette.ink)
                 Text(entry.record.startedAt.formatted(date: .abbreviated, time: .shortened))
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(.caption).foregroundStyle(SottoPalette.muted)
             }
             Spacer(minLength: 8)
             Text(duration(entry.record.audio.original.durationSeconds))
                 .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
         }
-        .padding(.horizontal, 14).frame(height: 60)
-        .contentShape(Rectangle())
+        .padding(.horizontal, 14)
+        .frame(height: 66)
+        .background(isSelected ? SottoPalette.tint : .clear, in: shape)
+        .overlay {
+            if isSelected {
+                shape.strokeBorder(SottoPalette.line, lineWidth: contrast == .increased ? 1 : 0.5)
+            }
+        }
+        .overlay(alignment: .bottom) {
+            if !isSelected && entry.id != browser.entries.last?.id {
+                Rectangle().fill(SottoPalette.line)
+                    .frame(height: 0.5).padding(.horizontal, 14)
+            }
+        }
+        .contentShape(shape)
+        .accessibilityElement(children: .combine)
     }
 
     private func detail(_ entry: DictationHistoryEntry) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text(entry.record.startedAt.formatted(date: .abbreviated, time: .shortened)).font(.headline)
-                Spacer()
-                Button {
-                    actionError = nil
-                    if case .failure(let error) = DictationClipboard.copy(entry.record.transcriptText, to: .general) {
-                        actionError = error.localizedDescription
-                    }
-                } label: { SottoControlIcon(systemName: "doc.on.doc") }
-                .buttonStyle(.borderless).disabled(entry.record.transcriptText.isEmpty)
-                .accessibilityLabel("Copy selected transcript")
-                Button { NSWorkspace.shared.activateFileViewerSelecting([entry.folder]) } label: {
-                    SottoControlIcon(systemName: "folder")
-                }
-                .buttonStyle(.borderless).accessibilityLabel("Reveal selected dictation in Finder")
-            }
+        VStack(alignment: .leading, spacing: 16) {
             SottoSettingsGroup {
                 VStack(spacing: 0) {
                     ScrollView {
                         Text(entry.record.transcriptText.isEmpty ? entry.record.errorMessage ?? emptyTitle(entry.record) : entry.record.transcriptText)
-                            .font(.body).lineSpacing(4).textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .topLeading).padding(16)
+                            .font(.system(size: 16)).lineSpacing(5).textSelection(.enabled)
+                            .foregroundStyle(SottoPalette.ink)
+                            .frame(maxWidth: .infinity, alignment: .topLeading).padding(20)
                     }
                     .frame(height: 150)
-                    Divider()
+                    .id(entry.id)
+                    Divider().padding(.horizontal, 20)
                     HStack(spacing: 8) {
-                        Label(entry.record.mode == .test ? "Microphone test" : "Saved on this Mac", systemImage: "internaldrive")
+                        Label("Saved on this Mac", systemImage: "internaldrive")
+                            .foregroundStyle(SottoPalette.muted)
                         Spacer()
-                        Text("\(duration(entry.record.audio.original.durationSeconds)) audio · \(duration(entry.record.timing.releaseToResultSeconds)) to result")
+                        Button {
+                            actionError = nil
+                            copiedID = nil
+                            switch DictationClipboard.copy(entry.record.transcriptText, to: .general) {
+                            case .success: copiedID = entry.id
+                            case .failure(let error): actionError = error.localizedDescription
+                            }
+                        } label: {
+                            Label(copiedID == entry.id ? "Copied" : "Copy",
+                                  systemImage: copiedID == entry.id ? "checkmark" : "doc.on.doc")
+                                .frame(width: 70, alignment: .trailing)
+                                .frame(height: 30)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.borderless)
+                        .disabled(entry.record.transcriptText.isEmpty)
+                        .accessibilityLabel(copiedID == entry.id ? "Transcript copied" : "Copy selected transcript")
                     }
-                    .font(.caption2).foregroundStyle(.secondary).padding(10)
+                    .font(.caption)
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 7)
                 }
             }
-            HStack(spacing: 10) {
-                Text(entry.record.model.name)
-                if let model = entry.record.textProcessing?.modelID { Text(model).lineLimit(1).truncationMode(.middle) }
-                Spacer(minLength: 0)
-                Button("Open recording") {
+
+            VStack(spacing: 5) {
+                Button {
                     actionError = nil
                     if !NSWorkspace.shared.open(entry.audioURL) { actionError = "The original recording could not be opened." }
+                } label: {
+                    HStack(spacing: 12) {
+                        Image(systemName: "play.circle")
+                            .font(.system(size: 22, weight: .light))
+                            .accessibilityHidden(true)
+                        Text("Open recording")
+                        Spacer()
+                        Text(duration(entry.record.audio.original.durationSeconds))
+                            .font(.caption.monospacedDigit())
+                        Image(systemName: "arrow.up.right")
+                            .font(.caption)
+                            .accessibilityHidden(true)
+                    }
+                    .foregroundStyle(entry.hasOriginalAudio ? SottoPalette.accentInk : SottoPalette.muted)
+                    .padding(.horizontal, 2)
+                    .frame(height: 36)
+                    .contentShape(Rectangle())
                 }
-                .buttonStyle(.borderless).disabled(!entry.hasOriginalAudio)
+                .buttonStyle(.plain)
+                .disabled(!entry.hasOriginalAudio)
                 .help("Open the original WAV in your default audio player")
+
+                HStack(spacing: 8) {
+                    Label(entry.record.microphone.name ?? "Audio file",
+                          systemImage: entry.record.microphone.name == nil ? "waveform" : "mic")
+                        .lineLimit(1).truncationMode(.middle)
+                    Text("·").accessibilityHidden(true)
+                    Text(entry.record.model.name).lineLimit(1).truncationMode(.middle)
+                    Spacer(minLength: 0)
+                    Menu {
+                        Text(entry.record.startedAt.formatted(date: .complete, time: .standard))
+                        if entry.record.mode == .test { Text("Microphone test") }
+                        Text("Microphone: \(entry.record.microphone.name ?? "Audio file")")
+                        Text("Speech model: \(entry.record.model.name)")
+                        if let model = entry.record.textProcessing?.modelID { Text("Text model: \(model)") }
+                        Text("\(duration(entry.record.timing.releaseToResultSeconds)) to result")
+                        Divider()
+                        Button("Reveal in Finder") {
+                            NSWorkspace.shared.activateFileViewerSelecting([entry.folder])
+                        }
+                    } label: {
+                        SottoControlIcon(systemName: "ellipsis.circle")
+                    }
+                    .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
+                    .fixedSize()
+                    .accessibilityLabel("Selected dictation details")
+                }
+                .font(.caption).foregroundStyle(SottoPalette.muted)
+                .frame(height: 28)
             }
-            .font(.caption).foregroundStyle(.secondary)
-            Label(entry.record.microphone.name ?? "Audio file",
-                  systemImage: entry.record.microphone.name == nil ? "waveform" : "mic")
-                .font(.caption).foregroundStyle(.secondary).lineLimit(1).frame(height: 18)
         }
     }
 
