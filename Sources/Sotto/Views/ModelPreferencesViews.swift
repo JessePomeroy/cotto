@@ -27,18 +27,6 @@ struct ModelPage: View {
                 }
                 LabeledContent("Model size", value: controller.modelSizeLabel)
                 installationSection
-                DisclosureGroup("Model details") {
-                    LabeledContent("Precision", value: "Original F16 weights")
-                    LabeledContent("Acceleration", value: "Apple GPU · Metal")
-                }
-            } header: {
-                Text("Speech recognition").textCase(nil)
-            }
-            .listRowBackground(SottoPalette.surface)
-
-            TextCorrectionSection(service: controller.textCorrection, isBusy: controller.isBusy)
-
-            Section {
                 LabeledContent("Status", value: memoryTitle)
                     .accessibilityElement(children: .ignore)
                     .accessibilityLabel("Model status")
@@ -62,13 +50,16 @@ struct ModelPage: View {
                         .help("Change when the model unloads")
                     }
                 }
+                DisclosureGroup("Model details") {
+                    LabeledContent("Precision", value: "Original F16 weights")
+                    LabeledContent("Acceleration", value: "Apple GPU · Metal")
+                }
             } header: {
-                Text("Speech model memory")
-                    .textCase(nil)
-            } footer: {
-                Text("Unloading releases working memory. Your downloaded models stay on disk.")
+                Text("Speech recognition").textCase(nil)
             }
             .listRowBackground(SottoPalette.surface)
+
+            TextCorrectionSection(service: controller.textCorrection, isBusy: controller.isBusy)
         }
         .formStyle(.grouped)
         .scrollContentBackground(.hidden)

@@ -46,8 +46,6 @@ struct TextCorrectionSection: View {
             .accessibilityIdentifier("correction.outcome")
         } header: {
             Text("Text correction").textCase(nil)
-        } footer: {
-            Text("Optional. Speech recognition and your dictionary also work without this model.")
         }
         .listRowBackground(SottoPalette.surface)
         .alert("Remove the text correction model?", isPresented: $confirmingRemoval) {
