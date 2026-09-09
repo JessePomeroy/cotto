@@ -3,6 +3,8 @@ import AVFoundation
 import AudioToolbox
 import CoreAudio
 import SottoCore
+import SottoAudioBridge
+import OSLog
 
 struct CapturedAudio: Sendable {
     let url: URL
@@ -223,10 +225,9 @@ private final class QueuedAudioHardware: AudioCaptureHardware, @unchecked Sendab
         )
         guard status == noErr else { throw AudioRecordingError.microphoneSelectionFailed(status) }
         guard Self.currentDevice(of: input) == selectedDevice else { throw AudioRecordingError.microphoneUnavailable }
-        let format = input.outputFormat(forBus: 0)
-        guard format.sampleRate.isFinite, format.sampleRate > 0, format.channelCount > 0 else {
-            throw AudioRecordingError.microphoneUnavailable
-        }
+        // After selecting a device, the client/output format may still belong
+        // to the previous route. Always capture the actual hardware PCM format.
+        let format = try SottoAudioBridge.inputFormat(for: input)
         try request.requireOpen()
 
         let id = request.id
@@ -243,10 +244,13 @@ private final class QueuedAudioHardware: AudioCaptureHardware, @unchecked Sendab
         recordingID = id
         pinnedInput = PinnedRecordingInput(deviceID: selectedDevice, format: format)
 
-        input.installTap(onBus: 0, bufferSize: 2_048, format: format) { buffer, _ in
+        // Mark the attempt so failure cleanup also removes a partially installed
+        // tap. The Objective-C bridge contains AVFAudio exceptions, including a
+        // format renegotiation racing this call; Swift catch alone cannot.
+        tapInstalled = true
+        try SottoAudioBridge.installTap(on: input, format: format) { buffer, _ in
             if request.acceptsAudio { writer.append(buffer) }
         }
-        tapInstalled = true
 
         configurationObserver = NotificationCenter.default.addObserver(
             forName: .AVAudioEngineConfigurationChange, object: engine, queue: nil
@@ -265,15 +269,15 @@ private final class QueuedAudioHardware: AudioCaptureHardware, @unchecked Sendab
         ].compactMap { $0 }
 
         try request.requireOpen()
-        engine.prepare()
+        try SottoAudioBridge.prepare(engine)
         try request.requireOpen()
-        try engine.start()
+        try SottoAudioBridge.start(engine)
         guard !request.isCancelled else { throw AudioRecordingError.cancelled }
         // The engine must not silently replace a requested route during
         // preparation. Fail this take rather than record the wrong source.
         guard engine.isRunning,
               Self.currentDevice(of: input) == selectedDevice,
-              input.outputFormat(forBus: 0) == format,
+              try SottoAudioBridge.inputFormat(for: input) == format,
               AudioInputHardware.isAvailable(selectedDevice) else {
             throw AudioRecordingError.microphoneUnavailable
         }
@@ -314,9 +318,13 @@ private final class QueuedAudioHardware: AudioCaptureHardware, @unchecked Sendab
     private func checkPinnedInput(id: UUID) {
         guard recordingID == id, request?.acceptsAudio == true, let pinnedInput, let engine else { return }
         let input = engine.inputNode
+        guard let currentFormat = try? SottoAudioBridge.inputFormat(for: input) else {
+            interrupt(id: id, message: "The microphone’s audio format changed. Please try again.")
+            return
+        }
         let action = pinnedInput.action(
             currentDeviceID: Self.currentDevice(of: input),
-            currentFormat: input.outputFormat(forBus: 0),
+            currentFormat: currentFormat,
             isAvailable: AudioInputHardware.isAvailable(pinnedInput.deviceID),
             engineIsRunning: engine.isRunning
         )
@@ -326,10 +334,10 @@ private final class QueuedAudioHardware: AudioCaptureHardware, @unchecked Sendab
         case .restartPinnedInput:
             do {
                 try request?.requireOpen()
-                try engine.start()
+                try SottoAudioBridge.start(engine)
                 guard pinnedInput.action(
                     currentDeviceID: Self.currentDevice(of: input),
-                    currentFormat: input.outputFormat(forBus: 0),
+                    currentFormat: try SottoAudioBridge.inputFormat(for: input),
                     isAvailable: AudioInputHardware.isAvailable(pinnedInput.deviceID),
                     engineIsRunning: engine.isRunning
                 ) == .keepRecording else {
@@ -361,9 +369,14 @@ private final class QueuedAudioHardware: AudioCaptureHardware, @unchecked Sendab
             NotificationCenter.default.removeObserver(configurationObserver)
         }
         configurationObserver = nil
-        if tapInstalled { engine?.inputNode.removeTap(onBus: 0) }
+        if let engine {
+            do { try SottoAudioBridge.stop(engine, removeInputTap: tapInstalled) }
+            catch {
+                Logger(subsystem: "dev.davis.murmur", category: "audio-capture")
+                    .error("Audio teardown failed: \(String(describing: error), privacy: .public)")
+            }
+        }
         tapInstalled = false
-        engine?.stop()
         engine = nil
         writer = nil
         request = nil

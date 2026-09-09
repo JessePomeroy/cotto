@@ -4,6 +4,7 @@ import AVFoundation
 import CoreAudio
 import CoreGraphics
 import SottoCore
+import SottoAudioBridge
 import SwiftUI
 import XCTest
 @testable import Sotto
@@ -172,6 +173,65 @@ final class NativeIntegrationTests: XCTestCase {
         callbacks.values.flatMap { $0 }.forEach { $0() }
         XCTAssertEqual(reads, stoppedReadCount, "Previously enqueued callbacks must not revive a stopped store")
         XCTAssertTrue(cancelledObjects.contains(AudioObjectID(kAudioObjectSystemObject)))
+    }
+
+    func testInputTapUsesLiveHardwareFormatInsteadOfStaleClientFormat() throws {
+        let hardware = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1))
+        let staleClient = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 24_000, channels: 1))
+        let node = CapturingTapNode(hardware: hardware, client: staleClient)
+        let selected = try SottoAudioBridge.inputFormat(for: node)
+        try SottoAudioBridge.installTap(on: node, format: selected) { _, _ in }
+
+        XCTAssertEqual(selected, hardware)
+        XCTAssertEqual(node.installedFormat, hardware)
+        XCTAssertEqual(node.outputFormat(forBus: 0), staleClient)
+    }
+
+    func testInputTapRejectsAFormatChangeDuringSetupAndCanRetry() throws {
+        let original = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 24_000, channels: 1))
+        let changed = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1))
+        let node = CapturingTapNode(hardware: original, client: original)
+        let selected = try SottoAudioBridge.inputFormat(for: node)
+        node.hardware = changed
+        XCTAssertThrowsError(try SottoAudioBridge.installTap(on: node, format: selected) { _, _ in }) {
+            XCTAssertEqual(($0 as NSError).domain, "local.sotto.audio-setup")
+        }
+        XCTAssertNil(node.installedFormat, "Do not install a stale format or change the shared device's rate")
+        try SottoAudioBridge.installTap(on: node, format: SottoAudioBridge.inputFormat(for: node)) { _, _ in }
+        XCTAssertEqual(node.installedFormat, changed)
+    }
+
+    func testAVFAudioTapExceptionBecomesASwiftErrorWithoutOpeningHardware() throws {
+        let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1))
+        // A detached mixer has no engine: its real AVFAudio installTap raises an
+        // Objective-C exception. No AVAudioEngine/input device is constructed.
+        let node = FormatOnlyTapNode(hardware: format, client: format)
+        XCTAssertThrowsError(try SottoAudioBridge.installTap(on: node, format: format) { _, _ in }) {
+            let error = $0 as NSError
+            XCTAssertEqual(error.domain, "local.sotto.audio-setup")
+            XCTAssertNotNil(error.userInfo[NSDebugDescriptionErrorKey])
+        }
+    }
+
+    @MainActor
+    func testRecorderRecoversAfterAnAudioSetupErrorWithoutReusingFailedHardware() async throws {
+        let failed = FakeRecorderHardware(startupError: NSError(
+            domain: "local.sotto.audio-setup", code: 1,
+            userInfo: [NSLocalizedDescriptionKey: "Synthetic format change"]
+        ))
+        let next = FakeRecorderHardware()
+        let factory = FakeRecorderFactory([failed, next])
+        let recorder = AudioRecorder(worker: factory.worker, microphoneAuthorized: { true }, sleepNotifications: NotificationCenter())
+        defer { recorder.cancel() }
+        do { try await recorder.start(deviceID: 23); XCTFail("Format failure must be reported") }
+        catch { XCTAssertEqual((error as NSError).domain, "local.sotto.audio-setup") }
+        XCTAssertTrue(try XCTUnwrap(failed.captureRequest).isCancelled)
+        try await recorder.start(deviceID: 23)
+        let audio = try await recorder.stop()
+        defer { audio.cleanup() }
+        XCTAssertEqual(audio.duration, 0.5)
+        XCTAssertEqual(factory.createdCount, 2)
+        XCTAssertFalse(failed.observedMainThread || next.observedMainThread)
     }
 
     func testRecordingKeepsItsPinnedInputUntilItDisconnectsOrItsFormatChanges() throws {
@@ -1199,7 +1259,10 @@ private final class FakeRecorderHardware: AudioCaptureHardware, @unchecked Senda
     private var stops = 0
     private var touchedMainThread = false
 
-    init(entered: XCTestExpectation? = nil, gate: DispatchSemaphore? = nil, capturesBeforeGate: Bool = false) {
+    private let startupError: Error?
+
+    init(entered: XCTestExpectation? = nil, gate: DispatchSemaphore? = nil, capturesBeforeGate: Bool = false, startupError: Error? = nil) {
+        self.startupError = startupError
         self.entered = entered
         self.gate = gate
         self.capturesBeforeGate = capturesBeforeGate
@@ -1221,6 +1284,7 @@ private final class FakeRecorderHardware: AudioCaptureHardware, @unchecked Senda
             interruptionCallback = onInterruption
             touchedMainThread = touchedMainThread || Thread.isMainThread
         }
+        if let startupError { throw startupError }
         if capturesBeforeGate { try open(request: request, preserveOriginalAudio: preserveOriginalAudio) }
         entered?.fulfill()
         if let gate, gate.wait(timeout: .now() + 3) == .timedOut {
@@ -1291,5 +1355,31 @@ private final class FakeRecorderFactory: @unchecked Sendable {
             }
             return captures[index]
         })
+    }
+}
+
+// Standalone mixer nodes supply synthetic format metadata; no engine or device
+// is opened. The format-only variant leaves installTap to AVFAudio for the
+// exception-boundary test; the capturing variant intercepts it for success tests.
+private class FormatOnlyTapNode: AVAudioMixerNode, @unchecked Sendable {
+    var hardware: AVAudioFormat
+    let client: AVAudioFormat
+
+    init(hardware: AVAudioFormat, client: AVAudioFormat) {
+        self.hardware = hardware
+        self.client = client
+        super.init()
+    }
+
+    override func inputFormat(forBus bus: AVAudioNodeBus) -> AVAudioFormat { hardware }
+    override func outputFormat(forBus bus: AVAudioNodeBus) -> AVAudioFormat { client }
+}
+
+private final class CapturingTapNode: FormatOnlyTapNode, @unchecked Sendable {
+    private(set) var installedFormat: AVAudioFormat?
+
+    override func installTap(onBus bus: AVAudioNodeBus, bufferSize: AVAudioFrameCount,
+                             format: AVAudioFormat?, block tapBlock: @escaping AVAudioNodeTapBlock) {
+        installedFormat = format
     }
 }
