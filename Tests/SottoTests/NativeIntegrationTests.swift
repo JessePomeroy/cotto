@@ -1,10 +1,10 @@
 import AppKit
 import Combine
 import AVFoundation
+import AudioToolbox
 import CoreAudio
 import CoreGraphics
 import SottoCore
-import SottoAudioBridge
 import SwiftUI
 import XCTest
 @testable import Sotto
@@ -175,56 +175,131 @@ final class NativeIntegrationTests: XCTestCase {
         XCTAssertTrue(cancelledObjects.contains(AudioObjectID(kAudioObjectSystemObject)))
     }
 
-    func testInputTapUsesLiveHardwareFormatInsteadOfStaleClientFormat() throws {
-        let hardware = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1))
-        let staleClient = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 24_000, channels: 1))
-        let node = CapturingTapNode(hardware: hardware, client: staleClient)
-        let selected = try SottoAudioBridge.inputFormat(for: node)
-        try SottoAudioBridge.installTap(on: node, format: selected) { _, _ in }
+    func testInputOnlyCaptureDisablesPlaybackBeforeBindingSelectedDevice() throws {
+        let driver = FakeInputAudioUnitDriver()
+        let input = InputOnlyAudioUnit(operations: driver.operations)
+        defer { input.stop() }
+        XCTAssertThrowsError(try input.prepare(deviceID: kAudioObjectUnknown))
+        XCTAssertTrue(driver.events.isEmpty, "An unknown input must never fall back to a default device")
+        let format = try input.prepare(deviceID: 23)
 
-        XCTAssertEqual(selected, hardware)
-        XCTAssertEqual(node.installedFormat, hardware)
-        XCTAssertEqual(node.outputFormat(forBus: 0), staleClient)
+        XCTAssertEqual(Array(driver.events.prefix(4)), ["create", "disable-output", "enable-input", "bind:23"])
+        XCTAssertEqual(format.sampleRate, 48_000)
+        XCTAssertEqual(format.channelCount, 2)
+        XCTAssertEqual(driver.clientFormat?.mSampleRate, driver.hardware.mSampleRate)
+        XCTAssertEqual(driver.clientFormat?.mChannelsPerFrame, driver.hardware.mChannelsPerFrame)
+        XCTAssertEqual(driver.streamFormatWrites, ["output:1"], "Only set our capture client format, never hardware/playback formats")
+        XCTAssertFalse(driver.events.contains("start"), "Preparing a take must not start IO")
     }
 
-    func testInputTapRejectsAFormatChangeDuringSetupAndCanRetry() throws {
-        let original = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 24_000, channels: 1))
-        let changed = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1))
-        let node = CapturingTapNode(hardware: original, client: original)
-        let selected = try SottoAudioBridge.inputFormat(for: node)
-        node.hardware = changed
-        XCTAssertThrowsError(try SottoAudioBridge.installTap(on: node, format: selected) { _, _ in }) {
-            XCTAssertEqual(($0 as NSError).domain, "local.sotto.audio-setup")
+    func testInputOnlyCapturePreservesDevicePCMAndStopsAdmissionBeforeTeardown() async throws {
+        let driver = FakeInputAudioUnitDriver()
+        let input = InputOnlyAudioUnit(operations: driver.operations)
+        defer { input.stop() }
+        let format = try input.prepare(deviceID: 23)
+        let writer = try RecordingWriter(inputFormat: format, preserveOriginalAudio: true, onLevel: { _ in }, onError: { _ in })
+        defer { writer.cancel() }
+        let request = AudioCaptureRequest()
+        try input.start(request: request, onAudio: { writer.append($0) }, onError: { driver.errors.append($0) })
+        for _ in 0..<3 { driver.emit(frames: 3_840) }
+        request.release()
+        driver.emit(frames: 3_840)
+        // Simulate a callback in the driver's stop call; its refCon remains alive
+        // but its gate must already be closed and no PCM may be read/admitted.
+        driver.onStop = { driver.emit(frames: 3_840) }
+        input.stop()
+        let audio = try await writer.finish()
+        defer { audio.cleanup() }
+        XCTAssertEqual(driver.renderCount, 3)
+        XCTAssertTrue(driver.errors.isEmpty)
+        XCTAssertEqual(Array(driver.events.suffix(3)), ["stop", "uninitialize", "dispose"])
+        XCTAssertEqual(audio.duration, 0.24, accuracy: 1.0 / 16_000)
+        let original = try XCTUnwrap(audio.original)
+        XCTAssertEqual(original.sampleRate, 48_000)
+        XCTAssertEqual(original.channelCount, 2)
+        XCTAssertEqual(original.frameCount, 11_520)
+        let file = try AVAudioFile(forReading: original.url)
+        let pcm = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: 11_520))
+        try file.read(into: pcm)
+        let channels = try XCTUnwrap(pcm.floatChannelData)
+        XCTAssertEqual(channels[0][2_000], 0.1, accuracy: 0.00001)
+        XCTAssertEqual(channels[1][2_000], 0.2, accuracy: 0.00001)
+    }
+
+    func testInputOnlyCaptureDoesNotRebindOrRestartAfterRouteChanges() throws {
+        let driver = FakeInputAudioUnitDriver()
+        let input = InputOnlyAudioUnit(operations: driver.operations)
+        defer { input.stop() }
+        _ = try input.prepare(deviceID: 23)
+        try input.start(request: AudioCaptureRequest(), onAudio: { _ in }, onError: { _ in })
+        for _ in 0..<5 { try input.validateRoute(requireRunning: true) }
+        driver.hardware.mSampleRate = 24_000
+        XCTAssertThrowsError(try input.validateRoute(requireRunning: true))
+        driver.hardware.mSampleRate = 48_000
+        driver.selectedDevice = 99
+        XCTAssertThrowsError(try input.validateRoute(requireRunning: true))
+        driver.selectedDevice = 23
+        driver.running = false
+        XCTAssertThrowsError(try input.validateRoute(requireRunning: true))
+        XCTAssertEqual(driver.events.filter { $0.hasPrefix("bind:") }, ["bind:23"])
+        XCTAssertEqual(driver.events.filter { $0 == "start" }.count, 1)
+    }
+
+    func testInputOnlyCaptureCleansUpPartialStartupFailures() throws {
+        for stage in ["initialize", "buffer", "start"] {
+            let driver = FakeInputAudioUnitDriver()
+            if stage == "initialize" { driver.initializeResult = kAudioUnitErr_FailedInitialization }
+            if stage == "buffer" { driver.maximumFrames = 0 }
+            if stage == "start" { driver.startResult = kAudioUnitErr_CannotDoInCurrentContext }
+            let input = InputOnlyAudioUnit(operations: driver.operations)
+            _ = try input.prepare(deviceID: 23)
+            let request = AudioCaptureRequest()
+            XCTAssertThrowsError(try input.start(request: request, onAudio: { _ in }, onError: { _ in }))
+            XCTAssertTrue(request.isCancelled)
+            XCTAssertEqual(Array(driver.events.suffix(2)), ["uninitialize", "dispose"])
+            if stage == "start" { XCTAssertTrue(driver.events.contains("stop")) }
+            input.stop()
+            XCTAssertEqual(driver.events.filter { $0 == "dispose" }.count, 1)
         }
-        XCTAssertNil(node.installedFormat, "Do not install a stale format or change the shared device's rate")
-        try SottoAudioBridge.installTap(on: node, format: SottoAudioBridge.inputFormat(for: node)) { _, _ in }
-        XCTAssertEqual(node.installedFormat, changed)
     }
 
-    func testAVFAudioTapExceptionBecomesASwiftErrorWithoutOpeningHardware() throws {
-        let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1))
-        // A detached mixer has no engine: its real AVFAudio installTap raises an
-        // Objective-C exception. No AVAudioEngine/input device is constructed.
-        let node = FormatOnlyTapNode(hardware: format, client: format)
-        XCTAssertThrowsError(try SottoAudioBridge.installTap(on: node, format: format) { _, _ in }) {
-            let error = $0 as NSError
-            XCTAssertEqual(error.domain, "local.sotto.audio-setup")
-            XCTAssertNotNil(error.userInfo[NSDebugDescriptionErrorKey])
+    func testInputOnlyCaptureReleaseDuringInitializationCannotStartIO() throws {
+        let driver = FakeInputAudioUnitDriver()
+        let input = InputOnlyAudioUnit(operations: driver.operations)
+        defer { input.stop() }
+        _ = try input.prepare(deviceID: 23)
+        let request = AudioCaptureRequest()
+        driver.onInitialize = { request.release() }
+        XCTAssertThrowsError(try input.start(request: request, onAudio: { _ in }, onError: { _ in }))
+        XCTAssertFalse(driver.events.contains("start"))
+        XCTAssertEqual(driver.events.last, "dispose")
+    }
+
+    func testInputOnlyCaptureBoundsCallbacksAndReportsDriverErrorsOnce() throws {
+        for oversized in [true, false] {
+            let driver = FakeInputAudioUnitDriver()
+            let input = InputOnlyAudioUnit(operations: driver.operations)
+            defer { input.stop() }
+            _ = try input.prepare(deviceID: 23)
+            try input.start(request: AudioCaptureRequest(), onAudio: { _ in XCTFail("Bad PCM must not be delivered") },
+                            onError: { driver.errors.append($0) })
+            if !oversized { driver.renderResult = kAudioUnitErr_CannotDoInCurrentContext }
+            driver.emit(frames: oversized ? driver.maximumFrames + 1 : 512)
+            driver.emit(frames: 512)
+            XCTAssertEqual(driver.errors, [oversized ? kAudioUnitErr_TooManyFramesToProcess : kAudioUnitErr_CannotDoInCurrentContext])
+            XCTAssertEqual(driver.renderCount, oversized ? 0 : 1)
         }
     }
 
     @MainActor
     func testRecorderRecoversAfterAnAudioSetupErrorWithoutReusingFailedHardware() async throws {
-        let failed = FakeRecorderHardware(startupError: NSError(
-            domain: "local.sotto.audio-setup", code: 1,
-            userInfo: [NSLocalizedDescriptionKey: "Synthetic format change"]
-        ))
+        let failed = FakeRecorderHardware(startupError: InputAudioUnitError.routeChanged)
         let next = FakeRecorderHardware()
         let factory = FakeRecorderFactory([failed, next])
         let recorder = AudioRecorder(worker: factory.worker, microphoneAuthorized: { true }, sleepNotifications: NotificationCenter())
         defer { recorder.cancel() }
         do { try await recorder.start(deviceID: 23); XCTFail("Format failure must be reported") }
-        catch { XCTAssertEqual((error as NSError).domain, "local.sotto.audio-setup") }
+        catch InputAudioUnitError.routeChanged { }
         XCTAssertTrue(try XCTUnwrap(failed.captureRequest).isCancelled)
         try await recorder.start(deviceID: 23)
         let audio = try await recorder.stop()
@@ -232,18 +307,6 @@ final class NativeIntegrationTests: XCTestCase {
         XCTAssertEqual(audio.duration, 0.5)
         XCTAssertEqual(factory.createdCount, 2)
         XCTAssertFalse(failed.observedMainThread || next.observedMainThread)
-    }
-
-    func testRecordingKeepsItsPinnedInputUntilItDisconnectsOrItsFormatChanges() throws {
-        let original = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1))
-        let changed = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 16_000, channels: 1))
-        let pinned = PinnedRecordingInput(deviceID: 23, format: original)
-        XCTAssertEqual(pinned.action(currentDeviceID: 23, currentFormat: original, isAvailable: true, engineIsRunning: true), .keepRecording)
-        XCTAssertEqual(pinned.action(currentDeviceID: 23, currentFormat: original, isAvailable: true, engineIsRunning: false), .restartPinnedInput)
-        XCTAssertEqual(pinned.action(currentDeviceID: 99, currentFormat: original, isAvailable: true, engineIsRunning: true), .interrupt)
-        XCTAssertEqual(pinned.action(currentDeviceID: 23, currentFormat: original, isAvailable: false, engineIsRunning: true), .interrupt)
-        XCTAssertEqual(pinned.action(currentDeviceID: 23, currentFormat: changed, isAvailable: true, engineIsRunning: false), .interrupt)
-        XCTAssertEqual(pinned.action(currentDeviceID: nil, currentFormat: original, isAvailable: true, engineIsRunning: true), .interrupt)
     }
 
     func testOrphanedCapturesFromBothAppNamesAreRemovedWithoutTouchingOtherFiles() throws {
@@ -1358,28 +1421,96 @@ private final class FakeRecorderFactory: @unchecked Sendable {
     }
 }
 
-// Standalone mixer nodes supply synthetic format metadata; no engine or device
-// is opened. The format-only variant leaves installTap to AVFAudio for the
-// exception-boundary test; the capturing variant intercepts it for success tests.
-private class FormatOnlyTapNode: AVAudioMixerNode, @unchecked Sendable {
-    var hardware: AVAudioFormat
-    let client: AVAudioFormat
 
-    init(hardware: AVAudioFormat, client: AVAudioFormat) {
-        self.hardware = hardware
-        self.client = client
-        super.init()
+/// All operations below are synthetic, including the opaque handle. No call
+/// forwards to Core Audio. Callbacks run synchronously on each test's thread.
+private final class FakeInputAudioUnitDriver: @unchecked Sendable {
+    var events: [String] = []
+    var streamFormatWrites: [String] = []
+    var errors: [OSStatus] = []
+    var hardware: AudioStreamBasicDescription = {
+        let format = AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 2)!
+        return withExtendedLifetime(format) { format.streamDescription.pointee }
+    }()
+    var clientFormat: AudioStreamBasicDescription?
+    var selectedDevice: AudioDeviceID = 0
+    var maximumFrames: UInt32 = 4_096
+    var running = false
+    var initializeResult: OSStatus = noErr
+    var startResult: OSStatus = noErr
+    var renderResult: OSStatus = noErr
+    var renderCount = 0
+    var onInitialize: (() -> Void)?
+    var onStop: (() -> Void)?
+    private var callback: AURenderCallbackStruct?
+
+    var operations: InputAudioUnitOperations {
+        InputAudioUnitOperations(create: { [self] in events.append("create"); return AudioUnit(bitPattern: 0x5150)! },
+            set: { [self] _, property, scope, element, data, _ in
+                switch property {
+                case kAudioOutputUnitProperty_EnableIO:
+                    let value = data.load(as: UInt32.self)
+                    if scope == kAudioUnitScope_Output && element == 0 && value == 0 { events.append("disable-output") }
+                    else if scope == kAudioUnitScope_Input && element == 1 && value == 1 { events.append("enable-input") }
+                    else { XCTFail("Unexpected IO direction change") }
+                case kAudioOutputUnitProperty_CurrentDevice:
+                    XCTAssertEqual(scope, kAudioUnitScope_Global)
+                    XCTAssertEqual(element, 0)
+                    selectedDevice = data.load(as: AudioDeviceID.self)
+                    events.append("bind:\(selectedDevice)")
+                case kAudioUnitProperty_StreamFormat:
+                    streamFormatWrites.append("\(scope == kAudioUnitScope_Output ? "output" : "input"):\(element)")
+                    clientFormat = data.load(as: AudioStreamBasicDescription.self)
+                case kAudioUnitProperty_ShouldAllocateBuffer:
+                    XCTAssertEqual(scope, kAudioUnitScope_Output)
+                    XCTAssertEqual(element, 1)
+                    XCTAssertEqual(data.load(as: UInt32.self), 0)
+                case kAudioOutputUnitProperty_SetInputCallback:
+                    XCTAssertEqual(scope, kAudioUnitScope_Global)
+                    XCTAssertEqual(element, 0)
+                    callback = data.load(as: AURenderCallbackStruct.self)
+                default: XCTFail("Unexpected property write \(property)")
+                }
+                return noErr
+            }, get: { [self] _, property, scope, element, data, size in
+                func write<T>(_ value: T) {
+                    withUnsafeBytes(of: value) { bytes in
+                        XCTAssertEqual(size.pointee, UInt32(bytes.count))
+                        data.copyMemory(from: bytes.baseAddress!, byteCount: bytes.count)
+                    }
+                }
+                switch property {
+                case kAudioUnitProperty_StreamFormat:
+                    XCTAssertEqual(scope, kAudioUnitScope_Input)
+                    XCTAssertEqual(element, 1)
+                    write(hardware)
+                case kAudioOutputUnitProperty_CurrentDevice: write(selectedDevice)
+                case kAudioUnitProperty_MaximumFramesPerSlice: write(maximumFrames)
+                case kAudioOutputUnitProperty_IsRunning: write(UInt32(running ? 1 : 0))
+                default: XCTFail("Unexpected property read \(property)")
+                }
+                return noErr
+            }, initialize: { [self] _ in events.append("initialize"); onInitialize?(); return initializeResult },
+            start: { [self] _ in events.append("start"); running = true; return startResult },
+            stop: { [self] _ in events.append("stop"); running = false; onStop?(); return noErr },
+            uninitialize: { [self] _ in events.append("uninitialize"); return noErr },
+            dispose: { [self] _ in events.append("dispose"); callback = nil; return noErr },
+            render: { [self] _, _, _, bus, frames, buffers in
+                renderCount += 1
+                XCTAssertEqual(bus, 1)
+                guard renderResult == noErr else { return renderResult }
+                for (channel, buffer) in UnsafeMutableAudioBufferListPointer(buffers).enumerated() {
+                    XCTAssertEqual(buffer.mDataByteSize, frames * 4)
+                    buffer.mData!.assumingMemoryBound(to: Float.self).initialize(repeating: Float(channel + 1) * 0.1, count: Int(frames))
+                }
+                return noErr
+            })
     }
 
-    override func inputFormat(forBus bus: AVAudioNodeBus) -> AVAudioFormat { hardware }
-    override func outputFormat(forBus bus: AVAudioNodeBus) -> AVAudioFormat { client }
-}
-
-private final class CapturingTapNode: FormatOnlyTapNode, @unchecked Sendable {
-    private(set) var installedFormat: AVAudioFormat?
-
-    override func installTap(onBus bus: AVAudioNodeBus, bufferSize: AVAudioFrameCount,
-                             format: AVAudioFormat?, block tapBlock: @escaping AVAudioNodeTapBlock) {
-        installedFormat = format
+    func emit(frames: UInt32) {
+        guard let callback, let procedure = callback.inputProc, let reference = callback.inputProcRefCon else { XCTFail("No callback installed"); return }
+        var flags = AudioUnitRenderActionFlags()
+        var time = AudioTimeStamp()
+        XCTAssertEqual(procedure(reference, &flags, &time, 1, frames, nil), noErr)
     }
 }

@@ -10,10 +10,9 @@ let package = Package(
     ],
     targets: [
         .target(name: "SottoCore"),
-        .target(name: "SottoAudioBridge"),
-        .executableTarget(name: "Sotto", dependencies: ["SottoCore", "SottoAudioBridge"]),
+        .executableTarget(name: "Sotto", dependencies: ["SottoCore"]),
         .testTarget(name: "SottoCoreTests", dependencies: ["SottoCore"]),
-        .testTarget(name: "SottoTests", dependencies: ["Sotto", "SottoAudioBridge"]),
+        .testTarget(name: "SottoTests", dependencies: ["Sotto"]),
     ],
     swiftLanguageVersions: [.v5]
 )

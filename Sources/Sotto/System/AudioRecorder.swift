@@ -3,7 +3,6 @@ import AVFoundation
 import AudioToolbox
 import CoreAudio
 import SottoCore
-import SottoAudioBridge
 import OSLog
 
 struct CapturedAudio: Sendable {
@@ -11,7 +10,7 @@ struct CapturedAudio: Sendable {
     let duration: TimeInterval
     /// Absolute sample peak, in the range 0...1 for normal microphone audio.
     let peak: Float
-    /// Unmixed, unresampled PCM delivered by the microphone's input tap.
+    /// Unmixed, unresampled PCM delivered by the selected input unit.
     let original: OriginalCapturedAudio?
     fileprivate let directory: URL
 
@@ -40,7 +39,7 @@ struct OriginalCapturedAudio: Sendable {
     let sampleRate: Double
     let channelCount: UInt32
     let frameCount: Int64
-    /// WAV storage uses the input tap's PCM precision in little-endian order.
+    /// WAV storage uses the input unit's PCM precision in little-endian order.
     let encoding: String
 }
 
@@ -124,6 +123,10 @@ final class AudioRecorder {
                 throw AudioRecordingError.cancelled
             }
         } catch {
+            if let audioError = error as? InputAudioUnitError {
+                Logger(subsystem: "dev.davis.murmur", category: "audio-capture")
+                    .error("Capture startup failed: \(audioError.localizedDescription, privacy: .public)")
+            }
             // A release can race a slow startup failure. Retain that request
             // until stop() consumes it, so a quick hold becomes noAudio rather
             // than accidentally stopping or publishing into a later take.
@@ -178,19 +181,15 @@ final class AudioRecorder {
     }
 }
 
-/// All mutable engine state, HAL setup, and teardown stay on the worker's queue.
-/// Notification callbacks only enqueue work; the audio tap owns no UI state.
+/// Capture queue ownership is independent of the Mac's default output route.
 private final class QueuedAudioHardware: AudioCaptureHardware, @unchecked Sendable {
     private let queue: DispatchQueue
-    private var engine: AVAudioEngine?
+    private var inputUnit: InputOnlyAudioUnit?
     private var writer: RecordingWriter?
     private var request: AudioCaptureRequest?
     private var onInterruption: (@Sendable (String) -> Void)?
-    private var recordingID: UUID?
-    private var configurationObserver: NSObjectProtocol?
+    private var selectedDevice: AudioDeviceID?
     private var deviceObservers: [AudioDeviceObservation] = []
-    private var pinnedInput: PinnedRecordingInput?
-    private var tapInstalled = false
 
     init(queue: DispatchQueue) { self.queue = queue }
 
@@ -198,89 +197,43 @@ private final class QueuedAudioHardware: AudioCaptureHardware, @unchecked Sendab
                onLevel: @escaping @Sendable (Float) -> Void,
                onInterruption: @escaping @Sendable (String) -> Void) throws {
         try request.requireOpen()
-        guard writer == nil else { throw AudioRecordingError.alreadyRecording }
+        guard inputUnit == nil else { throw AudioRecordingError.alreadyRecording }
         guard AVCaptureDevice.authorizationStatus(for: .audio) == .authorized else {
             throw AudioRecordingError.permissionRequired
         }
-        // Resolve even "System default" once. A newly connected preferred mic
-        // applies to the next hold, never halfway through the current recording.
-        guard var selectedDevice = deviceID ?? AudioInputHardware.defaultInputID(),
-              AudioInputHardware.isAvailable(selectedDevice) else {
-            throw AudioRecordingError.microphoneUnavailable
-        }
-        try request.requireOpen()
-
-        let engine = AVAudioEngine()
-        self.engine = engine
+        guard let selectedDevice = deviceID ?? AudioInputHardware.defaultInputID(),
+              AudioInputHardware.isAvailable(selectedDevice) else { throw AudioRecordingError.microphoneUnavailable }
         self.request = request
         self.onInterruption = onInterruption
-        let input = engine.inputNode
-        guard let unit = input.audioUnit else { throw AudioRecordingError.microphoneUnavailable }
-        // This changes only this engine's input AudioUnit, not the system device.
-        // Bind before asking for a format: USB, Bluetooth, virtual, and built-in
-        // inputs can all have different channel counts and sample rates.
-        let status = AudioUnitSetProperty(
-            unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0,
-            &selectedDevice, UInt32(MemoryLayout<AudioDeviceID>.size)
-        )
-        guard status == noErr else { throw AudioRecordingError.microphoneSelectionFailed(status) }
-        guard Self.currentDevice(of: input) == selectedDevice else { throw AudioRecordingError.microphoneUnavailable }
-        // After selecting a device, the client/output format may still belong
-        // to the previous route. Always capture the actual hardware PCM format.
-        let format = try SottoAudioBridge.inputFormat(for: input)
+        self.selectedDevice = selectedDevice
+        let inputUnit = InputOnlyAudioUnit()
+        self.inputUnit = inputUnit
+        let format = try inputUnit.prepare(deviceID: selectedDevice)
         try request.requireOpen()
-
         let id = request.id
         let writer = try RecordingWriter(
-            inputFormat: format,
-            preserveOriginalAudio: preserveOriginalAudio,
-            onLevel: onLevel,
-            onError: { [weak self] message in
-                self?.enqueueInterruption(id: id, message: message)
-            }
+            inputFormat: format, preserveOriginalAudio: preserveOriginalAudio, onLevel: onLevel,
+            onError: { [weak self] message in self?.enqueueInterruption(id: id, message: message) }
         )
-
         self.writer = writer
-        recordingID = id
-        pinnedInput = PinnedRecordingInput(deviceID: selectedDevice, format: format)
-
-        // Mark the attempt so failure cleanup also removes a partially installed
-        // tap. The Objective-C bridge contains AVFAudio exceptions, including a
-        // format renegotiation racing this call; Swift catch alone cannot.
-        tapInstalled = true
-        try SottoAudioBridge.installTap(on: input, format: format) { buffer, _ in
-            if request.acceptsAudio { writer.append(buffer) }
-        }
-
-        configurationObserver = NotificationCenter.default.addObserver(
-            forName: .AVAudioEngineConfigurationChange, object: engine, queue: nil
-        ) { [weak self] _ in
-            // AVAudioEngine explicitly forbids deallocating the engine inside
-            // this notification's internal callback (it can deadlock).
-            self?.enqueueRouteCheck(id: id)
-        }
         deviceObservers = [
             AudioDeviceObservation.observe(selectedDevice, kAudioDevicePropertyDeviceIsAlive, kAudioObjectPropertyScopeGlobal) { [weak self] in
+                self?.enqueueRouteCheck(id: id)
+            },
+            AudioDeviceObservation.observe(selectedDevice, kAudioDevicePropertyNominalSampleRate, kAudioObjectPropertyScopeGlobal) { [weak self] in
+                self?.enqueueRouteCheck(id: id)
+            },
+            AudioDeviceObservation.observe(selectedDevice, kAudioDevicePropertyStreamConfiguration, kAudioObjectPropertyScopeInput) { [weak self] in
                 self?.enqueueRouteCheck(id: id)
             },
             AudioDeviceObservation.observe(AudioObjectID(kAudioObjectSystemObject), kAudioHardwarePropertyDevices, kAudioObjectPropertyScopeGlobal) { [weak self] in
                 self?.enqueueRouteCheck(id: id)
             },
         ].compactMap { $0 }
-
-        try request.requireOpen()
-        try SottoAudioBridge.prepare(engine)
-        try request.requireOpen()
-        try SottoAudioBridge.start(engine)
-        guard !request.isCancelled else { throw AudioRecordingError.cancelled }
-        // The engine must not silently replace a requested route during
-        // preparation. Fail this take rather than record the wrong source.
-        guard engine.isRunning,
-              Self.currentDevice(of: input) == selectedDevice,
-              try SottoAudioBridge.inputFormat(for: input) == format,
-              AudioInputHardware.isAvailable(selectedDevice) else {
-            throw AudioRecordingError.microphoneUnavailable
-        }
+        try inputUnit.start(request: request, onAudio: { buffer in writer.append(buffer) }, onError: { [weak self] status in
+            self?.enqueueInterruption(id: id, message: InputAudioUnitError.driver("read input", status).localizedDescription)
+        })
+        guard AudioInputHardware.isAvailable(selectedDevice) else { throw AudioRecordingError.microphoneUnavailable }
     }
 
     func stop() -> RecordingWriter? {
@@ -291,8 +244,6 @@ private final class QueuedAudioHardware: AudioCaptureHardware, @unchecked Sendab
     }
 
     func cancel() {
-        // Failure cleanup must not turn an already released take into a new
-        // cancellation; stop() still needs to consume its admitted PCM/noAudio.
         request?.release()
         let currentWriter = writer
         detachMicrophone()
@@ -300,7 +251,16 @@ private final class QueuedAudioHardware: AudioCaptureHardware, @unchecked Sendab
     }
 
     private func enqueueRouteCheck(id: UUID) {
-        queue.async { [weak self] in self?.checkPinnedInput(id: id) }
+        queue.async { [weak self] in
+            guard let self, self.request?.id == id, self.request?.acceptsAudio == true,
+                  let selectedDevice = self.selectedDevice, let inputUnit = self.inputUnit else { return }
+            do {
+                guard AudioInputHardware.isAvailable(selectedDevice) else { throw InputAudioUnitError.routeChanged }
+                try inputUnit.validateRoute(requireRunning: true)
+            } catch {
+                self.interrupt(id: id, message: error.localizedDescription)
+            }
+        }
     }
 
     private func enqueueInterruption(id: UUID, message: String) {
@@ -308,96 +268,27 @@ private final class QueuedAudioHardware: AudioCaptureHardware, @unchecked Sendab
     }
 
     private func interrupt(id: UUID, message: String) {
-        guard recordingID == id, request?.acceptsAudio == true else { return }
+        guard request?.id == id, request?.acceptsAudio == true else { return }
+        Logger(subsystem: "dev.davis.murmur", category: "audio-capture")
+            .error("Capture interrupted: \(message, privacy: .public)")
         let callback = onInterruption
         request?.cancel()
         cancel()
         callback?(message)
     }
 
-    private func checkPinnedInput(id: UUID) {
-        guard recordingID == id, request?.acceptsAudio == true, let pinnedInput, let engine else { return }
-        let input = engine.inputNode
-        guard let currentFormat = try? SottoAudioBridge.inputFormat(for: input) else {
-            interrupt(id: id, message: "The microphone’s audio format changed. Please try again.")
-            return
-        }
-        let action = pinnedInput.action(
-            currentDeviceID: Self.currentDevice(of: input),
-            currentFormat: currentFormat,
-            isAvailable: AudioInputHardware.isAvailable(pinnedInput.deviceID),
-            engineIsRunning: engine.isRunning
-        )
-        switch action {
-        case .keepRecording:
-            break // Other devices/defaults changed; this input is unaffected.
-        case .restartPinnedInput:
-            do {
-                try request?.requireOpen()
-                try SottoAudioBridge.start(engine)
-                guard pinnedInput.action(
-                    currentDeviceID: Self.currentDevice(of: input),
-                    currentFormat: try SottoAudioBridge.inputFormat(for: input),
-                    isAvailable: AudioInputHardware.isAvailable(pinnedInput.deviceID),
-                    engineIsRunning: engine.isRunning
-                ) == .keepRecording else {
-                    throw AudioRecordingError.microphoneUnavailable
-                }
-            } catch {
-                interrupt(id: id, message: "The microphone stopped. Please try again.")
-            }
-        case .interrupt:
-            interrupt(id: id, message: "The recording microphone changed or disconnected. Please try again.")
-        }
-    }
-
-    private static func currentDevice(of input: AVAudioInputNode) -> AudioDeviceID? {
-        guard let unit = input.audioUnit else { return nil }
-        var device: AudioDeviceID = kAudioObjectUnknown
-        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
-        guard AudioUnitGetProperty(unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0, &device, &size) == noErr,
-              device != kAudioObjectUnknown else { return nil }
-        return device
-    }
-
     private func detachMicrophone() {
-        recordingID = nil
-        pinnedInput = nil
         deviceObservers.forEach { $0.cancel() }
         deviceObservers.removeAll()
-        if let configurationObserver {
-            NotificationCenter.default.removeObserver(configurationObserver)
-        }
-        configurationObserver = nil
-        if let engine {
-            do { try SottoAudioBridge.stop(engine, removeInputTap: tapInstalled) }
-            catch {
-                Logger(subsystem: "dev.davis.murmur", category: "audio-capture")
-                    .error("Audio teardown failed: \(String(describing: error), privacy: .public)")
-            }
-        }
-        tapInstalled = false
-        engine = nil
+        inputUnit?.stop()
+        inputUnit = nil
         writer = nil
         request = nil
+        selectedDevice = nil
         onInterruption = nil
     }
 
     deinit { cancel() }
-}
-
-/// Ignore unrelated hardware changes, and restart only the same usable route
-/// with the same PCM format. Switching sources/formats requires a new take.
-struct PinnedRecordingInput {
-    enum Action: Equatable { case keepRecording, restartPinnedInput, interrupt }
-
-    let deviceID: AudioDeviceID
-    let format: AVAudioFormat
-
-    func action(currentDeviceID: AudioDeviceID?, currentFormat: AVAudioFormat, isAvailable: Bool, engineIsRunning: Bool) -> Action {
-        guard isAvailable, currentDeviceID == deviceID, currentFormat == format else { return .interrupt }
-        return engineIsRunning ? .keepRecording : .restartPinnedInput
-    }
 }
 
 /// Only the admission gate is shared between the audio callback and the caller.
@@ -448,7 +339,7 @@ final class RecordingWriter: @unchecked Sendable {
                 try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
                 if let originalURL {
                     // WAV interleaves channels on disk, but no samples are mixed or
-                    // resampled. AVAudioFile accepts the tap's original buffer layout.
+                    // resampled. AVAudioFile accepts the unit's original buffer layout.
                     var settings = inputFormat.settings
                     settings[AVLinearPCMIsNonInterleaved] = false
                     settings[AVLinearPCMIsBigEndianKey] = false
@@ -468,7 +359,7 @@ final class RecordingWriter: @unchecked Sendable {
     }
 
     func append(_ source: AVAudioPCMBuffer) {
-        // AVAudioEngine reuses its buffers. Copy only PCM memory here; never run
+        // The input unit reuses its buffers. Copy only PCM memory here; never run
         // conversion, metering, UI work, or disk I/O on the real-time callback.
         guard source.frameLength > 0,
               let copy = AVAudioPCMBuffer(pcmFormat: source.format, frameCapacity: source.frameLength) else { return }
