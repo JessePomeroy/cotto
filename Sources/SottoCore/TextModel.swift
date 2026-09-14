@@ -20,7 +20,7 @@ public struct TextModel: Sendable {
 
     public let id: String
     public let name: String
-    /// The installed directory name, retained for callers of the former model API.
+    /// The directory name for an installed model artifact.
     public let filename: String
     public let files: [File]
 
@@ -109,16 +109,4 @@ public struct TextModel: Sendable {
             return actual == file.sha256 ? .success(()) : .failure(.wrongDigest)
         } catch { return .failure(.unreadable(error.localizedDescription)) }
     }
-}
-
-public struct TextModelPaths: Sendable {
-    public let root: URL
-
-    public init(root: URL? = nil) {
-        self.root = root ?? FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".murmur", isDirectory: true)
-    }
-
-    public var models: URL { root.appendingPathComponent("models", isDirectory: true) }
-    public var model: URL { models.appendingPathComponent(TextModel.qwen.filename, isDirectory: true) }
 }

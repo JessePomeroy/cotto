@@ -5,6 +5,17 @@ import CoreAudio
 import SottoCore
 import OSLog
 
+/// Headerless little-endian float32 PCM, emitted on the serial writer queue.
+/// Original channels are interleaved; normalized audio is 16 kHz mono.
+struct CapturedAudioChunk: Sendable {
+    enum Kind: Sendable { case normalized, original }
+
+    let kind: Kind
+    let data: Data
+    let sampleRate: Double
+    let channels: Int
+}
+
 struct CapturedAudio: Sendable {
     let url: URL
     let duration: TimeInterval
@@ -19,14 +30,14 @@ struct CapturedAudio: Sendable {
         try? FileManager.default.removeItem(at: directory)
     }
 
-    /// Startup cleanup also recognizes captures from before the Sotto rename.
-    /// Only generated capture names in the temporary folder qualify; archives are untouched.
+    /// Only this development client's generated capture names qualify.
+    /// Other Sotto builds and server archives are untouched.
     static func cleanupOrphans(in temporaryDirectory: URL = FileManager.default.temporaryDirectory) {
         let files = FileManager.default
         guard let entries = try? files.contentsOfDirectory(at: temporaryDirectory, includingPropertiesForKeys: nil) else { return }
         for entry in entries {
             let name = entry.lastPathComponent
-            let isCapture = ["Sotto-recording-", "Murmur-recording-"].contains { prefix in
+            let isCapture = ["Sotto-Dev-recording-"].contains { prefix in
                 name.hasPrefix(prefix) && UUID(uuidString: String(name.dropFirst(prefix.count))) != nil
             }
             if isCapture { try? files.removeItem(at: entry) }
@@ -74,6 +85,9 @@ enum AudioRecordingError: LocalizedError {
 final class AudioRecorder {
     var onLevel: ((Float) -> Void)?
     var onInterruption: ((String) -> Void)?
+    /// Captured at start(), so changing the callback cannot redirect an active take.
+    /// Enqueue network work here; this callback must not block the audio writer.
+    var onChunk: (@Sendable (CapturedAudioChunk) -> Void)?
 
     private let worker: AudioCaptureWorker
     private let microphoneAuthorized: () -> Bool
@@ -93,7 +107,7 @@ final class AudioRecorder {
         guard request == nil else { throw AudioRecordingError.alreadyRecording }
         guard microphoneAuthorized() else { throw AudioRecordingError.permissionRequired }
         guard !Task.isCancelled else { throw AudioRecordingError.cancelled }
-        let current = AudioCaptureRequest()
+        let current = AudioCaptureRequest(onChunk: onChunk)
         request = current
         sleepObserver = sleepNotifications.addObserver(
             forName: NSWorkspace.willSleepNotification, object: nil, queue: .main
@@ -213,7 +227,8 @@ private final class QueuedAudioHardware: AudioCaptureHardware, @unchecked Sendab
         let id = request.id
         let writer = try RecordingWriter(
             inputFormat: format, preserveOriginalAudio: preserveOriginalAudio, onLevel: onLevel,
-            onError: { [weak self] message in self?.enqueueInterruption(id: id, message: message) }
+            onError: { [weak self] message in self?.enqueueInterruption(id: id, message: message) },
+            onChunk: request.onChunk
         )
         self.writer = writer
         deviceObservers = [
@@ -305,6 +320,7 @@ final class RecordingWriter: @unchecked Sendable {
     private let converter: AVAudioConverter
     private let onLevel: (Float) -> Void
     private let onError: (String) -> Void
+    private let onChunk: (@Sendable (CapturedAudioChunk) -> Void)?
     private var file: AVAudioFile?
     private var originalFile: AVAudioFile?
     private var failure: Error?
@@ -317,7 +333,13 @@ final class RecordingWriter: @unchecked Sendable {
     private let meterWindowFrames = 800 // 50 ms at the WAV's 16 kHz sample rate.
 
     init(inputFormat: AVAudioFormat, preserveOriginalAudio: Bool = false,
-         onLevel: @escaping (Float) -> Void, onError: @escaping (String) -> Void) throws {
+         onLevel: @escaping (Float) -> Void, onError: @escaping (String) -> Void,
+         onChunk: (@Sendable (CapturedAudioChunk) -> Void)? = nil) throws {
+        // InputOnlyAudioUnit negotiates float32 PCM. Keep non-streaming callers
+        // free to archive other PCM formats, but never label their bytes float32.
+        guard !preserveOriginalAudio || onChunk == nil || inputFormat.commonFormat == .pcmFormatFloat32 else {
+            throw AudioRecordingError.conversionUnavailable
+        }
         guard let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16_000, channels: 1, interleaved: false),
               let converter = AVAudioConverter(from: inputFormat, to: format) else {
             throw AudioRecordingError.conversionUnavailable
@@ -326,10 +348,11 @@ final class RecordingWriter: @unchecked Sendable {
         self.converter = converter
         self.onLevel = onLevel
         self.onError = onError
+        self.onChunk = onChunk
         converter.downmix = true
         converter.sampleRateConverterQuality = AVAudioQuality.high.rawValue
 
-        directory = FileManager.default.temporaryDirectory.appendingPathComponent("Sotto-recording-\(UUID().uuidString)", isDirectory: true)
+        directory = FileManager.default.temporaryDirectory.appendingPathComponent("Sotto-Dev-recording-\(UUID().uuidString)", isDirectory: true)
         url = directory.appendingPathComponent("microphone.wav")
         originalURL = preserveOriginalAudio ? directory.appendingPathComponent("original.wav") : nil
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
@@ -439,6 +462,7 @@ final class RecordingWriter: @unchecked Sendable {
         input.frameLength = min(input.frameLength, AVAudioFrameCount(remainingInputFrames))
         do {
             try originalFile?.write(from: input)
+            if originalFile != nil { emitOriginal(input) }
             inputFrames += AVAudioFramePosition(input.frameLength)
         } catch {
             fail(error)
@@ -497,6 +521,11 @@ final class RecordingWriter: @unchecked Sendable {
         guard remainingFrames > 0 else { return }
         buffer.frameLength = min(buffer.frameLength, AVAudioFrameCount(remainingFrames))
         try file.write(from: buffer)
+        onChunk?(.init(
+            kind: .normalized,
+            data: Data(bytes: samples, count: Int(buffer.frameLength) * MemoryLayout<Float>.size),
+            sampleRate: format.sampleRate, channels: 1
+        ))
         for index in 0..<Int(buffer.frameLength) {
             let sample = samples[index]
             let magnitude = sample.isFinite ? abs(sample) : 0
@@ -513,6 +542,27 @@ final class RecordingWriter: @unchecked Sendable {
             }
         }
         frames += AVAudioFramePosition(buffer.frameLength)
+    }
+
+    private func emitOriginal(_ buffer: AVAudioPCMBuffer) {
+        guard let onChunk, let samples = buffer.floatChannelData else { return }
+        let channels = Int(buffer.format.channelCount)
+        let frameCount = Int(buffer.frameLength)
+        let data: Data
+        if buffer.format.isInterleaved || channels == 1 {
+            data = Data(bytes: samples[0], count: frameCount * channels * MemoryLayout<Float>.size)
+        } else {
+            // The input unit supplies planar buffers. The HTTP format is packed
+            // frame-by-frame, preserving every original channel sample.
+            var interleaved = [Float](repeating: 0, count: frameCount * channels)
+            for frame in 0..<frameCount {
+                for channel in 0..<channels {
+                    interleaved[frame * channels + channel] = samples[channel][frame]
+                }
+            }
+            data = interleaved.withUnsafeBytes { Data($0) }
+        }
+        onChunk(.init(kind: .original, data: data, sampleRate: buffer.format.sampleRate, channels: channels))
     }
 
     private func fail(_ error: Error) {

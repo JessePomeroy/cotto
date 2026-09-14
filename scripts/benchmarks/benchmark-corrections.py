@@ -283,7 +283,7 @@ def main():
     bench.add_argument("--prompt", type=Path, help="Optional shared experimental MLX prompt")
     bench.add_argument("--cases", type=Path, default=Path(__file__).with_name("correction-cases.json"))
     bench.add_argument("--grader", type=Path, default=CACHE / "grade-corrections")
-    bench.add_argument("--helper", type=Path, default=ROOT / ".build/text-legacy/murmur-text-engine")
+    bench.add_argument("--helper", type=Path, default=ROOT / ".build/server-llama/sotto-text-engine")
     args = parser.parse_args()
     if args.command == "fetch":
         fetch(args.repo, args.revision)

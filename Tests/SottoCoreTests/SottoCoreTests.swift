@@ -52,10 +52,4 @@ final class SottoCoreTests: XCTestCase {
         XCTAssertNoThrow(try ModelIntegrity.verify(url, model: model).get())
     }
 
-    func testWarmPolicyNeverConflatesImmediateWithUntilQuit() {
-        XCTAssertEqual(LifecyclePolicy.unloadDelay(idleMinutes: 0), 0)
-        XCTAssertEqual(LifecyclePolicy.unloadDelay(idleMinutes: 5), 300)
-        XCTAssertEqual(LifecyclePolicy.unloadDelay(idleMinutes: 15), 900)
-        XCTAssertNil(LifecyclePolicy.unloadDelay(idleMinutes: -1))
-    }
 }

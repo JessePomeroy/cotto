@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import SottoAPI
 import SottoCore
 import ServiceManagement
 
@@ -8,16 +9,11 @@ private enum DictationDestination: Equatable {
     case field(InsertionTarget)
 }
 
+/// The desktop never owns a durable generation or a model process. A take has
+/// one accepted server generation, one bounded upload, and at most one delivery.
 @MainActor
 final class SottoController: ObservableObject {
-    @Published var activity: DictationActivity = .idle {
-        didSet {
-            if oldValue.isBusy, !activity.isBusy {
-                textCorrection.endTake()
-                applyConfiguration(configuration.configuration)
-            }
-        }
-    }
+    @Published var activity: DictationActivity = .idle
     let recordingFeedback = RecordingFeedback()
     @Published var recordingListHint: String?
     @Published private(set) var recordingInputName: String?
@@ -38,21 +34,6 @@ final class SottoController: ObservableObject {
             hotkey.key = shortcut
         }
     }
-    @Published var language = "en" {
-        didSet { if !applyingConfiguration { configuration.update { $0.language = language } } }
-    }
-    @Published var idleMinutes = 5 {
-        didSet {
-            if !applyingConfiguration { configuration.update { $0.idleMinutes = idleMinutes } }
-            scheduleUnload()
-        }
-    }
-    @Published var cleanText = true {
-        didSet { if !applyingConfiguration { configuration.update { $0.cleanText = cleanText } } }
-    }
-    @Published var vocabulary = "" {
-        didSet { if !applyingConfiguration { configuration.update { $0.vocabulary = vocabulary } } }
-    }
     @Published var launchAtLogin = false {
         didSet {
             guard hasInitialized, !applyingConfiguration, !updatingLogin, launchAtLogin != oldValue else { return }
@@ -61,123 +42,643 @@ final class SottoController: ObservableObject {
         }
     }
     @Published private(set) var loginItemError: String?
-    @Published var modelStatus: ModelStatus = .missing
-    @Published var downloadProgress: Double = 0
-    @Published var downloadedBytes: Int64 = 0
-    @Published var modelError: String?
-    @Published var engineStatus: EngineStatus = .unloaded
-    @Published var engineMessage = "Loads when you need it"
-    @Published var statusMessage = "Ready when you are"
+    @Published var statusMessage = "Connecting to server…"
+    @Published private(set) var serverHealth: ServerHealth?
+    @Published private(set) var serverStatusMessage = "Connecting…"
+    @Published private(set) var isCheckingServer = false
+    @Published private(set) var isSavingPreferences = false
+    @Published private(set) var sharedPreferences: PreferencesSnapshot?
+    @Published private(set) var generations: [GenerationRecord] = []
+    @Published private(set) var isLoadingHistory = false
+    @Published private(set) var hasMoreHistory = false
+    private var historyCursor: String?
     let configuration: ConfigurationStore
     let microphones: MicrophonePreferencesStore
-    let history: DictationHistoryStore
-    let textCorrection: TextCorrectionService
+    let preferences: ClientPreferencesStore
 
     var isRecording: Bool { activity == .recording }
     var isCapturing: Bool { activity.isCapturing }
     var recordingUsesClipboard: Bool { isCapturing && insertionDestination == .clipboard }
     var isBusy: Bool { activity.isBusy }
-    // Escape belongs to the foreground app while Fn is held for navigation.
-    // The HUD's explicit cancel button remains available throughout the take.
     var canCancelWithEscape: Bool { !hotkey.isHoldingFn }
-    var isModelInstalled: Bool { modelStatus == .installed }
-    var canTest: Bool { isModelInstalled && permissions.microphone && microphones.resolution.device != nil && !isBusy }
+    var isServerReady: Bool { serverHealth?.ready == true && serverHealth?.apiVersion == SottoAPI.version }
+    var canTest: Bool { isServerReady && permissions.microphone && microphones.resolution.device != nil && !isBusy }
     var selectedInputName: String { microphones.resolution.device?.name ?? "No microphone available" }
     var allPermissionsGranted: Bool { permissions.microphone && permissions.accessibility }
-    var modelSizeLabel: String { "1.62 GB" }
-    var engineStatusLabel: String {
-        switch engineStatus {
-        case .unloaded: "Idle"
-        case .loading: "Loading model"
-        case .ready: "Ready"
-        case .transcribing: "Transcribing"
-        case .failed: "Needs attention"
-        }
-    }
-
     var onHUDVisibility: ((Bool) -> Void)?
     var onShowWindow: (() -> Void)?
+
     private let recorder = AudioRecorder()
     private let audioDevices = AudioDeviceStore()
-    private var microphoneSubscription: AnyCancellable?
-    private var configurationSubscription: AnyCancellable?
-    private var applyingConfiguration = false
     private let hotkey = HotkeyMonitor()
     private let inserter = TextInserter()
-    private let modelStore: ModelStore
-    private let engine = EngineClient()
+    private var subscriptions: Set<AnyCancellable> = []
+    private var applyingConfiguration = false
     private var recordingTimer: Timer?
     private var recordingStart: TimeInterval = 0
-    private var recordingHistory: DictationHistoryContext?
-    private var recordingDictionary = PersonalDictionary.default
-    private var recordingTextCorrectionEnabled = true
     private var microphoneStartTask: Task<Void, Never>?
     private var transcriptionTask: Task<Void, Never>?
-    private var warmTask: Task<Void, Never>?
-    private var idleTask: Task<Void, Never>?
+    private var uploadTask: Task<FinishGenerationRequest, Error>?
+    private var uploadPipe: AudioChunkPipe?
+    private var refreshTask: Task<Void, Never>?
+    private var monitorTask: Task<Void, Never>?
     private var hudTask: Task<Void, Never>?
     private var permissionTask: Task<Void, Never>?
     private var shortcutCheckTask: Task<Void, Never>?
     private var shortcutCheckStarted: TimeInterval = 0
     private var shortcutCheckEntries: [String] = []
     private var sessionID = UUID()
+    private var activeGenerationID: UUID?
+    private var activeClient: ServerClient?
+    private var serverSealed = false
     @Published private var insertionDestination: InsertionDestination?
     private var destinationTask: Task<InsertionDestination, Never>?
     private var recordingClipboardChangeCount = 0
-    private var continuationMemory = DictationContinuationMemory<DictationDestination>()
-    private var activeContinuation: DictationContinuation?
+    private struct ContinuationAnchor {
+        let destination: DictationDestination
+        let generationID: UUID
+        let continuation: DictationContinuation
+        let timestamp: TimeInterval
+    }
+    private var continuationAnchors: [ContinuationAnchor] = []
     private var isTestSession = false
     private var updatingLogin = false
     private var hasInitialized = false
     private var isShuttingDown = false
-    private var memoryPressure: DispatchSourceMemoryPressure?
     private var observers: [NSObjectProtocol] = []
     private var workspaceObservers: [NSObjectProtocol] = []
     private var lockObserver: NSObjectProtocol?
 
-    /// Disabling services permits offscreen native view previews with an isolated config.
-    /// It does not inspect models, register input listeners, or clean capture/download files.
     init(configuration: ConfigurationStore, startServices: Bool = true) {
         self.configuration = configuration
+        preferences = ClientPreferencesStore(root: configuration.url.deletingLastPathComponent())
+        microphones = MicrophonePreferencesStore(configuration: configuration)
         permissions = startServices ? PermissionSnapshot.capture()
             : PermissionSnapshot(microphone: false, accessibility: false, inputMonitoring: false)
-        modelStore = ModelStore(paths: startServices ? SottoPaths()
-            : SottoPaths(root: configuration.url.deletingLastPathComponent().appendingPathComponent("preview-models")))
-        microphones = MicrophonePreferencesStore(configuration: configuration)
-        history = DictationHistoryStore(configuration: configuration, writer: DictationArchiveWriter(
-            root: startServices ? nil : configuration.url.deletingLastPathComponent().appendingPathComponent("preview-history")))
-        textCorrection = TextCorrectionService(configuration: configuration, inspectOnInit: startServices)
         applyConfiguration(configuration.configuration)
         hotkey.key = shortcut
+        microphones.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &subscriptions)
+        preferences.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &subscriptions)
+        configuration.$configuration.removeDuplicates().sink { [weak self] in self?.applyConfiguration($0) }.store(in: &subscriptions)
         guard startServices else { return }
         bindServices()
         audioDevices.start()
         installLifecycleObservers()
-        modelStore.inspect()
         refreshPermissions()
+        // Capture files are temporary only; server history is never examined here.
         CapturedAudio.cleanupOrphans()
+        try? FileManager.default.removeItem(at: FileManager.default.temporaryDirectory.appendingPathComponent("Sotto-remote-preview"))
         hasInitialized = true
-        configurationSubscription = configuration.$configuration.removeDuplicates()
-            .sink { [weak self] in self?.applyConfiguration($0) }
         updateLoginItem()
+        refreshServer()
+        monitorTask = Task { [weak self] in
+            var count = 0
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .seconds(5)) } catch { return }
+                guard let self, !isShuttingDown else { return }
+                await checkServer(refreshData: count % 3 == 0 && !isBusy)
+                count += 1
+            }
+        }
     }
 
     private func applyConfiguration(_ settings: SottoConfiguration) {
-        // A changed hold key must not reset/cancel a live recording, and every
-        // take keeps the transcription settings it started with.
         guard !isBusy, !isShuttingDown else { return }
         applyingConfiguration = true
-        let loginChanged = launchAtLogin != settings.launchAtLogin
         if let key = HoldKey(rawValue: settings.holdKey), shortcut != key { shortcut = key }
-        if language != settings.language { language = settings.language }
-        if idleMinutes != settings.idleMinutes { idleMinutes = settings.idleMinutes }
-        if cleanText != settings.cleanText { cleanText = settings.cleanText }
-        if vocabulary != settings.vocabulary { vocabulary = settings.vocabulary }
-        if loginChanged { launchAtLogin = settings.launchAtLogin }
+        if launchAtLogin != settings.launchAtLogin { launchAtLogin = settings.launchAtLogin }
         applyingConfiguration = false
-        if hasInitialized, loginChanged { updateLoginItem() }
     }
 
+    private func client() throws -> ServerClient {
+        try ServerClient(endpoint: preferences.endpoint, token: preferences.token)
+    }
+
+    func refreshServer() {
+        refreshTask?.cancel()
+        refreshTask = Task { [weak self] in await self?.checkServer(refreshData: true) }
+    }
+
+    private func checkServer(refreshData: Bool) async {
+        guard !isCheckingServer, !isShuttingDown else { return }
+        isCheckingServer = true
+        let endpoint = preferences.endpoint
+        defer { isCheckingServer = false }
+        do {
+            let connection = try client()
+            let health = try await connection.health()
+            guard endpoint == preferences.endpoint, !Task.isCancelled else { return }
+            serverHealth = health
+            serverStatusMessage = health.apiVersion != SottoAPI.version ? "Server API version is incompatible"
+                : (health.ready ? "Server online" : (health.message ?? "Server models are not ready"))
+            if !isBusy, activity == .idle { statusMessage = isServerReady ? "Ready when you are" : serverStatusMessage }
+            if refreshData {
+                async let settings = connection.preferences()
+                async let page = connection.history()
+                let (saved, history) = try await (settings, page)
+                guard endpoint == preferences.endpoint, !Task.isCancelled else { return }
+                sharedPreferences = saved
+                if generations.count > history.items.count, history.nextCursor != nil,
+                   let oldest = history.items.last?.createdAt {
+                    let ids = Set(history.items.map(\.id))
+                    let older = generations.filter { $0.createdAt < oldest && !ids.contains($0.id) }
+                    generations = history.items + older
+                } else {
+                    generations = history.items
+                    historyCursor = history.nextCursor
+                    hasMoreHistory = history.nextCursor != nil
+                }
+            }
+        } catch is CancellationError {
+        } catch {
+            guard endpoint == preferences.endpoint, !Task.isCancelled else { return }
+            serverHealth = nil
+            serverStatusMessage = Self.connectionMessage(error)
+            if isCapturing { failSession(serverStatusMessage, cancelServer: true) }
+            else if !isBusy, activity == .idle { statusMessage = serverStatusMessage }
+        }
+    }
+
+    func saveConnection(endpoint: String, token: String, deviceName: String) {
+        guard !isBusy else { return }
+        guard preferences.save(endpoint: endpoint, token: token, deviceName: deviceName) else {
+            errorMessage = preferences.errorMessage
+            return
+        }
+        continuationAnchors.removeAll()
+        serverHealth = nil
+        sharedPreferences = nil
+        generations = []
+        historyCursor = nil
+        hasMoreHistory = false
+        serverStatusMessage = "Connecting…"
+        refreshServer()
+    }
+
+    func refreshHistory() {
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let endpoint = preferences.endpoint
+                let page = try await client().history()
+                guard endpoint == preferences.endpoint else { return }
+                generations = page.items
+                historyCursor = page.nextCursor
+                hasMoreHistory = page.nextCursor != nil
+            } catch { errorMessage = error.localizedDescription }
+        }
+    }
+
+    func loadMoreHistory() {
+        guard !isLoadingHistory, let cursor = historyCursor else { return }
+        isLoadingHistory = true
+        Task { [weak self] in
+            guard let self else { return }
+            defer { isLoadingHistory = false }
+            do {
+                let endpoint = preferences.endpoint
+                let page = try await client().history(before: cursor)
+                guard endpoint == preferences.endpoint, historyCursor == cursor else { return }
+                let existing = Set(generations.map(\.id))
+                generations += page.items.filter { !existing.contains($0.id) }
+                historyCursor = page.nextCursor
+                hasMoreHistory = page.nextCursor != nil
+            } catch { errorMessage = error.localizedDescription }
+        }
+    }
+
+    func updateSharedPreferences(_ value: ServerPreferences, expectedRevision: Int? = nil) {
+        guard !isSavingPreferences, let snapshot = sharedPreferences else { return }
+        isSavingPreferences = true
+        Task { [weak self] in
+            guard let self else { return }
+            defer { isSavingPreferences = false }
+            do {
+                let endpoint = preferences.endpoint
+                let saved = try await client().updatePreferences(.init(revision: expectedRevision ?? snapshot.revision, preferences: value))
+                guard endpoint == preferences.endpoint else { return }
+                sharedPreferences = saved
+                errorMessage = nil
+            } catch { errorMessage = error.localizedDescription; refreshServer() }
+        }
+    }
+
+    func deleteGeneration(_ id: UUID) {
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await client().delete(id)
+                generations.removeAll { $0.id == id }
+                continuationAnchors.removeAll { $0.generationID == id }
+            } catch { errorMessage = error.localizedDescription }
+        }
+    }
+
+    func openGenerationAudio(_ generation: GenerationRecord, kind: AudioKind) {
+        Task { [weak self] in
+            guard let self else { return }
+            do { NSWorkspace.shared.open(try await client().audio(generation.id, kind: kind)) }
+            catch { errorMessage = error.localizedDescription }
+        }
+    }
+
+    private static func connectionMessage(_ error: Error) -> String {
+        if error is URLError { return "Server offline · Recording unavailable" }
+        return error.localizedDescription
+    }
+
+    func toggleTestRecording() {
+        guard !hotkey.isHoldingFn else { return }
+        if isCapturing { finishDictation() }
+        else if !isBusy { beginDictation(isTest: true) }
+    }
+
+    func cancelDictation() {
+        guard isBusy else { return }
+        let generation = activeGenerationID
+        let connection = activeClient
+        resetSession()
+        activity = .idle
+        statusMessage = "Cancelled"
+        errorMessage = nil
+        onHUDVisibility?(false)
+        if let generation, let connection {
+            Task { [weak self] in
+                try? await connection.cancel(generation)
+                self?.refreshServer()
+            }
+        }
+    }
+
+    private func resetSession() {
+        sessionID = UUID()
+        microphoneStartTask?.cancel(); microphoneStartTask = nil
+        transcriptionTask?.cancel(); transcriptionTask = nil
+        uploadPipe?.cancel(); uploadPipe = nil
+        uploadTask?.cancel(); uploadTask = nil
+        destinationTask?.cancel(); destinationTask = nil
+        stopRecordingTimer()
+        recorder.cancel()
+        recorder.onChunk = nil
+        insertionDestination = nil
+        recordingListHint = nil
+        recordingInputName = nil
+        activeGenerationID = nil
+        activeClient = nil
+        serverSealed = false
+        resetLevels()
+    }
+
+    private func failSession(_ message: String, cancelServer: Bool) {
+        let generation = activeGenerationID
+        let connection = activeClient
+        resetSession()
+        showError(message)
+        if cancelServer, let generation, let connection { Task { try? await connection.cancel(generation) } }
+        refreshHistory()
+    }
+
+    func copyLastTranscript() {
+        guard !lastTranscript.isEmpty, !isBusy else { return }
+        switch DictationClipboard.copy(lastTranscript, to: .general) {
+        case .success: lastDelivery = "Copied to clipboard"; lastDeliveryStatus = .copied
+        case .failure(let error): lastDelivery = error.localizedDescription; lastDeliveryStatus = .failed
+        }
+    }
+
+    func clearLastTranscript() {
+        guard !isBusy else { return }
+        continuationAnchors.removeAll()
+        lastTranscript = ""; lastTranscriptionSeconds = nil; lastAudioSeconds = nil
+        lastDelivery = ""; lastDeliveryStatus = .none; errorMessage = nil; activity = .idle
+    }
+
+    func dismissFeedback() {
+        guard !isBusy else { return }
+        hudTask?.cancel()
+        onHUDVisibility?(false)
+        if activity == .success { activity = .idle }
+    }
+
+    func shutdown() {
+        guard !isShuttingDown else { return }
+        isShuttingDown = true
+        stopShortcutCheck()
+        // Quitting the client cancels an incomplete recording. A sealed server
+        // generation remains independently owned and may complete in history.
+        let generation = activeGenerationID
+        let connection = activeClient
+        let shouldCancel = !serverSealed
+        resetSession()
+        if shouldCancel, let generation, let connection { Task { try? await connection.cancel(generation) } }
+        monitorTask?.cancel(); refreshTask?.cancel(); hudTask?.cancel(); permissionTask?.cancel()
+        configuration.stopWatching()
+        subscriptions.removeAll()
+        audioDevices.stop(); hotkey.stop(); continuationAnchors.removeAll()
+        for observer in observers { NotificationCenter.default.removeObserver(observer) }
+        for observer in workspaceObservers { NSWorkspace.shared.notificationCenter.removeObserver(observer) }
+        if let lockObserver { DistributedNotificationCenter.default().removeObserver(lockObserver) }
+        try? FileManager.default.removeItem(at: FileManager.default.temporaryDirectory.appendingPathComponent("Sotto-remote-preview"))
+    }
+
+    private func bindServices() {
+        audioDevices.onChange = { [weak self] devices, defaultUID in self?.microphones.update(devices: devices, systemDefaultUID: defaultUID) }
+        recorder.onLevel = { [weak self] level in guard let self, isCapturing else { return }; recordingFeedback.append(level) }
+        recorder.onInterruption = { [weak self] message in self?.failSession(message, cancelServer: true) }
+        hotkey.onStatusChange = { [weak self] in self?.isHotkeyActive = $0 }
+        hotkey.onPress = { [weak self] in
+            guard let self else { return }
+            if isCheckingShortcut { appendShortcutCheck("Shortcut recognized. Recording was intentionally skipped.") }
+            else { beginDictation(isTest: false) }
+        }
+        hotkey.onRelease = { [weak self] in
+            guard let self else { return }
+            if isCheckingShortcut { appendShortcutCheck("Hold released."); return }
+            if !isTestSession { finishDictation() }
+        }
+        hotkey.onCancel = { [weak self] in
+            guard let self else { return }
+            if isCheckingShortcut { appendShortcutCheck("Hold cancelled; microphone stayed off.") }
+            else if isBusy { cancelDictation() }
+            else { dismissFeedback() }
+        }
+    }
+
+    private func beginDictation(isTest: Bool) {
+        guard !isBusy, !isShuttingDown else { return }
+        stopShortcutCheck()
+        guard isServerReady else { showError(serverStatusMessage); refreshServer(); onShowWindow?(); return }
+        guard permissions.microphone else { showError("Allow microphone access, then try again."); onShowWindow?(); return }
+        guard let input = microphones.resolution.device, let deviceID = audioDevices.deviceID(for: input.uid) else {
+            showError("No microphone is available. Connect an input and try again."); onShowWindow?(); return
+        }
+        hudTask?.cancel(); errorMessage = nil
+        sessionID = UUID()
+        let current = sessionID
+        isTestSession = isTest
+        serverSealed = false
+        recordingClipboardChangeCount = NSPasteboard.general.changeCount
+        insertionDestination = nil
+        recordingInputName = input.name
+        recordingFeedback.reset()
+        activity = .starting
+        statusMessage = "Connecting recording…"
+        onHUDVisibility?(true)
+        if !isTest {
+            let capture = TextInserter.beginDestinationCapture()
+            destinationTask = capture
+            Task { [weak self] in
+                let destination = await capture.value
+                guard let self, sessionID == current, isCapturing else { return }
+                insertionDestination = destination
+                prepareContinuation(for: destination.target.map(DictationDestination.field))
+            }
+        } else { prepareContinuation(for: .test) }
+        microphoneStartTask = Task { [weak self] in
+            guard let self else { return }
+            defer { if sessionID == current { microphoneStartTask = nil } }
+            do {
+                let connection = try client()
+                let created = try await connection.create(.init(requestID: current,
+                    device: .init(id: preferences.deviceID, name: preferences.deviceName), mode: isTest ? .test : .dictation))
+                guard sessionID == current, activity == .starting, !Task.isCancelled else {
+                    Task { try? await connection.cancel(created.id) }; return
+                }
+                guard created.status == .receiving else { throw ServerClientError.invalidResponse }
+                activeGenerationID = created.id
+                activeClient = connection
+                sharedPreferences = created.settings
+                let pipe = AudioChunkPipe { [weak self] error in
+                    Task { @MainActor [weak self] in
+                        guard let self, sessionID == current else { return }
+                        failSession(error.localizedDescription, cancelServer: true)
+                    }
+                }
+                uploadPipe = pipe
+                recorder.onChunk = { pipe.append($0) }
+                uploadTask = Task { [weak self] in
+                    do { return try await connection.upload(pipe.stream, to: created.id, preserveOriginal: created.settings.preferences.keepOriginalAudio) }
+                    catch {
+                        if let self, sessionID == current, !Task.isCancelled {
+                            failSession(Self.connectionMessage(error), cancelServer: true)
+                        }
+                        throw error
+                    }
+                }
+                recordingStart = ProcessInfo.processInfo.systemUptime
+                statusMessage = "Starting microphone…"
+                try await recorder.start(deviceID: deviceID, preserveOriginalAudio: created.settings.preferences.keepOriginalAudio)
+                guard sessionID == current, activity == .starting, !Task.isCancelled else { return }
+                activity = .recording
+                statusMessage = "Listening"
+                startRecordingTimer()
+            } catch is CancellationError {
+            } catch AudioRecordingError.cancelled {
+            } catch {
+                guard sessionID == current, !Task.isCancelled else { return }
+                serverHealth = nil
+                serverStatusMessage = Self.connectionMessage(error)
+                failSession(serverStatusMessage, cancelServer: true)
+                refreshServer()
+            }
+        }
+    }
+
+    private func finishDictation() {
+        guard isCapturing else { return }
+        recorder.stopAcceptingAudio()
+        guard activity == .recording else { cancelDictation(); return }
+        let releasedAt = ProcessInfo.processInfo.systemUptime
+        guard releasedAt - recordingStart >= 0.25 else { cancelDictation(); return }
+        guard let id = activeGenerationID, let connection = activeClient, let uploadTask, let uploadPipe else {
+            failSession("This recording has no server session.", cancelServer: true); return
+        }
+        stopRecordingTimer(); resetLevels()
+        activity = .transcribing
+        statusMessage = "Finishing upload…"
+        let current = sessionID
+        let test = isTestSession
+        let capturedDestination = insertionDestination
+        let pendingDestination = destinationTask
+        let clipboardCount = recordingClipboardChangeCount
+        transcriptionTask = Task { [weak self] in
+            guard let self else { return }
+            var capturedAudio: CapturedAudio?
+            defer { capturedAudio?.cleanup() }
+            do {
+                let audio = try await recorder.stop()
+                capturedAudio = audio
+                guard sessionID == current, !Task.isCancelled else { return }
+                uploadPipe.finish()
+                var finish = try await uploadTask.value
+                guard sessionID == current, !Task.isCancelled else { return }
+                // All PCM is acknowledged; no local artifact is needed while
+                // the independent server transcribes and stores its result.
+                audio.cleanup()
+                capturedAudio = nil
+                let destination: InsertionDestination
+                if test { destination = .clipboard }
+                else if let capturedDestination { destination = capturedDestination }
+                else { destination = await pendingDestination?.value ?? .clipboard }
+                let resolved: InsertionDestination
+                if let target = destination.target, !InsertionCapturePolicy.permitsInsertion(capturedAt: target.capturedAt, releasedAt: releasedAt) {
+                    resolved = .clipboard
+                } else { resolved = destination }
+                let anchor: DictationDestination? = test ? .test : resolved.target.flatMap { $0.selection == nil ? nil : .field($0) }
+                finish.continuationID = anchor.flatMap { self.continuation(for: $0)?.generationID }
+                serverSealed = true // An interrupted response may still mean the server accepted the seal.
+                var result = try await connection.finish(id, value: finish)
+                guard sessionID == current, !Task.isCancelled else { return }
+                if !result.status.isTerminal {
+                    result = try await connection.events(id) { [weak self] record in
+                        await self?.applyProgress(record, session: current)
+                    }
+                }
+                guard sessionID == current, !Task.isCancelled else { return }
+                guard result.status == .completed else {
+                    throw ServerClientError.rejected(422, result.error ?? "The server could not process this recording.")
+                }
+                await deliver(result, to: resolved, anchor: anchor, isTest: test, clipboardCount: clipboardCount, session: current)
+                guard sessionID == current, !Task.isCancelled else { return }
+                let receipt = DeliveryReceipt(status: lastDeliveryStatus.rawValue, message: lastDelivery)
+                // Receipt failures never trigger a second insertion. They only
+                // disable cross-take continuation until a confirmed receipt exists.
+                do { try await connection.delivery(id, receipt: receipt) }
+                catch { continuationAnchors.removeAll { $0.generationID == id } }
+                guard sessionID == current, !Task.isCancelled else { return }
+                activeGenerationID = nil; activeClient = nil; self.uploadTask = nil; self.uploadPipe = nil
+                destinationTask = nil; insertionDestination = nil; recordingListHint = nil; recordingInputName = nil
+                recorder.onChunk = nil
+                activity = lastDeliveryStatus == .failed ? .failed : .success
+                dismissHUDAfter(seconds: lastDeliveryStatus == .failed || lastDeliveryStatus == .unconfirmed ? 4 : 1.7)
+                refreshServer()
+                applyConfiguration(configuration.configuration)
+            } catch is CancellationError {
+            } catch AudioRecordingError.cancelled {
+            } catch {
+                guard sessionID == current, !Task.isCancelled else { return }
+                if error is URLError { serverHealth = nil; serverStatusMessage = Self.connectionMessage(error) }
+                failSession(Self.connectionMessage(error), cancelServer: !serverSealed)
+            }
+        }
+    }
+
+    private func applyProgress(_ generation: GenerationRecord, session: UUID) {
+        guard sessionID == session, isBusy else { return }
+        switch generation.status {
+        case .receiving: statusMessage = "Finishing upload…"
+        case .queued: statusMessage = "Waiting for server…"
+        case .transcribing: statusMessage = "Transcribing on server…"
+        case .proofreading: statusMessage = "Proofreading on server…"
+        case .completed: statusMessage = "Preparing result…"
+        case .failed, .cancelled: statusMessage = generation.error ?? "Processing stopped"
+        }
+    }
+
+    private func deliver(_ record: GenerationRecord, to destination: InsertionDestination,
+                         anchor: DictationDestination?, isTest: Bool, clipboardCount: Int, session: UUID) async {
+        lastTranscript = record.previewText.isEmpty ? record.finalText : record.previewText
+        lastAudioSeconds = record.audioSeconds
+        lastTranscriptionSeconds = (record.speech?.processingSeconds ?? 0) + (record.proofreading?.processingSeconds ?? 0)
+        if isTest {
+            rememberContinuation(record, at: .test)
+            lastDelivery = "Test complete. Nothing was pasted."
+            lastDeliveryStatus = .tested
+            statusMessage = record.finalText.isEmpty ? "No speech detected" : "Ready to copy"
+            return
+        }
+        if record.insertionText.isEmpty {
+            if record.continuation == nil && record.previewText.isEmpty {
+                lastDelivery = "No speech detected"; lastDeliveryStatus = .none
+            } else if let confirmed = TextInserter.unchangedAnchor(destination.target) {
+                rememberContinuation(record, at: .field(confirmed))
+                lastDelivery = "List updated. Nothing was pasted."; lastDeliveryStatus = .listUpdated
+            } else {
+                lastDelivery = "List state unchanged: the original cursor could not be confirmed."
+                lastDeliveryStatus = .unconfirmed
+            }
+            statusMessage = lastDelivery
+            return
+        }
+        activity = .delivering
+        statusMessage = "Inserting at your cursor…"
+        let outcome = await inserter.deliver(record.insertionText, copying: record.finalText,
+                                              to: destination, clipboardUnchangedSince: clipboardCount)
+        guard sessionID == session, !Task.isCancelled else { return }
+        if let anchor { continuationAnchors.removeAll { $0.destination == anchor } }
+        switch outcome {
+        case .inserted:
+            if let target = inserter.confirmedAnchor { rememberContinuation(record, at: .field(target)) }
+            lastDelivery = "Inserted at your cursor"; lastDeliveryStatus = .inserted; statusMessage = "Inserted"
+        case .copied(let reason):
+            lastTranscript = record.finalText; lastDelivery = reason; lastDeliveryStatus = .copied; statusMessage = "Copied"
+        case .unconfirmed(let backup):
+            lastTranscript = record.finalText
+            lastDelivery = backup ? "Insertion unconfirmed. Copied to clipboard if needed." : "Insertion unconfirmed. Your words are here to copy."
+            lastDeliveryStatus = .unconfirmed; statusMessage = "Check insertion"
+        case .failed(let reason):
+            lastTranscript = record.finalText; lastDelivery = reason; lastDeliveryStatus = .failed; statusMessage = "Ready to copy"
+        }
+    }
+
+    private func continuation(for destination: DictationDestination) -> ContinuationAnchor? {
+        let now = ProcessInfo.processInfo.systemUptime
+        continuationAnchors.removeAll { now < $0.timestamp || now - $0.timestamp >= 15 * 60 }
+        return continuationAnchors.last { $0.destination == destination }
+    }
+
+    private func prepareContinuation(for destination: DictationDestination?) {
+        if let destination, let list = continuation(for: destination)?.continuation.list {
+            recordingListHint = list.style == .numbered ? "Continuing at item \(list.nextNumber)" : "Continuing your list"
+        } else { recordingListHint = nil }
+    }
+
+    private func rememberContinuation(_ record: GenerationRecord, at destination: DictationDestination) {
+        continuationAnchors.removeAll { $0.destination == destination }
+        guard let continuation = record.continuation else { return }
+        continuationAnchors.append(.init(destination: destination, generationID: record.id, continuation: continuation,
+                                         timestamp: ProcessInfo.processInfo.systemUptime))
+        continuationAnchors = Array(continuationAnchors.suffix(8))
+    }
+
+    private func showError(_ message: String) {
+        activity = .failed; errorMessage = message; statusMessage = message
+        onHUDVisibility?(true)
+        dismissHUDAfter(seconds: 4)
+    }
+
+    private func dismissHUDAfter(seconds: Double) {
+        hudTask?.cancel()
+        hudTask = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(seconds)) } catch { return }
+            guard let self, !isBusy else { return }
+            onHUDVisibility?(false)
+            if activity == .success { activity = .idle; statusMessage = isServerReady ? "Ready when you are" : serverStatusMessage }
+        }
+    }
+
+    private func installLifecycleObservers() {
+        observers.append(NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) {
+            [weak self] _ in MainActor.assumeIsolated { self?.refreshPermissions(); self?.refreshServer() }
+        })
+        for name in [NSWorkspace.willSleepNotification, NSWorkspace.sessionDidResignActiveNotification, NSWorkspace.willPowerOffNotification] {
+            workspaceObservers.append(NSWorkspace.shared.notificationCenter.addObserver(forName: name, object: nil, queue: .main) {
+                [weak self] _ in MainActor.assumeIsolated { self?.restForSystem() }
+            })
+        }
+        lockObserver = DistributedNotificationCenter.default().addObserver(forName: NSNotification.Name("com.apple.screenIsLocked"), object: nil, queue: .main) {
+            [weak self] _ in MainActor.assumeIsolated { self?.restForSystem() }
+        }
+    }
+
+    private func restForSystem() {
+        stopShortcutCheck()
+        if isBusy {
+            let cancelServer = !serverSealed
+            failSession("Recording interrupted while your Mac was away. Check shared history for completed results.", cancelServer: cancelServer)
+        }
+        continuationAnchors.removeAll()
+    }
     func refreshPermissions() {
         let current = PermissionSnapshot.capture()
         if current != permissions { permissions = current }
@@ -252,583 +753,6 @@ final class SottoController: ObservableObject {
         shortcutCheckText = shortcutCheckEntries.joined(separator: "\n")
     }
 
-    func downloadModel() {
-        guard !isBusy else { return }
-        errorMessage = nil
-        modelStore.download()
-    }
-
-    func cancelDownload() { modelStore.cancelDownload() }
-
-    func warmModel() {
-        guard isModelInstalled, !isBusy, engineStatus != .loading else { return }
-        idleTask?.cancel()
-        errorMessage = nil
-        warmTask = Task { [weak self] in
-            guard let self else { return }
-            do {
-                try await engine.ensureLoaded()
-                if !Task.isCancelled { scheduleUnload() }
-            } catch is CancellationError {
-            } catch EngineError.cancelled {
-            } catch {
-                errorMessage = error.localizedDescription
-            }
-        }
-    }
-
-    func unloadModel() {
-        guard !isBusy else { return }
-        idleTask?.cancel()
-        warmTask?.cancel()
-        engine.unload()
-    }
-
-    func revealModel() {
-        if isModelInstalled {
-            NSWorkspace.shared.activateFileViewerSelecting([modelStore.paths.model])
-        } else {
-            try? FileManager.default.createDirectory(at: modelStore.paths.models, withIntermediateDirectories: true)
-            NSWorkspace.shared.open(modelStore.paths.models)
-        }
-    }
-
-    func removeModel() {
-        guard !isBusy else { return }
-        unloadModel()
-        if case .failure(let error) = modelStore.remove() { errorMessage = error.localizedDescription }
-    }
-
-    func toggleTestRecording() {
-        guard !hotkey.isHoldingFn else { return }
-        if isCapturing { finishDictation() }
-        else if !isBusy { beginDictation(isTest: true) }
-    }
-
-    func cancelDictation() {
-        guard isBusy else { return }
-        sessionID = UUID()
-        microphoneStartTask?.cancel()
-        microphoneStartTask = nil
-        transcriptionTask?.cancel()
-        warmTask?.cancel()
-        destinationTask?.cancel()
-        destinationTask = nil
-        stopRecordingTimer()
-        recorder.cancel()
-        engine.cancelPendingWork()
-        textCorrection.cancelTake()
-        insertionDestination = nil
-        activeContinuation = nil
-        recordingListHint = nil
-        recordingInputName = nil
-        resetLevels()
-        activity = .idle
-        statusMessage = "Cancelled"
-        errorMessage = nil
-        hudTask?.cancel()
-        onHUDVisibility?(false)
-        scheduleUnload()
-    }
-
-    func copyLastTranscript() {
-        guard !lastTranscript.isEmpty, !isBusy else { return }
-        switch DictationClipboard.copy(lastTranscript, to: .general) {
-        case .success:
-            lastDelivery = "Copied to clipboard"
-            lastDeliveryStatus = .copied
-        case .failure(let error):
-            lastDelivery = error.localizedDescription
-            lastDeliveryStatus = .failed
-        }
-    }
-
-    func clearLastTranscript() {
-        guard !isBusy else { return }
-        continuationMemory.removeAll()
-        lastTranscript = ""
-        lastTranscriptionSeconds = nil
-        lastAudioSeconds = nil
-        lastDelivery = ""
-        lastDeliveryStatus = .none
-        errorMessage = nil
-        activity = .idle
-    }
-
-    func dismissFeedback() {
-        guard !isBusy else { return }
-        hudTask?.cancel()
-        onHUDVisibility?(false)
-        if activity == .success { activity = .idle }
-    }
-
-    func shutdown() {
-        guard !isShuttingDown else { return }
-        isShuttingDown = true
-        configurationSubscription = nil
-        configuration.stopWatching()
-        stopShortcutCheck()
-        cancelDictation()
-        audioDevices.stop()
-        microphoneSubscription = nil
-        continuationMemory.removeAll()
-        hotkey.stop()
-        idleTask?.cancel()
-        warmTask?.cancel()
-        hudTask?.cancel()
-        permissionTask?.cancel()
-        microphoneStartTask?.cancel()
-        microphoneStartTask = nil
-        recorder.cancel()
-        engine.unload()
-        modelStore.shutdown()
-        textCorrection.shutdown()
-        memoryPressure?.cancel()
-        for observer in observers { NotificationCenter.default.removeObserver(observer) }
-        for observer in workspaceObservers { NSWorkspace.shared.notificationCenter.removeObserver(observer) }
-        if let lockObserver { DistributedNotificationCenter.default().removeObserver(lockObserver) }
-    }
-
-    private func bindServices() {
-        audioDevices.onChange = { [weak self] devices, systemDefaultUID in
-            self?.microphones.update(devices: devices, systemDefaultUID: systemDefaultUID)
-        }
-        microphoneSubscription = microphones.objectWillChange.sink { [weak self] _ in
-            self?.objectWillChange.send()
-        }
-        modelStore.onChange = { [weak self] snapshot in
-            guard let self else { return }
-            if modelStatus != snapshot.status { modelStatus = snapshot.status }
-            if downloadProgress != snapshot.progress { downloadProgress = snapshot.progress }
-            if downloadedBytes != snapshot.bytes { downloadedBytes = snapshot.bytes }
-            if modelError != snapshot.error { modelError = snapshot.error }
-        }
-        engine.onStatus = { [weak self] status, message in
-            guard let self else { return }
-            if self.engineStatus != status { self.engineStatus = status }
-            if self.engineMessage != message { self.engineMessage = message }
-            if status == .ready { self.scheduleUnload() }
-        }
-        recorder.onLevel = { [weak self] level in
-            guard let self, self.isCapturing else { return }
-            // Append every sample, including repeated zeroes, so old peaks
-            // visibly leave the meter when the microphone becomes quiet.
-            self.recordingFeedback.append(level)
-        }
-        recorder.onInterruption = { [weak self] message in
-            guard let self else { return }
-            cancelDictation()
-            showError(message)
-        }
-        hotkey.onStatusChange = { [weak self] active in
-            if self?.isHotkeyActive != active { self?.isHotkeyActive = active }
-        }
-        hotkey.onPress = { [weak self] in
-            guard let self else { return }
-            if isCheckingShortcut { appendShortcutCheck("Shortcut recognized. Recording was intentionally skipped.") }
-            else { beginDictation(isTest: false) }
-        }
-        hotkey.onRelease = { [weak self] in
-            guard let self else { return }
-            if isCheckingShortcut { appendShortcutCheck("Hold released."); return }
-            guard !isTestSession else { return }
-            finishDictation()
-        }
-        hotkey.onCancel = { [weak self] in
-            guard let self else { return }
-            if isCheckingShortcut { appendShortcutCheck("Hold cancelled; microphone stayed off.") }
-            else if isBusy { cancelDictation() }
-            else { dismissFeedback() }
-        }
-    }
-
-    private func beginDictation(isTest: Bool) {
-        guard !isBusy, !isShuttingDown else { return }
-        stopShortcutCheck()
-        // Inventory listeners and permission refreshes keep these snapshots
-        // current. Do not rescan every audio device or rebuild a tap on key-down.
-        // The recorder verifies the chosen device and microphone permission again.
-        guard isModelInstalled else {
-            showError(modelStatus == .verifying ? "The model is being verified. Try again in a moment." : "Download the speech model to get started.")
-            onShowWindow?()
-            return
-        }
-        guard permissions.microphone else {
-            showError("Allow microphone access, then try again.")
-            onShowWindow?()
-            return
-        }
-        guard let input = microphones.resolution.device, let deviceID = audioDevices.deviceID(for: input.uid) else {
-            showError("No microphone is available. Connect an audio input and try again.")
-            onShowWindow?()
-            return
-        }
-        idleTask?.cancel()
-        hudTask?.cancel()
-        errorMessage = nil
-        sessionID = UUID()
-        let current = sessionID
-        isTestSession = isTest
-        recordingDictionary = configuration.configuration.dictionary
-        recordingTextCorrectionEnabled = configuration.configuration.textCorrectionEnabled
-        let prompt = TranscriptCleaner.vocabularyPrompt(
-            (recordingDictionary.vocabularyTerms + [vocabulary]).joined(separator: ", "))
-        let saveHistory = history.isEnabled
-        recordingHistory = saveHistory ? DictationHistoryContext(
-            id: current, startedAt: Date(), mode: isTest ? .test : .hotkey,
-            microphone: .init(uid: input.uid, name: input.name), language: language,
-            prompt: prompt, removeFillers: cleanText
-        ) : nil
-        recordingClipboardChangeCount = NSPasteboard.general.changeCount
-        insertionDestination = nil
-        destinationTask?.cancel()
-        destinationTask = nil
-        recordingInputName = input.name
-        recordingStart = ProcessInfo.processInfo.systemUptime
-        recordingFeedback.reset()
-        activity = .starting
-        statusMessage = "Starting microphone…"
-        onHUDVisibility?(true)
-        startRecordingTimer()
-        prepareContinuation(for: isTest ? .test : nil)
-        if !isTest {
-            // AX queries into another app can be slow. Do not delay microphone
-            // startup, the HUD, or global key delivery on their IPC responses.
-            let capture = TextInserter.beginDestinationCapture()
-            destinationTask = capture
-            Task { [weak self] in
-                let destination = await capture.value
-                guard let self, self.sessionID == current, self.isCapturing else { return }
-                self.insertionDestination = destination
-                let anchor = destination.target.flatMap { $0.selection == nil ? nil : DictationDestination.field($0) }
-                self.prepareContinuation(for: anchor)
-            }
-        }
-        microphoneStartTask = Task { [weak self] in
-            guard let self, current == sessionID, activity == .starting, !Task.isCancelled else { return }
-            defer { if current == sessionID { microphoneStartTask = nil } }
-            do {
-                // Resolve once per take. Reordering preferences or connecting a
-                // higher-priority input never reroutes an in-flight recording.
-                try await recorder.start(deviceID: deviceID, preserveOriginalAudio: saveHistory)
-                guard current == sessionID, activity == .starting, !Task.isCancelled else { return }
-                activity = .recording
-                statusMessage = "Listening"
-            } catch is CancellationError {
-                if activity == .starting { settleCancelledSession(current) }
-            } catch AudioRecordingError.cancelled {
-                if activity == .starting { settleCancelledSession(current) }
-            } catch {
-                guard current == sessionID, activity == .starting, !Task.isCancelled else { return }
-                cancelDictation()
-                showError(error.localizedDescription)
-                refreshPermissions()
-            }
-        }
-        textCorrection.beginTake()
-        warmTask = Task { [weak self] in
-            guard let self, current == sessionID, isCapturing, !Task.isCancelled else { return }
-            do {
-                try await engine.ensureLoaded()
-            } catch is CancellationError {
-                settleCancelledSession(current)
-            } catch EngineError.cancelled {
-                settleCancelledSession(current)
-            } catch {
-                guard current == sessionID, isCapturing, !Task.isCancelled else { return }
-                cancelDictation()
-                showError(error.localizedDescription)
-            }
-        }
-    }
-
-    private func finishDictation() {
-        guard isCapturing else { return }
-        let releasedAt = ProcessInfo.processInfo.systemUptime
-        let releaseDate = Date()
-        recorder.stopAcceptingAudio()
-        // A modifier tap/chord is not a failed dictation. It can still give
-        // immediate visual feedback without leaving a red error behind.
-        guard releasedAt - recordingStart >= 0.25 else {
-            cancelDictation()
-            return
-        }
-        let releasedDuringStartup = activity == .starting
-        stopRecordingTimer()
-        resetLevels()
-        activity = .transcribing
-        statusMessage = "Turning speech into text…"
-        let current = sessionID
-        let deliveryDestination = insertionDestination
-        let pendingDestination = destinationTask
-        let clipboardChangeCount = recordingClipboardChangeCount
-        let test = isTestSession
-        let testContinuation = activeContinuation
-        let archiveContext = recordingHistory
-        let dictionary = recordingDictionary
-        let correctionEnabled = recordingTextCorrectionEnabled
-        let language = archiveContext?.language ?? language
-        let prompt = archiveContext?.prompt ?? TranscriptCleaner.vocabularyPrompt(
-            (dictionary.vocabularyTerms + [vocabulary]).joined(separator: ", "))
-        let clean = archiveContext?.removeFillers ?? cleanText
-        transcriptionTask = Task { [weak self] in
-            guard let self, current == sessionID, !Task.isCancelled else { return }
-            var capturedAudio: CapturedAudio?
-            var transcriptionResult: TranscriptionResult?
-            var formattedText = ""
-            var transcriptionStarted: TimeInterval?
-            var transcriptionWallSeconds: Double?
-            var archiveOutcome: DictationArchiveRecord.Outcome?
-            var archiveError: String?
-            var archiveDelivery: DictationDeliveryStatus?
-            var textProcessing: TextProcessingRecord?
-            defer {
-                if let audio = capturedAudio {
-                    if let context = archiveContext, let outcome = archiveOutcome,
-                       current == sessionID, !Task.isCancelled {
-                        if let original = audio.original {
-                            let record = context.record(
-                                audio: audio, original: original, releasedAt: releaseDate, completedAt: Date(),
-                                outcome: outcome, result: transcriptionResult, transcript: formattedText,
-                                transcriptionWallSeconds: transcriptionWallSeconds,
-                                releaseToResultSeconds: ProcessInfo.processInfo.systemUptime - releasedAt,
-                                deliveryStatus: archiveDelivery, errorMessage: archiveError,
-                                engineVersion: engine.engineVersion, textProcessing: textProcessing
-                            )
-                            history.enqueue(record: record, originalAudio: original.url,
-                                            transcriptionAudio: audio.url, cleanup: { audio.cleanup() })
-                        } else {
-                            history.reportMissingOriginal()
-                            audio.cleanup()
-                        }
-                    } else {
-                        // Cancellation/short holds and retention-off takes remain ephemeral.
-                        audio.cleanup()
-                    }
-                }
-            }
-            do {
-                let audio = try await recorder.stop()
-                capturedAudio = audio
-                guard current == sessionID, !Task.isCancelled else { return }
-                guard audio.duration >= 0.25 else {
-                    cancelDictation()
-                    return
-                }
-                let processingStart = ProcessInfo.processInfo.systemUptime
-                transcriptionStarted = processingStart
-                let result = try await engine.transcribe(audio.url, language: language, prompt: prompt)
-                transcriptionWallSeconds = ProcessInfo.processInfo.systemUptime - processingStart
-                guard current == sessionID, !Task.isCancelled else { return }
-                transcriptionResult = result
-                let cleaned = TranscriptCleaner.clean(result.text, removeFillers: clean)
-                let transcript = dictionary.apply(to: cleaned)
-                guard !transcript.isEmpty else {
-                    archiveOutcome = .noSpeech
-                    completeWithoutText("No speech detected. Try again a little closer to the microphone.")
-                    return
-                }
-                let capturedDestination: InsertionDestination
-                if test {
-                    capturedDestination = .clipboard // In-app testing never delivers.
-                } else if let deliveryDestination {
-                    capturedDestination = deliveryDestination
-                } else {
-                    capturedDestination = await pendingDestination?.value ?? .clipboard
-                }
-                guard current == sessionID, !Task.isCancelled else { return }
-                let resolvedDestination: InsertionDestination
-                if let field = capturedDestination.target,
-                   !InsertionCapturePolicy.permitsInsertion(capturedAt: field.capturedAt, releasedAt: releasedAt) {
-                    // Slow metadata may finish after release, but the actual
-                    // focused field/caret must have been captured during the hold.
-                    resolvedDestination = .clipboard
-                } else {
-                    resolvedDestination = capturedDestination
-                }
-                let target = resolvedDestination.target
-                let destination = target.flatMap { $0.selection == nil ? nil : DictationDestination.field($0) }
-                let previous = test ? testContinuation : destination.flatMap {
-                    self.continuationMemory.continuation(for: $0, now: ProcessInfo.processInfo.systemUptime)
-                }
-                let structured = SpokenListFormatter.format(transcript, context: previous?.list)
-                if correctionEnabled, !structured.text.isEmpty { statusMessage = "Refining text locally…" }
-                let processed = try await textCorrection.process(
-                    structured.text, dictionary: dictionary, dictionaryChangedText: cleaned != transcript,
-                    language: result.language, enabledForTake: correctionEnabled)
-                guard current == sessionID, !Task.isCancelled else { return }
-                textProcessing = processed
-                let formatted = structured.replacingText(processed.outputText)
-                formattedText = formatted.text
-                let composed = DictationComposer.compose(formatted, previous: previous)
-                lastTranscript = composed.preview
-                lastAudioSeconds = audio.duration
-                lastTranscriptionSeconds = result.processingSeconds + (processed.processingSeconds ?? 0)
-                if test {
-                    continuationMemory.remember(composed.continuation, for: .test, now: ProcessInfo.processInfo.systemUptime)
-                    lastDelivery = formatted.isControlOnly ? listControlMessage(formatted) + " · Nothing was pasted." : "Test complete. Nothing was pasted."
-                    statusMessage = formatted.isControlOnly ? listControlMessage(formatted) : "Ready to copy"
-                    lastDeliveryStatus = .tested
-                } else if composed.insertion.isEmpty {
-                    // Commands change only our short-lived list state. Never
-                    // send an empty paste or a Return key to finish a list.
-                    if let anchor = TextInserter.unchangedAnchor(target) {
-                        rememberContinuation(composed.continuation, from: destination, at: .field(anchor))
-                        lastDelivery = listControlMessage(formatted)
-                        statusMessage = lastDelivery
-                        lastDeliveryStatus = .listUpdated
-                    } else {
-                        lastDelivery = "List state unchanged: the original cursor could not be confirmed."
-                        statusMessage = "Cursor changed"
-                        lastDeliveryStatus = .unconfirmed
-                    }
-                } else {
-                    activity = .delivering
-                    switch resolvedDestination {
-                    case .field: statusMessage = "Inserting your words…"
-                    case .clipboard: statusMessage = "Copying to clipboard…"
-                    case .blocked: statusMessage = "Keeping your words here…"
-                    }
-                    let outcome = await inserter.deliver(
-                        composed.insertion, copying: formatted.text,
-                        to: resolvedDestination,
-                        clipboardUnchangedSince: clipboardChangeCount
-                    )
-                    guard current == sessionID, !Task.isCancelled else { return }
-                    switch outcome {
-                    case .inserted:
-                        // Advance numbering only after delivery, and only at
-                        // the exact caret left by this insertion. Editors that
-                        // omit caret metadata still get formatted text, but
-                        // never guessed cross-hold continuation.
-                        if let anchor = inserter.confirmedAnchor {
-                            rememberContinuation(composed.continuation, from: destination, at: .field(anchor))
-                        } else if let destination {
-                            continuationMemory.forget(destination)
-                        }
-                        lastDelivery = "Inserted at your cursor"
-                        statusMessage = "Inserted"
-                        lastDeliveryStatus = .inserted
-                    case .copied(let reason):
-                        lastTranscript = formatted.text
-                        lastDelivery = reason
-                        statusMessage = "Copied"
-                        lastDeliveryStatus = .copied
-                    case .unconfirmed(let clipboardBackup):
-                        // An editor may have accepted the text without exposing
-                        // its new caret. Never retry or guess list continuation.
-                        if let destination { continuationMemory.forget(destination) }
-                        lastTranscript = formatted.text
-                        lastDelivery = clipboardBackup
-                            ? "Insertion unconfirmed. Copied to clipboard if needed."
-                            : "Insertion unconfirmed. Your words are here to copy; clipboard unchanged."
-                        statusMessage = clipboardBackup ? "Copied as backup" : "Check insertion"
-                        lastDeliveryStatus = .unconfirmed
-                    case .failed(let reason):
-                        // Copying a failed chunk must not duplicate list items
-                        // that were already delivered in an earlier hold.
-                        lastTranscript = formatted.text
-                        lastDelivery = reason
-                        statusMessage = "Ready to copy"
-                        lastDeliveryStatus = .failed
-                    }
-                }
-                activity = lastDeliveryStatus == .failed ? .failed : .success
-                archiveOutcome = .transcribed
-                archiveDelivery = lastDeliveryStatus
-                archiveError = lastDeliveryStatus == .failed ? lastDelivery : nil
-                if [.unavailable, .failed, .rejected, .skipped].contains(processed.status), !structured.isControlOnly {
-                    lastDelivery += " · Text correction skipped"
-                }
-                destinationTask = nil
-                insertionDestination = nil
-                activeContinuation = nil
-                recordingListHint = nil
-                recordingInputName = nil
-                dismissHUDAfter(seconds: lastDeliveryStatus == .failed || lastDeliveryStatus == .unconfirmed ? 4 : 1.7)
-                scheduleUnload()
-            } catch is CancellationError {
-                settleCancelledSession(current)
-            } catch EngineError.cancelled {
-                settleCancelledSession(current)
-            } catch AudioRecordingError.cancelled {
-                settleCancelledSession(current)
-            } catch AudioRecordingError.noAudio where releasedDuringStartup {
-                guard current == sessionID, !Task.isCancelled else { return }
-                cancelDictation()
-            } catch AudioRecordingError.notRecording where releasedDuringStartup {
-                guard current == sessionID, !Task.isCancelled else { return }
-                cancelDictation()
-            } catch {
-                guard current == sessionID, !Task.isCancelled else { return }
-                archiveOutcome = .failed
-                archiveError = error.localizedDescription
-                if let started = transcriptionStarted {
-                    transcriptionWallSeconds = ProcessInfo.processInfo.systemUptime - started
-                }
-                showError(error.localizedDescription)
-                scheduleUnload()
-            }
-        }
-    }
-
-    private func completeWithoutText(_ message: String) {
-        showError(message)
-        scheduleUnload()
-    }
-
-    private func settleCancelledSession(_ current: UUID) {
-        guard current == sessionID, !Task.isCancelled else { return }
-        cancelDictation()
-    }
-
-    private func prepareContinuation(for destination: DictationDestination?) {
-        activeContinuation = destination.flatMap {
-            continuationMemory.continuation(for: $0, now: ProcessInfo.processInfo.systemUptime)
-        }
-        if let list = activeContinuation?.list {
-            recordingListHint = list.style == .numbered ? "Continuing at item \(list.nextNumber)" : "Continuing your list"
-        } else {
-            recordingListHint = nil
-        }
-    }
-
-    private func rememberContinuation(_ continuation: DictationContinuation?, from previous: DictationDestination?, at next: DictationDestination) {
-        if let previous { continuationMemory.forget(previous) }
-        continuationMemory.remember(continuation, for: next, now: ProcessInfo.processInfo.systemUptime)
-    }
-
-    private func listControlMessage(_ formatted: FormattedDictation) -> String {
-        if formatted.endedList && formatted.context == nil { return "List finished" }
-        return formatted.continuesPreviousList ? "List continued" : "List started"
-    }
-
-    private func showError(_ message: String) {
-        destinationTask?.cancel()
-        destinationTask = nil
-        insertionDestination = nil
-        recordingInputName = nil
-        activity = .failed
-        errorMessage = message
-        statusMessage = message
-        onHUDVisibility?(true)
-        dismissHUDAfter(seconds: 4)
-    }
-
-    private func dismissHUDAfter(seconds: Double) {
-        hudTask?.cancel()
-        hudTask = Task { [weak self] in
-            do { try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000)) }
-            catch { return }
-            guard let self, !isBusy else { return }
-            onHUDVisibility?(false)
-            if activity == .success {
-                activity = .idle
-                statusMessage = "Ready when you are"
-            }
-        }
-    }
-
     private func startRecordingTimer() {
         stopRecordingTimer()
         let timer = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in
@@ -851,20 +775,6 @@ final class SottoController: ObservableObject {
 
     private func resetLevels() {
         recordingFeedback.clearLevels()
-    }
-
-    private func scheduleUnload() {
-        idleTask?.cancel()
-        guard !isBusy, engineStatus == .ready,
-              let delay = LifecyclePolicy.unloadDelay(idleMinutes: idleMinutes) else { return }
-        idleTask = Task { [weak self] in
-            if delay > 0 {
-                do { try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000)) }
-                catch { return }
-            }
-            guard let self, !isBusy, !Task.isCancelled else { return }
-            engine.unload(reason: "Resting after inactivity")
-        }
     }
 
     private func retryPermissions() {
@@ -907,40 +817,5 @@ final class SottoController: ObservableObject {
         }
     }
 
-    private func installLifecycleObservers() {
-        observers.append(NotificationCenter.default.addObserver(
-            forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main
-        ) { [weak self] _ in MainActor.assumeIsolated { self?.refreshPermissions() } })
-        for name in [NSWorkspace.willSleepNotification, NSWorkspace.sessionDidResignActiveNotification,
-                     NSWorkspace.willPowerOffNotification] {
-            workspaceObservers.append(NSWorkspace.shared.notificationCenter.addObserver(
-                forName: name, object: nil, queue: .main
-            ) { [weak self] _ in
-                MainActor.assumeIsolated { self?.restForSystem() }
-            })
-        }
-        lockObserver = DistributedNotificationCenter.default().addObserver(
-            forName: NSNotification.Name("com.apple.screenIsLocked"), object: nil, queue: .main
-        ) { [weak self] _ in MainActor.assumeIsolated { self?.restForSystem() } }
-        let pressure = DispatchSource.makeMemoryPressureSource(eventMask: [.warning, .critical], queue: .main)
-        pressure.setEventHandler { [weak self] in
-            MainActor.assumeIsolated {
-                guard let self, !self.isBusy else { return }
-                self.unloadModel()
-                self.textCorrection.unload()
-            }
-        }
-        memoryPressure = pressure
-        pressure.resume()
-    }
 
-    private func restForSystem() {
-        stopShortcutCheck()
-        cancelDictation()
-        continuationMemory.removeAll()
-        idleTask?.cancel()
-        warmTask?.cancel()
-        engine.unload(reason: "Resting while your Mac is away")
-        textCorrection.unload()
-    }
 }

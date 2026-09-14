@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <array>
 #include <charconv>
+#include <cerrno>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -30,8 +31,13 @@
 #include <thread>
 #include <variant>
 #include <vector>
-#include <sys/event.h>
 #include <unistd.h>
+#if defined(__APPLE__)
+#include <sys/event.h>
+#elif defined(__linux__)
+#include <signal.h>
+#include <sys/prctl.h>
+#endif
 
 namespace {
 
@@ -60,22 +66,30 @@ void libraryLog(ggml_log_level level, const char *message, void *) {
 }
 
 void watchParent() {
-    // kqueue blocks without polling, including while a model is loading or a
-    // Metal decode is in flight. An app crash must not leave a resident model.
     const pid_t parent = getppid();
-    if (parent <= 1) return;
-    const int queue = kqueue();
-    if (queue < 0) return;
-    struct kevent change;
-    EV_SET(&change, parent, EVFILT_PROC, EV_ADD | EV_ONESHOT, NOTE_EXIT, 0, nullptr);
-    if (kevent(queue, &change, 1, nullptr, 0, nullptr) < 0) {
-        close(queue);
+    if (parent <= 1) std::_Exit(0);
+#if defined(__linux__)
+    // Kill even during an uninterruptible model call if the supervisor dies.
+    if (prctl(PR_SET_PDEATHSIG, SIGKILL) == 0) {
         if (getppid() != parent) std::_Exit(0);
         return;
     }
-    std::thread([queue] {
-        struct kevent event;
-        while (kevent(queue, nullptr, 0, &event, 1, nullptr) < 0 && errno == EINTR) {}
+#elif defined(__APPLE__)
+    const int queue = kqueue();
+    struct kevent change;
+    EV_SET(&change, parent, EVFILT_PROC, EV_ADD | EV_ONESHOT, NOTE_EXIT, 0, nullptr);
+    if (queue >= 0 && kevent(queue, &change, 1, nullptr, 0, nullptr) == 0) {
+        std::thread([queue] {
+            struct kevent event;
+            while (kevent(queue, nullptr, 0, &event, 1, nullptr) < 0 && errno == EINTR) {}
+            std::_Exit(0);
+        }).detach();
+        return;
+    }
+    if (queue >= 0) close(queue);
+#endif
+    std::thread([parent] {
+        while (getppid() == parent) std::this_thread::sleep_for(std::chrono::seconds(1));
         std::_Exit(0);
     }).detach();
 }
@@ -286,11 +300,11 @@ int main(int argc, char **argv) {
     }
     std::error_code error;
     if (model.empty() || !std::filesystem::is_regular_file(model, error)) {
-        emitError("The local model is missing. Download it in Sotto first.");
+        emitError("The speech model is missing. Configure the server's speech model path.");
         return 2;
     }
     if (vadModel.empty() || !std::filesystem::is_regular_file(vadModel, error)) {
-        emitError("The local speech detector is missing. Rebuild Sotto to restore it.");
+        emitError("The speech detector is missing. Configure the server's VAD model path.");
         return 2;
     }
 

@@ -26,19 +26,19 @@ public actor ConfigurationFile {
     public static let maximumFileSize = 1_048_576
 
     public init(url: URL? = nil) {
-        self.url = (url ?? FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".murmur", isDirectory: true)
+        self.url = (url ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Sotto Dev", isDirectory: true)
             .appendingPathComponent("config.json")).standardizedFileURL
     }
 
-    /// Migration is used only when the file is absent. Existing invalid files are not rewritten.
-    public func load(orCreate migration: SottoConfiguration) -> Result<SottoConfiguration, ConfigurationFileError> {
+    /// Initial preferences are used only when the file is absent. Existing invalid files are not rewritten.
+    public func load(orCreate initial: SottoConfiguration) -> Result<SottoConfiguration, ConfigurationFileError> {
         result {
             let directory = try openDirectory(create: true)
             defer { close(directory) }
             do { return try document(in: directory).configuration }
             catch ConfigurationFileError.missing {
-                let data = try encoded(migration)
+                let data = try encoded(initial)
                 let configuration = try decoded(data)
                 do { try publish(data, in: directory, replacing: nil) }
                 catch ConfigurationFileError.changedDuringWrite {

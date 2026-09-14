@@ -6,9 +6,14 @@ import Foundation
 /// synchronous, even while a driver is still servicing start() on its queue.
 final class AudioCaptureRequest: @unchecked Sendable {
     let id = UUID()
+    let onChunk: (@Sendable (CapturedAudioChunk) -> Void)?
     private enum State { case open, released, cancelled }
     private let lock = NSLock()
     private var state: State = .open
+
+    init(onChunk: (@Sendable (CapturedAudioChunk) -> Void)? = nil) {
+        self.onChunk = onChunk
+    }
 
     var acceptsAudio: Bool { lock.withLock { state == .open } }
     var isReleased: Bool { lock.withLock { state == .released } }

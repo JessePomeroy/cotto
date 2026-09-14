@@ -452,3 +452,19 @@ func sottoDuration(_ seconds: Double) -> String {
     let total = max(0, Int(seconds.isFinite ? seconds : 0))
     return String(format: "%d:%02d", total / 60, total % 60)
 }
+
+/// Reserve the action-feedback slot so an error never moves the controls below it.
+struct SottoActionMessage: View {
+    var message: String?
+
+    var body: some View {
+        Text(message ?? "")
+            .font(.caption)
+            .foregroundStyle(SottoPalette.warning)
+            .lineLimit(2)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(height: 32, alignment: .topLeading)
+            .help(message ?? "")
+            .accessibilityHidden(message == nil)
+    }
+}

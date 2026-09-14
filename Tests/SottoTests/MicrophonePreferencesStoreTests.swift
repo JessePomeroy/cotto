@@ -101,7 +101,7 @@ final class MicrophonePreferencesStoreTests: XCTestCase {
                 profiles: [MicrophoneProfile(id: "desk", name: "Desk", priority: [usb, builtIn])],
                 activeProfileID: "desk", selection: .fixed(usb)
             )
-            external.vocabulary = "Existing words"
+            external.holdKey = "fn"
             let bytes = try JSONEncoder().encode(external)
             try bytes.write(to: fixture.file.url, options: .atomic)
             await fixture.configuration.reload()
@@ -116,8 +116,7 @@ final class MicrophonePreferencesStoreTests: XCTestCase {
             let saved = try await fixture.file.read().get()
             XCTAssertEqual(saved.microphones.selection, .automatic)
             XCTAssertEqual(saved.microphones.activeProfile.priority, [usb, builtIn])
-            XCTAssertEqual(saved.vocabulary, "Existing words")
-            XCTAssertNil(fixture.defaults.data(forKey: MicrophonePreferencesStore.preferencesKey))
+            XCTAssertEqual(saved.holdKey, "fn")
         }
     }
 
@@ -141,18 +140,16 @@ final class MicrophonePreferencesStoreTests: XCTestCase {
     @MainActor
     private func withPreferences(_ operation: @MainActor (MicrophonePreferencesStore, MicrophoneConfigurationFixture) async throws -> Void) async throws {
         let suite = "SottoMicrophoneTests.\(UUID().uuidString)"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(suite, isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
         defer {
-            defaults.removePersistentDomain(forName: suite)
             try? FileManager.default.removeItem(at: root)
         }
         let file = ConfigurationFile(url: root.appendingPathComponent("config.json"))
-        let configuration = ConfigurationStore(file: file, legacyDefaults: defaults)
+        let configuration = ConfigurationStore(file: file)
         await configuration.start()
         configuration.stopWatching()
-        let fixture = MicrophoneConfigurationFixture(configuration: configuration, file: file, defaults: defaults)
+        let fixture = MicrophoneConfigurationFixture(configuration: configuration, file: file)
         do { try await operation(MicrophonePreferencesStore(configuration: configuration), fixture) }
         catch { await fixture.flush(); throw error }
         await fixture.flush()
@@ -163,18 +160,16 @@ final class MicrophonePreferencesStoreTests: XCTestCase {
 private final class MicrophoneConfigurationFixture {
     let configuration: ConfigurationStore
     let file: ConfigurationFile
-    let defaults: UserDefaults
     private var restoredConfigurations: [ConfigurationStore] = []
 
-    init(configuration: ConfigurationStore, file: ConfigurationFile, defaults: UserDefaults) {
+    init(configuration: ConfigurationStore, file: ConfigurationFile) {
         self.configuration = configuration
         self.file = file
-        self.defaults = defaults
     }
 
     func restoredStore() async -> MicrophonePreferencesStore {
         await flush()
-        let restored = ConfigurationStore(file: file, legacyDefaults: defaults)
+        let restored = ConfigurationStore(file: file)
         await restored.start()
         restored.stopWatching()
         restoredConfigurations.append(restored)
