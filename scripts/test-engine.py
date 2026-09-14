@@ -250,6 +250,21 @@ def main():
                         assert "country" in result["text"].lower(), result
                 print("Passed: float32 speech and very quiet speech (-28 dB)", flush=True)
 
+                if args.audio.name == "jfk.wav":
+                    # Cross Whisper's 30-second window with vocabulary hints.
+                    # Timestamp-free decoding dropped part of the third repeat.
+                    repeated = temporary / "repeated-speech.wav"
+                    float_audio(repeated, (samples + [0.0] * 16000) * 3)
+                    result = engine.transcribe(repeated, "repeated-speech", language="en",
+                                               vocabularyTerms=["MiniMax", "Codex"])
+                    assert result["type"] == "result", result
+                    normalized = " ".join(re.findall(r"[a-z]+", result["text"].lower()))
+                    for phrase in ("my fellow americans", "ask not what your country can do for you",
+                                   "ask what you can do for your country"):
+                        assert normalized.count(phrase) == 3, result
+                    assert "<|" not in result["text"], "Timestamp tokens leaked into plain text"
+                    print("Passed: every repeated passage survives across decoding windows with vocabulary hints", flush=True)
+
                 # Silence after speech must not inherit the previous transcript.
                 assert engine.transcribe(pcm, "after-speech")["text"] == ""
                 assert engine.transcribe(noise, "noise-after-speech")["text"] == ""

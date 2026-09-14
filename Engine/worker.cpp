@@ -301,7 +301,10 @@ void transcribe(whisper_context *context, whisper_vad_context *vad, int threads,
         auto parameters = whisper_full_default_params(WHISPER_SAMPLING_BEAM_SEARCH);
         parameters.n_threads = threads;
         parameters.no_context = true; // Never leak one dictation into the next.
-        parameters.no_timestamps = true;
+        // Keep timestamp tokens during decoding: disabling them can omit whole
+        // passages when vocabulary hints are present. Segment text below still
+        // returns plain text, without exposing timestamps to the client.
+        parameters.no_timestamps = false;
         parameters.translate = false;
         parameters.print_special = false;
         parameters.print_progress = false;
