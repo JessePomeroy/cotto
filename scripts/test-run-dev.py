@@ -66,8 +66,8 @@ def main():
         try:
             output, invoked = run("start", "8493")
             fields = pid_file.read_text().split()
-            assert len(fields) == 2 and fields[1] == "8493", fields
             tracked_pid = int(fields[0])
+            assert len(fields) == 2 and fields[1] == "8493", fields
             assert "http://127.0.0.1:8493/v1/health" in invoked, invoked
             assert "SOTTO_SERVER_URL=http://127.0.0.1:8493" in invoked, invoked
 
