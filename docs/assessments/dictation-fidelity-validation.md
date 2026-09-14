@@ -29,3 +29,9 @@ These cases completed in **0.216–0.420 seconds after upload finish**. Test gen
 The native Dev app was opened and visually inspected: server online, both models ready, shared fixed-height cleanup editor, reset action, and distinct Dev identity. Countdown tests verify the 150/179-second boundaries, automatic-stop notice, reset behavior, and unchanged layout footprint. Live microphone behavior remains available for Ben's testing.
 
 Detailed local logs and fixture outputs are in the ignored `.local/fidelity/` directory; the aggregate Mac log is `.local/fidelity-tests-final.log`. The independent Dev runner is available at `http://localhost:8391`; `scripts/run-dev.sh status` checks it.
+
+## PR review validation
+
+After incorporating the parent PR's endpoint, Dev runner, and decoded-list fixes, the combined branch passed **240 Mac tests** and **90 Linux ARM64 tests**, plus the isolated Dev runner process/port checks. Duplicate vocabulary now fails request validation before helper execution. Four apology examples that previously allowed lost wording, numbers, or negations now reject those proposals; clear quantity and negation corrections still pass. The historical assessment JSON remains explicitly labeled as a pre-fix baseline.
+
+The large prefixed list-number finding was a false positive: `Item 2026, apples.` and `Number 2026, apples.` produce item 2026, while ordinary `2026. Revenue increased.` remains prose. The benchmark imports `sys`, and both helper harnesses expose `--server` through their shared argument function; all three `--help` commands passed. Review logs are in `.local/pr-review/`.

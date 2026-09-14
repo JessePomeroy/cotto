@@ -127,6 +127,12 @@ enum CorrectionAlignment {
                     let left = Array(input[max(0, start - 2)..<start].map(\.word))
                     let replacement = Array(input[(lastCue + 1)...end].map(\.word))
                     let right = Array(input[(end + 1)..<min(input.count, end + 3)].map(\.word))
+                    // "Sorry" also introduces ordinary apologies. Only exempt
+                    // a direct quantity change or a repeated statement
+                    // with changed polarity; arbitrary restarts stay protected.
+                    if cueWords == ["sorry"], !isExplicitSorryRepair(
+                        abandoned: Array(input[start..<firstCue].map(\.word)), replacement: replacement
+                    ) { continue }
                     let expected = left + replacement + right
                     let positions = occurrenceStarts(expected, in: output).filter { position in
                         (start != 0 || position == 0) && (end + 1 != input.count || position + expected.count == output.count)
@@ -151,6 +157,18 @@ enum CorrectionAlignment {
             protectedSource.replaceCharacters(in: removal, with: "")
         }
         return (omittingVerifiedHesitations(protectedSource as String, candidate: candidate), repairs)
+    }
+
+    private static func isExplicitSorryRepair(abandoned: [String], replacement: [String]) -> Bool {
+        guard abandoned != replacement else { return false }
+        let quantities = Set("zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty thirty forty fifty sixty seventy eighty ninety hundred thousand million billion trillion first second third fourth fifth sixth seventh eighth ninth tenth half quarter percent".split(separator: " ").map(String.init))
+        func isQuantity(_ word: String) -> Bool {
+            quantities.contains(word) || word.unicodeScalars.allSatisfy(CharacterSet.decimalDigits.contains)
+        }
+        if abandoned.allSatisfy(isQuantity), replacement.allSatisfy(isQuantity) { return true }
+        let repeated = abandoned.filter { !isNegative($0) }
+        return !repeated.isEmpty && repeated == replacement.filter { !isNegative($0) }
+            && abandoned.filter(isNegative) != replacement.filter(isNegative)
     }
 
     // A proposal may remove an isolated hesitation without abandoning any

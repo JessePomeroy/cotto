@@ -139,9 +139,11 @@ final class TextCorrectionPolicyTests: XCTestCase {
             ("I want the color to be orange, er, yellow.", "I want the color to be yellow."),
             ("I want the color to be orange, erm, yellow today.", "I want the color to be yellow today."),
             ("42, sorry, 24.", "24."),
+            ("Make it forty two, sorry, twenty four before lunch.", "Make it twenty four before lunch."),
             ("Make it 42, I mean, 24.", "Make it 24."),
             ("Make it 42, correction, 24 before lunch.", "Make it 24 before lunch."),
             ("I cannot merge this, sorry, I can merge this.", "I can merge this."),
+            ("I can merge this, sorry, I cannot merge this.", "I cannot merge this."),
             ("I can merge this, I mean, I cannot merge this.", "I cannot merge this."),
             ("We should not ship this, correction, we should ship this tomorrow.", "We should ship this tomorrow."),
         ] {
@@ -176,6 +178,19 @@ final class TextCorrectionPolicyTests: XCTestCase {
             XCTAssertNotNil(result.rejectionReason, original)
         }
         XCTAssertNil(TextCorrectionPolicy.rejectionReason(original: "I want the color to be orange or yellow.", candidate: "I want the color to be orange or yellow."))
+    }
+
+    func testCommaDelimitedApologiesDoNotExemptUnrelatedDictatedContent() {
+        for (original, candidate) in [
+            ("I will definitely, sorry, I will cancel the meeting.", "I will cancel the meeting."),
+            ("I have to leave, sorry, I missed the meeting.", "I missed the meeting."),
+            ("I will not attend, sorry, I have an appointment.", "I have an appointment."),
+            ("Keep 42 records, sorry, I cannot help.", "I cannot help."),
+        ] {
+            let result = TextCorrectionPolicy.evaluate(original: original, candidate: candidate)
+            XCTAssertTrue(result.verifiedRepairs.isEmpty, original)
+            XCTAssertNotNil(result.rejectionReason, original)
+        }
     }
 
     func testNegationsRemainAttachedToTheirOriginalAction() {

@@ -151,6 +151,9 @@ public actor NativeInference {
               vocabularyTerms.reduce(0, { $0 + $1.utf8.count }) <= 384 * 1024 else {
             throw InferenceError.invalidRequest("Audio, language, or Whisper prompt is invalid.")
         }
+        guard Set(vocabularyTerms).count == vocabularyTerms.count else {
+            throw InferenceError.invalidRequest("Whisper vocabulary terms must be unique.")
+        }
         let digest = try await verifier.verify(configuration.speechModel, pin: speechPin)
         let request = SpeechRequest(id: UUID().uuidString, path: audioURL.path, language: language, vocabularyTerms: vocabularyTerms)
         let data = try JSONEncoder().encode(request)

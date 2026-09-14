@@ -1,5 +1,6 @@
 {
   "assessedCommit": "683429892dd9296749d7e3200855a35a705078b0",
+  "assessmentStage": "Historical pre-fix baseline; post-fix validation is recorded in dictation-fidelity-validation.md.",
   "date": "2026-09-13",
   "scope": "Actual Whisper large-v3-turbo and Qwen3-4B-Instruct-2507 MLX on this Mac; synthetic fixtures, not a human accuracy benchmark. No product behavior changed.",
   "textProofreading": {
