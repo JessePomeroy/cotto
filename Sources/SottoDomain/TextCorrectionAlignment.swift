@@ -30,6 +30,9 @@ enum CorrectionAlignment {
         var range: NSRange
     }
 
+    private static let repairCuePattern = #"(?i)\b(?:er|err|erm|i\s+mean|correction|sorry)\b"#
+    private static let repairSpanLimit = 8
+    private static let hesitations: Set<String> = ["um", "uh", "er", "err", "erm"]
     private static let negatives: Set<String> = [
         "no", "not", "never", "neither", "nor", "without", "nothing", "nobody", "none", "nowhere",
     ]
@@ -51,12 +54,23 @@ enum CorrectionAlignment {
         }
     }
 
-    static func isWithinAlignmentBudget(original: String, candidate: String) -> Bool {
+    static func isWithinValidationBudget(original: String, candidate: String) -> Bool {
         // Two score passes run sequentially. Cap each UInt32 matrix at 64 MB;
         // grapheme counts alone do not bound the number of Unicode word tokens.
         let maximumCells = 16_000_000
+        let input = tokens(original)
         let width = tokens(candidate).count + 1
-        return tokens(original).count + 1 <= maximumCells / width
+        guard input.count + 1 <= maximumCells / width else { return false }
+
+        // Failed or ambiguous cues do not count toward the eight verified
+        // repairs. Budget every possible span's full-output scan, including its
+        // two anchors on each side, before starting any repair search.
+        let maximumScanComparisons = 16_000_000
+        let cueCount = matches(repairCuePattern, original).count
+        let hesitationCount = input.filter { hesitations.contains($0.word) }.count
+        let comparisonsPerOutputToken = cueCount * repairSpanLimit * repairSpanLimit * (repairSpanLimit + 4)
+            + hesitationCount * 4
+        return comparisonsPerOutputToken <= maximumScanComparisons / width
     }
 
     static func preservationReason(original: String, candidate: String, preferredTerms: Set<String>) -> String? {
@@ -104,7 +118,7 @@ enum CorrectionAlignment {
         var removals: [NSRange] = []
         var repairs: [VerifiedTextRepair] = []
         var repairedUnits: Set<Int> = []
-        let cues = matches(#"(?i)\b(?:er|err|erm|i\s+mean|correction|sorry)\b"#, original)
+        let cues = matches(repairCuePattern, original)
         for cue in cues where repairs.count < 8 {
             guard let firstCue = input.firstIndex(where: { NSIntersectionRange($0.range, cue.range).length > 0 }),
                   let lastCue = input.lastIndex(where: { NSIntersectionRange($0.range, cue.range).length > 0 }),
@@ -128,18 +142,20 @@ enum CorrectionAlignment {
             var verified: (Int, Int)?
             // At most eight source tokens immediately before the cue may be
             // abandoned, within one answer. Choose the smallest anchored deletion.
-            for start in stride(from: firstCue - 1, through: max(unitStart, firstCue - 8), by: -1) {
+            for start in stride(from: firstCue - 1, through: max(unitStart, firstCue - repairSpanLimit), by: -1) {
                 if start > 0, input[start].range == input[start - 1].range { continue }
-                for end in (lastCue + 1)...min(unitEnd, lastCue + 8) {
+                for end in (lastCue + 1)...min(unitEnd, lastCue + repairSpanLimit) {
                     if end + 1 < input.count, input[end].range == input[end + 1].range { continue }
                     let left = Array(input[max(0, start - 2)..<start].map(\.word))
                     let replacement = Array(input[(lastCue + 1)...end].map(\.word))
                     let right = Array(input[(end + 1)..<min(input.count, end + 3)].map(\.word))
                     // "Sorry" also introduces ordinary apologies. Only exempt
-                    // a direct quantity change or a repeated statement
-                    // with changed polarity; arbitrary restarts stay protected.
+                    // a single-word replacement, direct quantity change, or a
+                    // repeated statement with changed polarity. Whole unrelated
+                    // clauses stay protected.
                     if cueWords == ["sorry"], !isExplicitSorryRepair(
-                        abandoned: Array(input[start..<firstCue].map(\.word)), replacement: replacement
+                        abandoned: Array(input[start..<firstCue].map(\.word)), replacement: replacement,
+                        anchoredWordReplacement: start > unitStart || end == unitEnd
                     ) { continue }
                     let expected = left + replacement + right
                     let positions = occurrenceStarts(expected, in: output).filter { position in
@@ -167,8 +183,11 @@ enum CorrectionAlignment {
         return (omittingVerifiedHesitations(protectedSource as String, candidate: candidate), repairs)
     }
 
-    private static func isExplicitSorryRepair(abandoned: [String], replacement: [String]) -> Bool {
+    private static func isExplicitSorryRepair(abandoned: [String], replacement: [String], anchoredWordReplacement: Bool) -> Bool {
         guard abandoned != replacement else { return false }
+        // A whole short answer before an apology must not be mistaken for the
+        // first word of a following clause ("Agreed, sorry, I was distracted").
+        if anchoredWordReplacement, abandoned.count == 1, replacement.count == 1 { return true }
         let quantities = Set("zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty thirty forty fifty sixty seventy eighty ninety hundred thousand million billion trillion first second third fourth fifth sixth seventh eighth ninth tenth half quarter percent".split(separator: " ").map(String.init))
         func isQuantity(_ word: String) -> Bool {
             quantities.contains(word) || word.unicodeScalars.allSatisfy(CharacterSet.decimalDigits.contains)
@@ -186,7 +205,6 @@ enum CorrectionAlignment {
         let source = original as NSString
         let input = tokens(original)
         let output = tokens(candidate).map(\.word)
-        let hesitations: Set<String> = ["um", "uh", "er", "err", "erm"]
         let punctuation = CharacterSet(charactersIn: ",—–-")
         let quotes = CharacterSet(charactersIn: "\"'‘’“”`")
         var removals: [NSRange] = []

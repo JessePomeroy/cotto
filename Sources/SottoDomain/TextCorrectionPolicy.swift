@@ -42,7 +42,7 @@ public enum TextCorrectionPolicy {
                 return "The text model added commentary."
             }
         }
-        guard CorrectionAlignment.isWithinAlignmentBudget(original: original, candidate: output) else {
+        guard CorrectionAlignment.isWithinValidationBudget(original: original, candidate: output) else {
             return "The rewrite was too complex to validate."
         }
         // Lists are structured before proofreading; their explicit numbering,

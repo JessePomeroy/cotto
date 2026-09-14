@@ -46,7 +46,7 @@ Standalone numeric answers remain content; repeated numbered items preserve thei
 
 Proofreading cannot create or advance list state. Checks reject changed list markers/structure, protected quantities, altered negation, lost preferred terms, excessive wording changes, control tokens, and response preambles. A change from digits to words can be rejected to preserve a quantity's original representation. Ordered answer coverage rejects deletion of short answers or whole sentences even when a long paragraph remains. Explicit localized corrections may replace quantities or negations only within a verified abandoned phrase; other words remain protected. Existing list-marker corrections remain subject to the list-state guard.
 
-Because `sorry` can introduce an apology, its deletion exception requires a direct quantity replacement or repeated wording with a negation change. Other lexical `sorry` proposals can conservatively fall back to the source; the prompt does not bypass this guard. The other explicit repair cues retain their bounded alignment checks.
+Because `sorry` can introduce an apology, its deletion exception requires an anchored single-word replacement, a direct quantity replacement, or repeated wording with a negation change. Broader lexical or clause restarts can conservatively fall back to the source; the prompt does not bypass this guard. The other explicit repair cues retain their bounded alignment checks.
 
 Input is bounded to 6,000 characters. Helpers use an 8,192-token context and a 2,048-token output limit. Preferred-term hints are bounded to 80 terms, 4,096 UTF-8 bytes total, and 256 bytes per term. Token/context limits can reject an otherwise short multilingual or vocabulary-heavy input.
 

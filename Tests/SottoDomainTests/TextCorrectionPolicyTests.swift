@@ -60,6 +60,23 @@ final class TextCorrectionPolicyTests: XCTestCase {
             candidate: original.replacingOccurrences(of: ". ", with: ".\n")))
     }
 
+    func testRejectsRepeatedAmbiguousCuesBeforeRepairSearch() {
+        let original = String(repeating: "a, er, b, ", count: 500)
+        let candidate = String(repeating: "a b ", count: 500)
+        XCTAssertLessThanOrEqual(original.count, TextCorrectionPolicy.maximumInputCharacters)
+        let evaluation = TextCorrectionPolicy.evaluate(original: original, candidate: candidate)
+        XCTAssertEqual(evaluation.rejectionReason, "The rewrite was too complex to validate.")
+        XCTAssertTrue(evaluation.verifiedRepairs.isEmpty)
+    }
+
+    func testOrdinaryMultipleExplicitRepairsRemainWithinWorkBudget() {
+        let original = "Set the count to 42, sorry, 24 before lunch. I cannot merge this, correction, I can merge this after review. Use orange, err, yellow for the border."
+        let candidate = "Set the count to 24 before lunch. I can merge this after review. Use yellow for the border."
+        let evaluation = TextCorrectionPolicy.evaluate(original: original, candidate: candidate)
+        XCTAssertNil(evaluation.rejectionReason)
+        XCTAssertEqual(evaluation.verifiedRepairs.count, 3)
+    }
+
     func testRejectsChangedNumbersSignsCurrenciesPercentagesAndWrittenQuantities() {
         for (original, candidate) in [
             ("Please order 25 microphones for the project.", "Please order 26 microphones for the project."),
@@ -167,6 +184,8 @@ final class TextCorrectionPolicyTests: XCTestCase {
             ("Orange, err, yellow.", "Yellow."),
             ("I want the color to be orange, er, yellow.", "I want the color to be yellow."),
             ("I want the color to be orange, erm, yellow today.", "I want the color to be yellow today."),
+            ("Use orange, sorry, yellow.", "Use yellow."),
+            ("Orange, sorry, yellow.", "Yellow."),
             ("42, sorry, 24.", "24."),
             ("Make it forty two, sorry, twenty four before lunch.", "Make it twenty four before lunch."),
             ("Make it 42, I mean, 24.", "Make it 24."),
@@ -215,6 +234,8 @@ final class TextCorrectionPolicyTests: XCTestCase {
             ("I have to leave, sorry, I missed the meeting.", "I missed the meeting."),
             ("I will not attend, sorry, I have an appointment.", "I have an appointment."),
             ("Keep 42 records, sorry, I cannot help.", "I cannot help."),
+            ("Agreed, sorry, I was distracted.", "I was distracted."),
+            ("A, sorry, Davis interrupted.", "Davis interrupted."),
         ] {
             let result = TextCorrectionPolicy.evaluate(original: original, candidate: candidate)
             XCTAssertTrue(result.verifiedRepairs.isEmpty, original)
