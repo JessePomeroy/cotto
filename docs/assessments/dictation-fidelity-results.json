@@ -1,0 +1,529 @@
+{
+  "assessedCommit": "683429892dd9296749d7e3200855a35a705078b0",
+  "date": "2026-09-13",
+  "scope": "Actual Whisper large-v3-turbo and Qwen3-4B-Instruct-2507 MLX on this Mac; synthetic fixtures, not a human accuracy benchmark. No product behavior changed.",
+  "textProofreading": {
+    "engine": {
+      "type": "ready",
+      "engineVersion": "mlx-swift-0.31.4-lm-3.31.4-sotto1"
+    },
+    "cases": [
+      {
+        "candidate": "5. apples\n6. bananas\n7. oranges\n8. pears",
+        "cleaned": "Five, apples. Six, bananas. Seven, oranges. Eight, pears.",
+        "final": "5. apples\n6. bananas\n7. oranges\n8. pears",
+        "id": "list-five",
+        "input": "Five, apples. Six, bananas. Seven, oranges. Eight, pears.",
+        "structured": "5. apples\n6. bananas\n7. oranges\n8. pears",
+        "seconds": 0.207342042
+      },
+      {
+        "candidate": "We need to fix auth middleware.",
+        "cleaned": "We need to fix auth middleware.",
+        "final": "We need to fix auth middleware.",
+        "id": "auth-known",
+        "input": "We need to fix auth middleware.",
+        "structured": "We need to fix auth middleware.",
+        "seconds": 0.124150916
+      },
+      {
+        "candidate": "We need to fix off middleware.",
+        "cleaned": "We need to fix off middleware.",
+        "final": "We need to fix off middleware.",
+        "id": "auth-misheard",
+        "input": "We need to fix off middleware.",
+        "structured": "We need to fix off middleware.",
+        "seconds": 0.123752875
+      },
+      {
+        "candidate": "Turn off the lights before you leave.",
+        "cleaned": "Turn off the lights before you leave.",
+        "final": "Turn off the lights before you leave.",
+        "id": "off-control",
+        "input": "Turn off the lights before you leave.",
+        "structured": "Turn off the lights before you leave.",
+        "seconds": 0.130760875
+      },
+      {
+        "candidate": "Turn off auth for the local test.",
+        "cleaned": "Turn off auth for the local test.",
+        "final": "Turn off auth for the local test.",
+        "id": "off-auth-control",
+        "input": "Turn off auth for the local test.",
+        "structured": "Turn off auth for the local test.",
+        "seconds": 0.12866175
+      },
+      {
+        "candidate": "I want the color to be orange, err, yellow.",
+        "cleaned": "I want the color to be orange, err, yellow.",
+        "final": "I want the color to be orange, err, yellow.",
+        "id": "repair-err",
+        "input": "I want the color to be orange, err, yellow.",
+        "structured": "I want the color to be orange, err, yellow.",
+        "seconds": 0.154614167
+      },
+      {
+        "candidate": "I want the color to be orange, er, yellow.",
+        "cleaned": "I want the color to be orange, er, yellow.",
+        "final": "I want the color to be orange, er, yellow.",
+        "id": "repair-er",
+        "input": "I want the color to be orange, er, yellow.",
+        "structured": "I want the color to be orange, er, yellow.",
+        "seconds": 0.154395791
+      },
+      {
+        "candidate": "I want the color to be orange, yellow.",
+        "cleaned": "I want the color to be orange, yellow.",
+        "final": "I want the color to be orange, yellow.",
+        "id": "repair-erm",
+        "input": "I want the color to be orange, erm, yellow.",
+        "structured": "I want the color to be orange, yellow.",
+        "seconds": 0.143016083
+      },
+      {
+        "candidate": "I want the color to be orange or yellow.",
+        "cleaned": "I want the color to be orange or yellow.",
+        "final": "I want the color to be orange or yellow.",
+        "id": "choice-control",
+        "input": "I want the color to be orange or yellow.",
+        "structured": "I want the color to be orange or yellow.",
+        "seconds": 0.140373375
+      },
+      {
+        "candidate": "Orange, err, yellow.",
+        "cleaned": "Orange, err, yellow.",
+        "final": "Orange, err, yellow.",
+        "id": "repair-short",
+        "input": "Orange, err, yellow.",
+        "structured": "Orange, err, yellow.",
+        "seconds": 0.114691375
+      },
+      {
+        "candidate": "I want the color to be orange, no, yellow.",
+        "cleaned": "I want the color to be orange, no, yellow.",
+        "final": "I want the color to be orange, no, yellow.",
+        "id": "repair-no",
+        "input": "I want the color to be orange, no, yellow.",
+        "structured": "I want the color to be orange, no, yellow.",
+        "seconds": 0.150370167
+      },
+      {
+        "candidate": "Make it 42, err.",
+        "cleaned": "Make it 42, err, 24.",
+        "final": "Make it 42, err.",
+        "id": "repair-numeric",
+        "input": "Make it 42, err, 24.",
+        "structured": "Make it 42, err,",
+        "seconds": 0.125693667
+      },
+      {
+        "candidate": "I'd prefer to never merge this.",
+        "cleaned": "I'd prefer to never merge this.",
+        "final": "I'd prefer to never merge this.",
+        "id": "negation-never",
+        "input": "I'd prefer to never merge this.",
+        "structured": "I'd prefer to never merge this.",
+        "seconds": 0.125301333
+      },
+      {
+        "candidate": "Do not deploy this version until I approve.",
+        "cleaned": "Do not deploy this version until I approve.",
+        "final": "Do not deploy this version until I approve.",
+        "id": "negation-not",
+        "input": "Do not deploy this version until I approve.",
+        "structured": "Do not deploy this version until I approve.",
+        "seconds": 0.133556125
+      },
+      {
+        "candidate": "I haven't approved the deployment.",
+        "cleaned": "I haven't approved the deployment.",
+        "final": "I haven't approved the deployment.",
+        "id": "negation-havent",
+        "input": "I haven't approved the deployment.",
+        "structured": "I haven't approved the deployment.",
+        "seconds": 0.122924667
+      },
+      {
+        "candidate": "I cannot approve this change until the tests pass.",
+        "cleaned": "I cannot approve this change until the tests pass.",
+        "final": "I cannot approve this change until the tests pass.",
+        "id": "negation-cannot",
+        "input": "I cannot approve this change until the tests pass.",
+        "structured": "I cannot approve this change until the tests pass.",
+        "seconds": 0.144956625
+      },
+      {
+        "candidate": "There is nothing ready to deploy today.",
+        "cleaned": "There is nothing ready to deploy today.",
+        "final": "There is nothing ready to deploy today.",
+        "id": "negation-nothing",
+        "input": "There is nothing ready to deploy today.",
+        "structured": "There is nothing ready to deploy today.",
+        "seconds": 0.131487667
+      },
+      {
+        "candidate": "This is, like, the whole point.",
+        "cleaned": "This is, like, the whole point.",
+        "final": "This is, like, the whole point.",
+        "id": "like-discourse",
+        "input": "This is, like, the whole point.",
+        "structured": "This is, like, the whole point.",
+        "seconds": 0.137007083
+      },
+      {
+        "candidate": "I think this is, like, a really important detail that we should keep.",
+        "cleaned": "I think this is, like, a really important detail that we should keep.",
+        "final": "I think this is, like, a really important detail that we should keep.",
+        "id": "like-long",
+        "input": "I think this is, like, a really important detail that we should keep.",
+        "structured": "I think this is, like, a really important detail that we should keep.",
+        "seconds": 0.181296541
+      },
+      {
+        "candidate": "We should, like, wait until tomorrow before merging this.",
+        "cleaned": "We should, like, wait until tomorrow before merging this.",
+        "final": "We should, like, wait until tomorrow before merging this.",
+        "id": "like-spaced",
+        "input": "We should, like, wait until tomorrow before merging this.",
+        "structured": "We should, like, wait until tomorrow before merging this.",
+        "seconds": 0.154761375
+      },
+      {
+        "candidate": "I like coffee and I would like to have another cup.",
+        "cleaned": "I like coffee and I would like to have another cup.",
+        "final": "I like coffee and I would like to have another cup.",
+        "id": "like-literal",
+        "input": "I like coffee and I would like to have another cup.",
+        "structured": "I like coffee and I would like to have another cup.",
+        "seconds": 0.153719041
+      },
+      {
+        "candidate": "I think, like, this is the best option.",
+        "cleaned": "I think, like, this is the best option.",
+        "final": "I think, like, this is the best option.",
+        "id": "like-plus-hesitation",
+        "input": "Um, I think, like, this is the best option.",
+        "structured": "I think, like, this is the best option.",
+        "seconds": 0.148308458
+      },
+      {
+        "candidate": "A.",
+        "cleaned": "A.",
+        "final": "A.",
+        "id": "short-a",
+        "input": "A.",
+        "structured": "A.",
+        "seconds": 0.093684834
+      },
+      {
+        "candidate": "Agreed.",
+        "cleaned": "Agreed.",
+        "final": "Agreed.",
+        "id": "short-agreed",
+        "input": "Agreed.",
+        "structured": "Agreed.",
+        "seconds": 0.099284042
+      },
+      {
+        "candidate": "A. Agreed. B. Agreed. C. Agreed. For the final question, I want us to wait until the validation process is complete before making any decision about the server rollout because the current results need additional review from our team.",
+        "cleaned": "A. Agreed. B. Agreed. C. Agreed. For the final question I want us to wait until the validation process is complete before making any decision about the server rollout because the current result needs additional review from our team.",
+        "final": "A. Agreed. B. Agreed. C. Agreed. For the final question, I want us to wait until the validation process is complete before making any decision about the server rollout because the current results need additional review from our team.",
+        "id": "mixed-answers",
+        "input": "A. Agreed. B. Agreed. C. Agreed. For the final question I want us to wait until the validation process is complete before making any decision about the server rollout because the current result needs additional review from our team.",
+        "structured": "A. Agreed. B. Agreed. C. Agreed. For the final question I want us to wait until the validation process is complete before making any decision about the server rollout because the current result needs additional review from our team.",
+        "seconds": 0.384151166
+      }
+    ]
+  },
+  "speechRecognition": {
+    "voice": "Samantha (English (US))",
+    "kind": "synthetic speech, not a human accuracy benchmark",
+    "cases": [
+      {
+        "id": "list-five-default",
+        "spoken": "Five, apples. Six, bananas. Seven, oranges. Eight, pears.",
+        "rawASR": "5, Apples 6, Bananas 7, Oranges 8, Pears",
+        "formatted": "5, Apples 6, Bananas 7, Oranges 8, Pears",
+        "audioSeconds": 5.6439375
+      },
+      {
+        "id": "auth-default",
+        "spoken": "We need to fix auth middleware.",
+        "rawASR": "we need to fix off middleware",
+        "formatted": "we need to fix off middleware",
+        "audioSeconds": 1.83675
+      },
+      {
+        "id": "auth-auth-hints",
+        "spoken": "We need to fix auth middleware.",
+        "rawASR": "we need to fix off middleware",
+        "formatted": "we need to fix off middleware",
+        "audioSeconds": 1.83675
+      },
+      {
+        "id": "off-default",
+        "spoken": "Turn off the lights before you leave.",
+        "rawASR": "Turn off the lights before you leave.",
+        "formatted": "Turn off the lights before you leave.",
+        "audioSeconds": 1.9853125
+      },
+      {
+        "id": "off-auth-hints",
+        "spoken": "Turn off the lights before you leave.",
+        "rawASR": "turn off the lights before you leave",
+        "formatted": "turn off the lights before you leave",
+        "audioSeconds": 1.9853125
+      },
+      {
+        "id": "off-auth-default",
+        "spoken": "Turn off auth for the local test.",
+        "rawASR": "Turn off off for the local test",
+        "formatted": "Turn off off for the local test",
+        "audioSeconds": 2.020125
+      },
+      {
+        "id": "off-auth-auth-hints",
+        "spoken": "Turn off auth for the local test.",
+        "rawASR": "Turn off auth for the local test",
+        "formatted": "Turn off auth for the local test",
+        "audioSeconds": 2.020125
+      },
+      {
+        "id": "repair-default",
+        "spoken": "I want the color to be orange, err, yellow.",
+        "rawASR": "I want the color to be orange, air, yellow",
+        "formatted": "I want the color to be orange, air, yellow",
+        "audioSeconds": 2.9564375
+      },
+      {
+        "id": "choice-default",
+        "spoken": "I want the color to be orange or yellow.",
+        "rawASR": "I want the color to be orange or yellow",
+        "formatted": "I want the color to be orange or yellow",
+        "audioSeconds": 2.318125
+      },
+      {
+        "id": "never-default",
+        "spoken": "I'd prefer to never merge this.",
+        "rawASR": "I'd prefer to never merge this",
+        "formatted": "I'd prefer to never merge this",
+        "audioSeconds": 1.9005
+      },
+      {
+        "id": "havent-default",
+        "spoken": "I haven't approved the deployment.",
+        "rawASR": "I haven't approved the deployment.",
+        "formatted": "I haven't approved the deployment.",
+        "audioSeconds": 1.7954375
+      },
+      {
+        "id": "not-default",
+        "spoken": "Do not deploy this version until I approve.",
+        "rawASR": "Do not deploy this version until I approve.",
+        "formatted": "Do not deploy this version until I approve.",
+        "audioSeconds": 2.546
+      },
+      {
+        "id": "like-default",
+        "spoken": "This is, like, the whole point.",
+        "rawASR": "This is, like, the whole point.",
+        "formatted": "This is, like, the whole point.",
+        "audioSeconds": 2.3470625
+      },
+      {
+        "id": "short-a-default",
+        "spoken": "A.",
+        "rawASR": "A.",
+        "formatted": "A.",
+        "audioSeconds": 0.5075
+      },
+      {
+        "id": "short-agreed-default",
+        "spoken": "Agreed.",
+        "rawASR": "Agreed.",
+        "formatted": "Agreed.",
+        "audioSeconds": 0.716375
+      },
+      {
+        "id": "number-answer-default",
+        "spoken": "Twenty four.",
+        "rawASR": "24.",
+        "formatted": "",
+        "audioSeconds": 0.8823125
+      },
+      {
+        "id": "sparse-answers-default",
+        "spoken": "A. Agreed. A. Agreed. (two seconds silence between answers)",
+        "rawASR": "A Agreed A Agreed",
+        "formatted": "A Agreed A Agreed",
+        "audioSeconds": 10.44775
+      }
+    ]
+  },
+  "speechThroughProofreading": {
+    "engine": {
+      "type": "ready",
+      "engineVersion": "mlx-swift-0.31.4-lm-3.31.4-sotto1"
+    },
+    "cases": [
+      {
+        "candidate": "5. Apples  \n6. Bananas  \n7. Oranges  \n8. Pears",
+        "cleaned": "5, Apples 6, Bananas 7, Oranges 8, Pears",
+        "final": "5, Apples 6, Bananas 7, Oranges 8, Pears",
+        "id": "list-five-default",
+        "input": "5, Apples 6, Bananas 7, Oranges 8, Pears",
+        "rejectionReason": "The rewrite changed the list structure.",
+        "structured": "5, Apples 6, Bananas 7, Oranges 8, Pears",
+        "seconds": 0.351824583
+      },
+      {
+        "candidate": "we need to fix off middleware",
+        "cleaned": "we need to fix off middleware",
+        "final": "we need to fix off middleware",
+        "id": "auth-default",
+        "input": "we need to fix off middleware",
+        "structured": "we need to fix off middleware",
+        "seconds": 0.115369125
+      },
+      {
+        "candidate": "we need to fix off middleware",
+        "cleaned": "we need to fix off middleware",
+        "final": "we need to fix off middleware",
+        "id": "auth-auth-hints",
+        "input": "we need to fix off middleware",
+        "structured": "we need to fix off middleware",
+        "seconds": 0.114416125
+      },
+      {
+        "candidate": "Turn off the lights before you leave.",
+        "cleaned": "Turn off the lights before you leave.",
+        "final": "Turn off the lights before you leave.",
+        "id": "off-default",
+        "input": "Turn off the lights before you leave.",
+        "structured": "Turn off the lights before you leave.",
+        "seconds": 0.124487834
+      },
+      {
+        "candidate": "turn off the lights before you leave",
+        "cleaned": "turn off the lights before you leave",
+        "final": "turn off the lights before you leave",
+        "id": "off-auth-hints",
+        "input": "turn off the lights before you leave",
+        "structured": "turn off the lights before you leave",
+        "seconds": 0.120627625
+      },
+      {
+        "candidate": "Turn off for the local test",
+        "cleaned": "Turn off off for the local test",
+        "final": "Turn off for the local test",
+        "id": "off-auth-default",
+        "input": "Turn off off for the local test",
+        "structured": "Turn off off for the local test",
+        "seconds": 0.114146792
+      },
+      {
+        "candidate": "Turn off auth for the local test",
+        "cleaned": "Turn off auth for the local test",
+        "final": "Turn off auth for the local test",
+        "id": "off-auth-auth-hints",
+        "input": "Turn off auth for the local test",
+        "structured": "Turn off auth for the local test",
+        "seconds": 0.119835917
+      },
+      {
+        "candidate": "I want the color to be orange, air, yellow",
+        "cleaned": "I want the color to be orange, air, yellow",
+        "final": "I want the color to be orange, air, yellow",
+        "id": "repair-default",
+        "input": "I want the color to be orange, air, yellow",
+        "structured": "I want the color to be orange, air, yellow",
+        "seconds": 0.145571916
+      },
+      {
+        "candidate": "I want the color to be orange or yellow",
+        "cleaned": "I want the color to be orange or yellow",
+        "final": "I want the color to be orange or yellow",
+        "id": "choice-default",
+        "input": "I want the color to be orange or yellow",
+        "structured": "I want the color to be orange or yellow",
+        "seconds": 0.131284833
+      },
+      {
+        "candidate": "I'd prefer to never merge this",
+        "cleaned": "I'd prefer to never merge this",
+        "final": "I'd prefer to never merge this",
+        "id": "never-default",
+        "input": "I'd prefer to never merge this",
+        "structured": "I'd prefer to never merge this",
+        "seconds": 0.119543875
+      },
+      {
+        "candidate": "I haven't approved the deployment.",
+        "cleaned": "I haven't approved the deployment.",
+        "final": "I haven't approved the deployment.",
+        "id": "havent-default",
+        "input": "I haven't approved the deployment.",
+        "structured": "I haven't approved the deployment.",
+        "seconds": 0.121146084
+      },
+      {
+        "candidate": "Do not deploy this version until I approve.",
+        "cleaned": "Do not deploy this version until I approve.",
+        "final": "Do not deploy this version until I approve.",
+        "id": "not-default",
+        "input": "Do not deploy this version until I approve.",
+        "structured": "Do not deploy this version until I approve.",
+        "seconds": 0.136612792
+      },
+      {
+        "candidate": "This is, like, the whole point.",
+        "cleaned": "This is, like, the whole point.",
+        "final": "This is, like, the whole point.",
+        "id": "like-default",
+        "input": "This is, like, the whole point.",
+        "structured": "This is, like, the whole point.",
+        "seconds": 0.135203084
+      },
+      {
+        "candidate": "A.",
+        "cleaned": "A.",
+        "final": "A.",
+        "id": "short-a-default",
+        "input": "A.",
+        "structured": "A.",
+        "seconds": 0.093406458
+      },
+      {
+        "candidate": "Agreed.",
+        "cleaned": "Agreed.",
+        "final": "Agreed.",
+        "id": "short-agreed-default",
+        "input": "Agreed.",
+        "structured": "Agreed.",
+        "seconds": 0.09887175
+      },
+      {
+        "id": "number-answer-default",
+        "input": "24.",
+        "terms": [],
+        "skipped": true,
+        "prepared": {
+          "cleaned": "24.",
+          "final": "",
+          "id": "number-answer-default",
+          "input": "24.",
+          "structured": ""
+        }
+      },
+      {
+        "candidate": "A. Agreed.  \nA. Agreed.",
+        "cleaned": "A Agreed A Agreed",
+        "final": "A. Agreed.  \nA. Agreed.",
+        "id": "sparse-answers-default",
+        "input": "A Agreed A Agreed",
+        "structured": "A Agreed A Agreed",
+        "seconds": 0.149124708
+      }
+    ]
+  }
+}
