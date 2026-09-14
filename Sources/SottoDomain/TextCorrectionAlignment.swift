@@ -146,14 +146,14 @@ enum CorrectionAlignment {
                 if start > 0, input[start].range == input[start - 1].range { continue }
                 for end in (lastCue + 1)...min(unitEnd, lastCue + repairSpanLimit) {
                     if end + 1 < input.count, input[end].range == input[end + 1].range { continue }
-                    let left = Array(input[max(0, start - 2)..<start].map(\.word))
+                    let left = Array(input[max(unitStart, start - 2)..<start].map(\.word))
                     let replacement = Array(input[(lastCue + 1)...end].map(\.word))
-                    let right = Array(input[(end + 1)..<min(input.count, end + 3)].map(\.word))
-                    // "Sorry" also introduces ordinary apologies. Only exempt
+                    let right = Array(input[(end + 1)..<min(unitEnd + 1, end + 3)].map(\.word))
+                    // Hesitations and "sorry" can also introduce new thoughts. Only exempt
                     // a single-word replacement, direct quantity change, or a
                     // repeated statement with changed polarity. Whole unrelated
                     // clauses stay protected.
-                    if cueWords == ["sorry"], !isExplicitSorryRepair(
+                    if cueWords != ["i", "mean"] && cueWords != ["correction"], !isLocalizedRepair(
                         abandoned: Array(input[start..<firstCue].map(\.word)), replacement: replacement,
                         anchoredWordReplacement: start > unitStart || end == unitEnd
                     ) { continue }
@@ -183,7 +183,7 @@ enum CorrectionAlignment {
         return (omittingVerifiedHesitations(protectedSource as String, candidate: candidate), repairs)
     }
 
-    private static func isExplicitSorryRepair(abandoned: [String], replacement: [String], anchoredWordReplacement: Bool) -> Bool {
+    private static func isLocalizedRepair(abandoned: [String], replacement: [String], anchoredWordReplacement: Bool) -> Bool {
         guard abandoned != replacement else { return false }
         // A whole short answer before an apology must not be mistaken for the
         // first word of a following clause ("Agreed, sorry, I was distracted").

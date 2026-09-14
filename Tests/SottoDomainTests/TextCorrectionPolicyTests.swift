@@ -77,6 +77,22 @@ final class TextCorrectionPolicyTests: XCTestCase {
         XCTAssertEqual(evaluation.verifiedRepairs.count, 3)
     }
 
+    func testConsecutiveRepairsStayInsideTheirAnswerUnits() {
+        let evaluation = TextCorrectionPolicy.evaluate(
+            original: "Orange, err, yellow. Blue, err, green.", candidate: "Yellow. Green.")
+        XCTAssertNil(evaluation.rejectionReason)
+        XCTAssertEqual(evaluation.verifiedRepairs.count, 2)
+    }
+
+    func testHesitationBeforeANewClauseDoesNotEraseAStandaloneAnswer() {
+        for cue in ["er", "err", "erm", "sorry"] {
+            let evaluation = TextCorrectionPolicy.evaluate(
+                original: "Agreed, \(cue), I was distracted.", candidate: "I was distracted.")
+            XCTAssertNotNil(evaluation.rejectionReason, cue)
+            XCTAssertTrue(evaluation.verifiedRepairs.isEmpty, cue)
+        }
+    }
+
     func testRejectsChangedNumbersSignsCurrenciesPercentagesAndWrittenQuantities() {
         for (original, candidate) in [
             ("Please order 25 microphones for the project.", "Please order 26 microphones for the project."),
