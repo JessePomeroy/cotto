@@ -1,4 +1,5 @@
 import Foundation
+import SottoAPI
 import XCTest
 @testable import SottoServerKit
 
@@ -9,7 +10,13 @@ final class NativeInferenceTests: XCTestCase {
         while IFS= read -r line; do
             id=$(printf '%s' "$line" | sed -n 's/.*"id"[[:space:]]*:[[:space:]]*"\\([^"]*\\)".*/\\1/p')
             printf '{"type":"progress","id":"%s","value":0.5}\\n' "$id"
-            printf '{"type":"result","id":"%s","text":"Hello world.","duration":2,"elapsed":0.1,"language":"en"}\\n' "$id"
+            case "$line" in
+                *'"type":"correct"'*)
+                    case "$line" in *'"systemPrompt":"Keep punctuation."'*) ;; *) exit 1 ;; esac
+                    ;;
+                *) case "$line" in *'"vocabularyTerms":["auth"]'*) ;; *) exit 1 ;; esac ;;
+            esac
+            printf '{"type":"result","id":"%s","text":"Hello world.","duration":2,"elapsed":0.1,"language":"en","includedTerms":["auth"],"omittedTerms":[],"tokenCount":1,"tokenBudget":223}\\n' "$id"
         done
         """)
         defer { fixture.remove() }
@@ -20,13 +27,32 @@ final class NativeInferenceTests: XCTestCase {
         XCTAssertTrue(ready.available)
         XCTAssertTrue(ready.speechLoaded)
         XCTAssertTrue(ready.proofLoaded)
-        let speech = try await inference.transcribe(fixture.model, language: "en", prompt: "")
+        let speech = try await inference.transcribe(fixture.model, language: "en", vocabularyTerms: ["auth"])
         XCTAssertEqual(speech.text, "Hello world.")
         XCTAssertEqual(speech.audioSeconds, 2)
         XCTAssertEqual(speech.engineVersion, "fixture-1")
-        let corrected = try await inference.correct(speech.text, terms: ["Sotto"], language: "en")
+        XCTAssertEqual(speech.hints?.includedTerms, ["auth"])
+        XCTAssertEqual(speech.hints?.tokenBudget, 223)
+        let corrected = try await inference.correct(speech.text, terms: ["Sotto"], language: "en", systemPrompt: "Keep punctuation.")
         XCTAssertEqual(corrected.text, "Hello world.")
         XCTAssertEqual(corrected.engineVersion, "fixture-1")
+        await inference.shutdown()
+    }
+
+    func testMalformedVocabularyDiagnosticsAreRejected() async throws {
+        let fixture = try Fixture(body: """
+        printf '{"type":"ready"}\\n'
+        while IFS= read -r line; do
+            id=$(printf '%s' "$line" | sed -n 's/.*"id"[[:space:]]*:[[:space:]]*"\\([^"]*\\)".*/\\1/p')
+            printf '{"type":"result","id":"%s","text":"Hello.","duration":2,"elapsed":0.1,"language":"en","includedTerms":["invented"],"omittedTerms":[],"tokenCount":1,"tokenBudget":223}\\n' "$id"
+        done
+        """)
+        defer { fixture.remove() }
+        let inference = NativeInference(configuration: fixture.configuration())
+        do {
+            _ = try await inference.transcribe(fixture.model, language: "en", vocabularyTerms: ["auth"])
+            XCTFail("Mismatched vocabulary diagnostics must not be archived")
+        } catch InferenceError.invalidResponse { }
         await inference.shutdown()
     }
 
@@ -39,7 +65,7 @@ final class NativeInferenceTests: XCTestCase {
         defer { fixture.remove() }
         let inference = NativeInference(configuration: fixture.configuration(inferenceTimeout: 0.1))
         do {
-            _ = try await inference.transcribe(fixture.model, language: "en", prompt: "")
+            _ = try await inference.transcribe(fixture.model, language: "en", vocabularyTerms: [])
             XCTFail("A helper that never responds must time out.")
         } catch InferenceError.timeout { }
         let state = await inference.readiness(proofreadingEnabled: false)
@@ -69,7 +95,7 @@ final class NativeInferenceTests: XCTestCase {
         defer { fixture.remove() }
         let inference = NativeInference(configuration: fixture.configuration())
         try await inference.warmUp(proofreadingEnabled: false)
-        let request = Task { try await inference.transcribe(fixture.model, language: "en", prompt: "") }
+        let request = Task { try await inference.transcribe(fixture.model, language: "en", vocabularyTerms: []) }
         try await Task.sleep(nanoseconds: 50_000_000)
         request.cancel()
         do {
@@ -92,7 +118,7 @@ final class NativeInferenceTests: XCTestCase {
         defer { fixture.remove() }
         let inference = NativeInference(configuration: fixture.configuration())
         do {
-            _ = try await inference.correct("Hello.", terms: [], language: "en")
+            _ = try await inference.correct("Hello.", terms: [], language: "en", systemPrompt: ServerPreferences.defaultProofreadingPrompt)
             XCTFail("Oversized output must not reach the JSON decoder.")
         } catch InferenceError.unavailable(let message) {
             XCTAssertTrue(message.contains("size limit"))

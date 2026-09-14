@@ -54,6 +54,9 @@ final class GenerationServiceTests: XCTestCase {
             XCTAssertEqual(result.insertionText, "Hello Codex. ")
             XCTAssertEqual(result.device.name, "Test Mac")
             XCTAssertEqual(result.textProcessing?.status, .applied)
+            XCTAssertEqual(result.textProcessing?.proposedText, "Hello Codex.")
+            XCTAssertEqual(result.settings.preferences.proofreadingPrompt, ServerPreferences.defaultProofreadingPrompt)
+            XCTAssertEqual(result.proofreadingHints?.includedTerms, ["Codex"])
             let wav = try await service.artifact(record.id, filename: "inference.wav")
             XCTAssertEqual(try Data(contentsOf: wav).count, 32_044)
             let transcript = try await service.artifact(record.id, filename: "transcript.txt")
@@ -78,6 +81,10 @@ final class GenerationServiceTests: XCTestCase {
             let record = try await service.create(Self.request())
             var update = await service.getPreferences()
             update.preferences.keepOriginalAudio = false
+            update.preferences.proofreadingPrompt = "Keep every word and return only the transcript."
+            update.preferences.dictionary = PersonalDictionary(lists: [DictionaryList(name: "Terms", entries: [
+                DictionaryEntry(term: "auth", isPriority: true),
+            ])])
             let changed = try await service.updatePreferences(update)
             XCTAssertEqual(changed.revision, update.revision + 1)
             do { _ = try await service.updatePreferences(update); XCTFail("Stale preferences must not overwrite another device") }
@@ -92,6 +99,37 @@ final class GenerationServiceTests: XCTestCase {
             let completed = try await service.get(record.id)
             XCTAssertEqual(completed.originalAudio?.frameCount, 8_000)
             XCTAssertTrue(completed.settings.preferences.keepOriginalAudio)
+            XCTAssertEqual(completed.settings.preferences.proofreadingPrompt, ServerPreferences.defaultProofreadingPrompt)
+            let next = try await service.create(Self.request())
+            XCTAssertEqual(next.settings.preferences.proofreadingPrompt, changed.preferences.proofreadingPrompt)
+            XCTAssertEqual(next.settings.preferences.dictionary.vocabularyTerms, ["auth"])
+            _ = try await service.cancel(next.id)
+        }
+    }
+
+    func testSharedPromptDefaultsValidationAndRestartPersistence() async throws {
+        let old = Data(#"{"language":"en","cleanText":true,"vocabulary":"","dictionary":{"lists":[]},"textCorrectionEnabled":true,"keepOriginalAudio":true}"#.utf8)
+        let decoded = try SottoAPI.decoder().decode(ServerPreferences.self, from: old)
+        XCTAssertEqual(decoded.proofreadingPrompt, ServerPreferences.defaultProofreadingPrompt)
+        var vocabulary = decoded
+        vocabulary.vocabulary = "auth\u{200B}"
+        XCTAssertNotNil(vocabulary.validationError)
+        vocabulary.vocabulary = "auth\tmiddleware\nSotto"
+        XCTAssertNil(vocabulary.validationError)
+        XCTAssertEqual(vocabulary.dictionary.recognitionVocabularyTerms(vocabulary.vocabulary), ["auth middleware", "Sotto"])
+        try await withFixture { service, fixture in
+            var update = await service.getPreferences()
+            for invalid in ["  \n", String(repeating: "x", count: 4097), "bad\0prompt"] {
+                update.preferences.proofreadingPrompt = invalid
+                do { _ = try await service.updatePreferences(update); XCTFail("Invalid prompt saved") }
+                catch let error as ServiceError { XCTAssertEqual(error.status, 400) }
+            }
+            update.preferences.proofreadingPrompt = "Preserve intentional repetition. Return only the transcript."
+            let saved = try await service.updatePreferences(update)
+            let reopened = try GenerationService(configuration: fixture.configuration)
+            let restored = await reopened.getPreferences()
+            XCTAssertEqual(restored, saved)
+            await reopened.shutdown()
         }
     }
 

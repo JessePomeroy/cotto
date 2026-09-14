@@ -4,20 +4,23 @@ public struct DictionaryEntry: Codable, Equatable, Sendable, Identifiable {
     public var id: String
     public var term: String
     public var aliases: [String]
+    public var isPriority: Bool
 
-    public init(id: String = UUID().uuidString, term: String, aliases: [String] = []) {
+    public init(id: String = UUID().uuidString, term: String, aliases: [String] = [], isPriority: Bool = false) {
         self.id = id
         self.term = term
         self.aliases = aliases
+        self.isPriority = isPriority
     }
 
-    private enum CodingKeys: String, CodingKey { case id, term, aliases }
+    private enum CodingKeys: String, CodingKey { case id, term, aliases, isPriority }
 
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         self.init(id: try values.decode(String.self, forKey: .id),
                   term: try values.decode(String.self, forKey: .term),
-                  aliases: values.contains(.aliases) ? try values.decode([String].self, forKey: .aliases) : [])
+                  aliases: values.contains(.aliases) ? try values.decode([String].self, forKey: .aliases) : [],
+                  isPriority: values.contains(.isPriority) ? try values.decode(Bool.self, forKey: .isPriority) : false)
         if let error = validationError {
             throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: error))
         }
@@ -117,12 +120,26 @@ public struct PersonalDictionary: Codable, Equatable, Sendable {
         return nil
     }
 
-    /// Preferred spellings in list order, without duplicates. Aliases are deliberately
-    /// excluded from recognition/model hints so they do not reinforce a wrong spelling.
+    /// Priority affects hints only. Preserve list order within each priority group;
+    /// aliases never become hints that could reinforce a wrong spelling.
     public var vocabularyTerms: [String] {
         guard validationError == nil else { return [] }
+        let entries = lists.flatMap(\.entries)
+        return Self.uniqueTerms((entries.filter(\.isPriority) + entries.filter { !$0.isPriority }).map(\.term))
+    }
+
+    /// Freeform terms only guide speech recognition; adding them does not install
+    /// replacements or make them protected dictionary terms during proofreading.
+    public func recognitionVocabularyTerms(_ freeform: String) -> [String] {
+        let extras = freeform.components(separatedBy: CharacterSet(charactersIn: ",").union(.newlines))
+            .map { $0.split(whereSeparator: \.isWhitespace).joined(separator: " ") }
+            .filter { !$0.isEmpty }
+        return Self.uniqueTerms(vocabularyTerms + extras)
+    }
+
+    private static func uniqueTerms(_ terms: [String]) -> [String] {
         var seen = Set<String>()
-        return lists.flatMap(\.entries).map(\.term).filter { seen.insert(DictionaryValidation.key($0)).inserted }
+        return terms.filter { seen.insert(DictionaryValidation.key($0)).inserted }
     }
 
     public func apply(to text: String) -> String {

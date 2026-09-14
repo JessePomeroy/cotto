@@ -15,4 +15,4 @@ if [[ -z "$model" ]]; then
     printf 'Set SOTTO_TEXT_MODEL to your Qwen GGUF file.\n' >&2
     exit 1
 fi
-exec python3 "$project_dir/scripts/$test_script" "$helper_flag" "$project_dir/build/server/helpers/sotto-text-engine" --model "$model" "$@"
+exec python3 "$project_dir/scripts/$test_script" "$helper_flag" "$project_dir/build/server/helpers/sotto-text-engine" --model "$model" --server "$project_dir/build/server/sotto-server" "$@"

@@ -18,6 +18,17 @@ public enum TextCorrectionPolicy {
     }
 
     public static func rejectionReason(original: String, candidate: String, preferredTerms: [String] = []) -> String? {
+        evaluate(original: original, candidate: candidate, preferredTerms: preferredTerms).rejectionReason
+    }
+
+    public static func evaluate(original: String, candidate: String, preferredTerms: [String] = []) -> TextCorrectionEvaluation {
+        var repairs: [VerifiedTextRepair] = []
+        let reason = assess(original: original, candidate: candidate, preferredTerms: preferredTerms, repairs: &repairs)
+        return TextCorrectionEvaluation(rejectionReason: reason, verifiedRepairs: repairs)
+    }
+
+    private static func assess(original: String, candidate: String, preferredTerms: [String], repairs: inout [VerifiedTextRepair]) -> String? {
+        guard original.count <= maximumInputCharacters else { return "The source was too long to validate." }
         let output = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !output.isEmpty else { return "The text model returned no text." }
         guard output.count <= maximumInputCharacters * 2 else { return "The rewrite was too long." }
@@ -34,15 +45,20 @@ public enum TextCorrectionPolicy {
         guard listMarkers(original) == listMarkers(output) else {
             return "The rewrite changed the list structure."
         }
-        guard numbers(original) == numbers(output) else { return "The rewrite changed a number." }
+        // Only Qwen proposes edits. The alignment validates a bounded abandoned
+        // phrase beside an explicit repair cue; unrelated source stays protected.
+        let repairCheck = CorrectionAlignment.verifyRepairs(original: original, candidate: output)
+        repairs = repairCheck.repairs
+        let protectedSource = repairCheck.protectedSource
+        guard numbers(protectedSource) == numbers(output) else { return "The rewrite changed a number." }
         for term in preferredTerms {
             let pattern = #"(?i)(?<![\p{L}\p{N}\p{M}\p{Pc}\u200C\u200D])"# + NSRegularExpression.escapedPattern(for: term) + #"(?![\p{L}\p{N}\p{M}\p{Pc}\u200C\u200D])"#
-            let count = matches(pattern, in: original).count
+            let count = matches(pattern, in: protectedSource).count
             if count > 0, matches(pattern, in: output).count != count {
                 return "The rewrite changed a dictionary term."
             }
         }
-        let before = words(original)
+        let before = words(protectedSource)
         let after = words(output)
         guard numberWords(before) == numberWords(after) else { return "The rewrite changed a quantity." }
         guard !before.isEmpty else { return output == original ? nil : "The rewrite added content." }
@@ -54,9 +70,10 @@ public enum TextCorrectionPolicy {
         guard Double(shared) / Double(max(comparedBefore.count, after.count)) >= 0.72 else {
             return "The rewrite changed too much wording."
         }
-        // Negation changes can invert meaning despite high token overlap.
-        guard negations(before) == negations(after) else { return "The rewrite changed a negation." }
-        let originalItems = listItems(original)
+        if let reason = CorrectionAlignment.preservationReason(original: protectedSource, candidate: output, preferredTerms: allowed) {
+            return reason
+        }
+        let originalItems = listItems(protectedSource)
         let rewrittenItems = listItems(output)
         for (beforeItem, afterItem) in zip(originalItems, rewrittenItems) {
             let b = words(afterItem)
@@ -76,8 +93,7 @@ public enum TextCorrectionPolicy {
     }
 
     private static func words(_ text: String) -> [String] {
-        matches(#"[\p{L}\p{N}]+(?:['’][\p{L}]+)?"#, in: text.lowercased())
-            .map { $0.replacingOccurrences(of: "’", with: "'") }
+        CorrectionAlignment.tokens(text).map(\.word)
     }
 
     private static func numbers(_ text: String) -> [String] {
@@ -88,10 +104,6 @@ public enum TextCorrectionPolicy {
     private static func listMarkers(_ text: String) -> [String] {
         matches(#"(?m)^\s*(?:[0-9]+[.)]|[-*•])(?=\s)"#, in: text)
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-    }
-
-    private static func negations(_ words: [String]) -> [String] {
-        words.filter { ["no", "not", "never", "neither", "nor", "without"].contains($0) || $0.hasSuffix("n't") }
     }
 
     private static func numberWords(_ words: [String]) -> [String] {
@@ -177,11 +189,14 @@ public struct TextProcessingRecord: Codable, Equatable, Sendable {
     public let engineVersion: String?
     public let processingSeconds: Double?
     public let wallSeconds: Double?
+    public let proposedText: String?
+    public let verifiedRepairs: [VerifiedTextRepair]?
 
     public init(dictionaryTerms: [String], dictionaryChangedText: Bool, inputText: String, outputText: String,
                 enabled: Bool, status: Status, reason: String? = nil, modelID: String? = nil,
                 modelSHA256: String? = nil, engineVersion: String? = nil,
-                processingSeconds: Double? = nil, wallSeconds: Double? = nil) {
+                processingSeconds: Double? = nil, wallSeconds: Double? = nil,
+                proposedText: String? = nil, verifiedRepairs: [VerifiedTextRepair]? = nil) {
         self.dictionaryTerms = dictionaryTerms
         self.dictionaryChangedText = dictionaryChangedText
         self.inputText = inputText
@@ -194,5 +209,7 @@ public struct TextProcessingRecord: Codable, Equatable, Sendable {
         self.engineVersion = engineVersion
         self.processingSeconds = processingSeconds
         self.wallSeconds = wallSeconds
+        self.proposedText = proposedText.map { String($0.prefix(TextCorrectionPolicy.maximumInputCharacters * 2)) }
+        self.verifiedRepairs = verifiedRepairs.map { Array($0.prefix(8)) }
     }
 }

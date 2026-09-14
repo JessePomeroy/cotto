@@ -23,12 +23,21 @@ public struct FormattedDictation: Equatable, Sendable {
     public let continuesPreviousList: Bool
     public let endedList: Bool
     public let isControlOnly: Bool
+    public let consumedControls: [ListControlSpan]
+    public let formattingRejectionReason: String?
 
     public func replacingText(_ text: String) -> FormattedDictation {
         FormattedDictation(text: text, context: context, containsList: containsList,
                           endsWithList: endsWithList, continuesPreviousList: continuesPreviousList,
-                          endedList: endedList, isControlOnly: isControlOnly)
+                          endedList: endedList, isControlOnly: isControlOnly,
+                          consumedControls: consumedControls, formattingRejectionReason: formattingRejectionReason)
     }
+}
+
+/// UTF-16 ranges into the recognized source, suitable for persisted diagnostics.
+public struct ListControlSpan: Codable, Equatable, Sendable {
+    public let location: Int
+    public let length: Int
 }
 
 /// A local, deterministic dictation grammar, not a prose rewrite. The caller owns
@@ -37,11 +46,13 @@ public enum SpokenListFormatter {
     public static func format(_ text: String, context initialContext: SpokenListContext? = nil) -> FormattedDictation {
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return FormattedDictation(text: "", context: initialContext, containsList: false, endsWithList: false,
-                                      continuesPreviousList: false, endedList: false, isControlOnly: false)
+                                      continuesPreviousList: false, endedList: false, isControlOnly: false,
+                                      consumedControls: [], formattingRejectionReason: nil)
         }
 
-        let events = scan(text, hasContext: initialContext != nil)
+        let events = scan(text)
         let inferred = inferredMarkers(events, in: text)
+        let containsInlineCandidates = events.contains { $0.evidence == .inlineSeries }
         var context = initialContext
         var usesOriginalContext = initialContext != nil
         var pieces: [(text: String, isList: Bool)] = []
@@ -52,6 +63,15 @@ public enum SpokenListFormatter {
         var endedList = false
         var consumedControl = false
         var awaitingMarkedItem = false
+        var bodyStart = text.startIndex
+        var controls: [Range<String.Index>] = []
+        var numberMarkers: [(range: Range<String.Index>, number: Int)] = []
+        var emittedContent: [String] = []
+        var pendingSourceNumber: Int?
+
+        func consumeControl(_ range: Range<String.Index>) {
+            controls.append(range)
+        }
 
         func flush() {
             let content = body.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -60,6 +80,7 @@ public enum SpokenListFormatter {
             guard !content.isEmpty else { return }
             guard let current = context else {
                 pieces.append((content, false))
+                emittedContent += contentTokens(content)
                 return
             }
             let item = itemText(content)
@@ -70,11 +91,14 @@ public enum SpokenListFormatter {
             switch current.style {
             case .numbered:
                 pieces.append(("\(current.nextNumber). \(item)", true))
+                if pendingSourceNumber != nil { emittedContent.append(numberToken(current.nextNumber)) }
                 let next = current.nextNumber == Int.max ? Int.max : current.nextNumber + 1
                 context = SpokenListContext(style: .numbered, nextNumber: next)
             case .bulleted:
                 pieces.append(("- \(item)", true))
             }
+            emittedContent += contentTokens(item)
+            pendingSourceNumber = nil
             containsList = true
         }
 
@@ -83,7 +107,23 @@ public enum SpokenListFormatter {
             cursor = event.range.upperBound
             switch event.action {
             case .item(let marker):
-                guard context != nil || event.evidence == .explicit || inferred.contains(index) else {
+                let next = index + 1 < events.count ? events[index + 1].range.lowerBound : text.endIndex
+                let followingBody = String(text[event.range.upperBound..<next])
+                let hasBody = followingBody.contains(where: { $0.isLetter || $0.isNumber })
+                // A bare answer such as "24." is content even in an active
+                // list. Only actual verbal controls may have no item body.
+                if case .number = marker, !hasBody {
+                    body += text[event.range]
+                    continue
+                }
+                if event.evidence == .series, !containsNonCountingContent(followingBody) {
+                    body += text[event.range]
+                    continue
+                }
+                let contextSupportsMarker = context != nil && event.evidence != .inlineSeries && event.evidence != .unanchoredSeries
+                    && !(event.evidence == .series && containsInlineCandidates && !inferred.contains(index))
+                guard contextSupportsMarker
+                    || event.evidence == .explicit || event.evidence == .numeric || inferred.contains(index) else {
                     body += text[event.range]
                     continue
                 }
@@ -91,22 +131,33 @@ public enum SpokenListFormatter {
                 switch marker {
                 case .number(let number):
                     context = SpokenListContext(style: .numbered, nextNumber: number)
+                    numberMarkers.append((event.range, number))
+                    pendingSourceNumber = number
                 case .bullet:
                     context = SpokenListContext(style: .bulleted)
+                    consumeControl(event.range)
                 case .next:
                     if context == nil { context = SpokenListContext(style: .numbered) }
+                    consumeControl(event.range)
                 }
                 consumedControl = true
                 awaitingMarkedItem = true
+                bodyStart = event.range.upperBound
             case .start(let style):
                 flush()
                 context = SpokenListContext(style: style ?? .numbered)
                 usesOriginalContext = false
                 consumedControl = true
+                consumeControl(event.range)
+                bodyStart = event.range.upperBound
             case .resume(let style):
                 // Only explicit resumption licenses discarding dictation/tool
                 // chatter. Never remove these words from an actual marked item.
-                if !containsList && !awaitingMarkedItem { body = withoutMetaPrelude(body) }
+                if !containsList && !awaitingMarkedItem {
+                    let removed = metaPreludeRanges(in: text, range: bodyStart..<event.range.lowerBound)
+                    for range in removed { consumeControl(range) }
+                    body = removing(removed, from: text, within: bodyStart..<event.range.lowerBound)
+                }
                 flush()
                 if let style, style != context?.style {
                     context = SpokenListContext(style: style)
@@ -115,12 +166,16 @@ public enum SpokenListFormatter {
                     context = SpokenListContext(style: style ?? .numbered)
                 }
                 consumedControl = true
+                consumeControl(event.range)
+                bodyStart = event.range.upperBound
             case .end:
                 flush()
                 context = nil
                 usesOriginalContext = false
                 endedList = true
                 consumedControl = true
+                consumeControl(event.range)
+                bodyStart = event.range.upperBound
             }
         }
         body += text[cursor...]
@@ -129,7 +184,8 @@ public enum SpokenListFormatter {
         // Ordinary prose stays byte-for-byte intact, including its paragraphs.
         if !consumedControl && initialContext == nil {
             return FormattedDictation(text: text, context: nil, containsList: false, endsWithList: false,
-                                      continuesPreviousList: false, endedList: false, isControlOnly: false)
+                                      continuesPreviousList: false, endedList: false, isControlOnly: false,
+                                      consumedControls: [], formattingRejectionReason: nil)
         }
         var output = ""
         for (index, piece) in pieces.enumerated() {
@@ -141,10 +197,23 @@ public enum SpokenListFormatter {
         if output.isEmpty && consumedControl && usesOriginalContext && context?.style == initialContext?.style && context != nil {
             continuesPreviousList = true
         }
+        // Check the formatting boundary before Qwen can compare against an
+        // already-damaged transcript. Only recorded controls may disappear;
+        // numbered markers are normalized to the value actually emitted.
+        let sourceContent = sourceContentTokens(text, controls: controls, numberMarkers: numberMarkers)
+        guard sourceContent == emittedContent else {
+            return FormattedDictation(text: text, context: initialContext, containsList: false, endsWithList: false,
+                                      continuesPreviousList: false, endedList: false, isControlOnly: false,
+                                      consumedControls: [], formattingRejectionReason: "List formatting would change dictated content; kept the original transcript.")
+        }
         return FormattedDictation(text: output, context: context, containsList: containsList,
                                   endsWithList: pieces.last?.isList == true,
                                   continuesPreviousList: continuesPreviousList, endedList: endedList,
-                                  isControlOnly: consumedControl && output.isEmpty)
+                                  isControlOnly: consumedControl && output.isEmpty,
+                                  consumedControls: controls.map { range in
+                                      let range = NSRange(range, in: text)
+                                      return ListControlSpan(location: range.location, length: range.length)
+                                  }, formattingRejectionReason: nil)
     }
 
     private enum Action {
@@ -162,7 +231,10 @@ public enum SpokenListFormatter {
 
     private enum Evidence {
         case explicit
+        case numeric
         case series
+        case unanchoredSeries
+        case inlineSeries
         case contextOnly
     }
 
@@ -227,26 +299,44 @@ public enum SpokenListFormatter {
         return result
     }
 
-    private static func scan(_ text: String, hasContext: Bool) -> [Event] {
+    private static func scan(_ text: String) -> [Event] {
         let tokens = tokenize(text)
         var events: [Event] = []
         var index = 0
         var afterDirective = false
         var itemBodyStart: Int?
-        var hasListEvidence = hasContext
+        var hasListEvidence = false
         while index < tokens.count {
             let afterComma = index > 0 && tokens[index - 1].value == ","
             let atBoundary = index == 0 || tokens[index - 1].isBoundary || afterDirective || afterComma
             afterDirective = false
-            guard atBoundary, index != itemBodyStart else { index += 1; continue }
-            if let match = directive(tokens, at: index) {
+            guard index != itemBodyStart || (index > 0 && tokens[index - 1].isBoundary) else { index += 1; continue }
+            if atBoundary, let match = directive(tokens, at: index) {
                 events.append(Event(range: tokens[index].range.lowerBound..<tokens[match.end - 1].range.upperBound,
                                     action: match.action, evidence: match.evidence))
                 index = match.end
                 afterDirective = true
                 itemBodyStart = nil
                 if case .end = match.action { hasListEvidence = false } else { hasListEvidence = true }
-            } else if let match = marker(tokens, at: index) {
+            } else if var match = marker(tokens, at: index) {
+                if match.evidence == .numeric, !hasListEvidence,
+                   index > 0, tokens[index - 1].value != "\n" {
+                    // A number after prose ("The answer is: 24. That is
+                    // final.") needs repeated item evidence, not just a stop.
+                    match = Match(end: match.end, action: match.action, evidence: .unanchoredSeries)
+                }
+                if !atBoundary {
+                    // Whisper sometimes omits every separator between items:
+                    // "5, Apples 6, Bananas". Interior comma markers are only
+                    // candidates; a complete anchored series must validate them.
+                    guard case .item(.number) = match.action,
+                          Int(tokens[index].value) != nil,
+                          index + 1 < tokens.count, tokens[index + 1].value == "," else {
+                        index += 1
+                        continue
+                    }
+                    match = Match(end: match.end, action: match.action, evidence: .inlineSeries)
+                }
                 // Commas are also common ASR item separators, but a sequence of
                 // bare numbers ("one, two, three") is content, not three items.
                 if afterComma {
@@ -260,7 +350,7 @@ public enum SpokenListFormatter {
                                     action: match.action, evidence: match.evidence))
                 index = match.end
                 itemBodyStart = index
-                hasListEvidence = hasListEvidence || match.evidence != .contextOnly
+                hasListEvidence = hasListEvidence || (match.evidence != .contextOnly && match.evidence != .inlineSeries)
             } else {
                 index += 1
             }
@@ -308,9 +398,13 @@ public enum SpokenListFormatter {
         let separator = parsed.end < tokens.count ? tokens[parsed.end].value : ""
         if parenthesized && separator != ")" { return nil }
         guard prefixed || end != parsed.end else { return nil }
+        // Bare years are ordinary content, including when the previous hold
+        // happened to leave list continuation active. Explicit "item 2026"
+        // still works when that large number really is a list marker.
+        guard parsed.value < 1_000 else { return nil }
         let numeric = Int(tokens[numberStart].value) != nil
         let explicit = parenthesized || (numeric && parsed.value < 1_000 && [".", ")", ":"].contains(separator))
-        let evidence: Evidence = explicit ? .explicit : (parsed.value >= 1_000 ? .contextOnly : .series)
+        let evidence: Evidence = explicit ? .numeric : .series
         return Match(end: end, action: .item(.number(parsed.value)), evidence: evidence)
     }
 
@@ -400,15 +494,37 @@ public enum SpokenListFormatter {
     private static func inferredMarkers(_ events: [Event], in text: String) -> Set<Int> {
         var accepted: Set<Int> = []
         var series: [Int] = []
+        func body(_ index: Int) -> String {
+            let next = index + 1 < events.count ? events[index + 1].range.lowerBound : text.endIndex
+            return String(text[events[index].range.upperBound..<next])
+        }
         func finishSeries() {
-            if series.count >= 2 { accepted.formUnion(series) }
-            series = []
+            defer { series = [] }
+            guard series.count >= 2 else { return }
+            if series.contains(where: { events[$0].evidence == .inlineSeries }) {
+                guard let first = series.first, events[first].evidence != .inlineSeries else { return }
+                let numbers = series.compactMap { index -> Int? in
+                    if case .item(.number(let number)) = events[index].action { return number }
+                    return nil
+                }
+                guard zip(numbers, numbers.dropFirst()).allSatisfy({ $0 < $1 }) else { return }
+                // Counting/range hedges do not supply item bodies. Preserve
+                // ambiguous "5, maybe 6, perhaps 7, people" as ordinary speech.
+                let hedges: Set<String> = ["and", "or", "maybe", "perhaps", "possibly", "about", "around", "roughly", "approximately"]
+                guard series.allSatisfy({ index in
+                    let words = contentTokens(body(index))
+                    return words.contains(where: { $0.contains(where: \.isLetter) })
+                        && words.first.map { !hedges.contains($0) } == true
+                }) else { return }
+            }
+            accepted.formUnion(series)
         }
         for (index, event) in events.enumerated() {
             guard case .item = event.action else { finishSeries(); continue }
-            let next = index + 1 < events.count ? events[index + 1].range.lowerBound : text.endIndex
-            let hasBody = text[event.range.upperBound..<next].contains(where: { $0.isLetter || $0.isNumber })
-            if case .item(.number) = event.action, event.evidence != .contextOnly, hasBody { series.append(index) }
+            let hasBody = body(index).contains(where: { $0.isLetter || $0.isNumber })
+            if case .item(.number) = event.action, event.evidence != .contextOnly, hasBody {
+                series.append(index)
+            } else { finishSeries() }
         }
         finishSeries()
         return accepted
@@ -469,17 +585,58 @@ public enum SpokenListFormatter {
         return content
     }
 
-    private static func withoutMetaPrelude(_ text: String) -> String {
-        let tokens = tokenize(text)
-        var kept = ""
-        var start = text.startIndex
-        for token in tokens where [".", "!", "?", "\n"].contains(token.value) {
-            let segment = String(text[start..<token.range.upperBound])
-            if !isMeta(segment) { kept += segment }
+    private static func contentTokens(_ text: String) -> [String] {
+        tokenize(text).map(\.value).filter { $0.contains(where: { $0.isLetter || $0.isNumber }) }
+    }
+
+    private static func containsNonCountingContent(_ text: String) -> Bool {
+        let tokens = tokenize(text).filter { $0.value.contains(where: { $0.isLetter || $0.isNumber }) }
+        var index = 0
+        while index < tokens.count {
+            if let number = number(tokens, at: index) { index = number.end }
+            else if ["and", "or"].contains(tokens[index].value) { index += 1 }
+            else { return true }
+        }
+        return false
+    }
+
+    private static func numberToken(_ number: Int) -> String { "#list-number:\(number)" }
+
+    private static func sourceContentTokens(_ text: String, controls: [Range<String.Index>],
+                                            numberMarkers: [(range: Range<String.Index>, number: Int)]) -> [String] {
+        var result: [String] = []
+        for token in tokenize(text) {
+            if controls.contains(where: { $0.contains(token.range.lowerBound) }) { continue }
+            if let marker = numberMarkers.first(where: { $0.range.contains(token.range.lowerBound) }) {
+                if marker.range.lowerBound == token.range.lowerBound { result.append(numberToken(marker.number)) }
+                continue
+            }
+            if token.value.contains(where: { $0.isLetter || $0.isNumber }) { result.append(token.value) }
+        }
+        return result
+    }
+
+    private static func metaPreludeRanges(in text: String, range: Range<String.Index>) -> [Range<String.Index>] {
+        var removed: [Range<String.Index>] = []
+        var start = range.lowerBound
+        for token in tokenize(text) where range.contains(token.range.lowerBound) && [".", "!", "?", "\n"].contains(token.value) {
+            let segment = start..<token.range.upperBound
+            if isMeta(String(text[segment])) { removed.append(segment) }
             start = token.range.upperBound
         }
-        let remainder = String(text[start...])
-        if !isMeta(remainder) { kept += remainder }
+        let remainder = start..<range.upperBound
+        if isMeta(String(text[remainder])) { removed.append(remainder) }
+        return removed
+    }
+
+    private static func removing(_ removed: [Range<String.Index>], from text: String, within range: Range<String.Index>) -> String {
+        var kept = ""
+        var start = range.lowerBound
+        for removal in removed {
+            kept += text[start..<removal.lowerBound]
+            start = removal.upperBound
+        }
+        kept += text[start..<range.upperBound]
         return kept
     }
 

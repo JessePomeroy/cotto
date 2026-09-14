@@ -163,6 +163,26 @@ struct HistoryPage: View {
                                     .padding(.top, 8)
                             }
                         }
+                        if let reason = selected.formattingRejectionReason {
+                            Text(reason).font(.caption).foregroundStyle(SottoPalette.warning)
+                        }
+                        if let processing = selected.textProcessing {
+                            if let reason = processing.reason {
+                                Text(reason).font(.caption).foregroundStyle(SottoPalette.warning)
+                            }
+                            if processing.status == .rejected, let proposed = processing.proposedText {
+                                DisclosureGroup("Rejected cleanup") {
+                                    Text(proposed).font(.callout).textSelection(.enabled)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                }
+                            }
+                        }
+                        if let hints = selected.recognitionHints, !hints.omittedTerms.isEmpty {
+                            hintDetails("Voice vocabulary", hints: hints)
+                        }
+                        if let hints = selected.proofreadingHints, !hints.omittedTerms.isEmpty {
+                            hintDetails("Cleanup vocabulary", hints: hints)
+                        }
                     }
                 }
                 .frame(maxHeight: .infinity)
@@ -209,6 +229,19 @@ struct HistoryPage: View {
         case .completed: "Completed"
         case .failed: "Failed"
         case .cancelled: "Cancelled"
+        }
+    }
+
+    private func hintDetails(_ title: String, hints: ModelHintUsage) -> some View {
+        DisclosureGroup("\(title): \(hints.omittedTerms.count) terms did not fit") {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Used: \(hints.includedTerms.isEmpty ? "None" : hints.includedTerms.joined(separator: ", "))")
+                Text("Did not fit: \(hints.omittedTerms.joined(separator: ", "))")
+            }
+            .font(.caption)
+            .foregroundStyle(SottoPalette.muted)
+            .textSelection(.enabled)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 }

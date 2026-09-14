@@ -1,19 +1,17 @@
 #!/usr/bin/env python3
-"""Compare local MLX correction proposals with Murmur's historical GGUF helper.
+"""Compare local MLX correction proposals with the production GGUF helper.
 
 Synthetic inputs only. No microphone, app settings, clipboard, or saved history.
 Fetch is explicit; run uses local files with Hugging Face offline mode enforced.
 """
 
 import argparse
-import ast
 import hashlib
 import importlib.metadata
 import json
 import os
 from pathlib import Path
 import platform
-import re
 import selectors
 import statistics
 import subprocess
@@ -23,17 +21,14 @@ import threading
 import time
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "scripts"))
+from cleanup_prompt import add_prompt_arguments, load_cleanup_prompt
+
 CACHE = ROOT / ".build/benchmarks"
 os.environ.setdefault("HF_HOME", str(CACHE / "hf"))
 os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
 os.environ["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "1"
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
-
-
-def system_prompt():
-    source = (ROOT / "TextEngine/worker.cpp").read_text()
-    block = source.split("constexpr auto systemPrompt =", 1)[1].split(";\n", 1)[0]
-    return "".join(ast.literal_eval(s) for s in re.findall(r'"(?:[^"\\]|\\.)*"', block))
 
 
 def write_json(path, value):
@@ -107,19 +102,27 @@ class MLXEngine:
         from mlx_lm import stream_generate
         from mlx_lm.sample_utils import make_sampler
         start = time.perf_counter()
-        slot = "MURMUR_BENCHMARK_JSON_PAYLOAD_70ecdeff"
+        system_slot = "SOTTO_BENCHMARK_SYSTEM_70ecdeff"
+        payload_slot = "SOTTO_BENCHMARK_PAYLOAD_a5d3b912"
         template = self.tokenizer.apply_chat_template(
-            [{"role": "system", "content": prompt}, {"role": "user", "content": slot}],
+            [{"role": "system", "content": system_slot}, {"role": "user", "content": payload_slot}],
             tokenize=False, add_generation_prompt=True, enable_thinking=False,
         )
-        if template.count(slot) != 1:
-            raise RuntimeError("Chat template did not preserve the benchmark payload slot")
-        prefix, suffix = template.split(slot)
+        if template.count(system_slot) != 1 or template.count(payload_slot) != 1:
+            raise RuntimeError("Chat template did not preserve the benchmark content slots")
+        prefix, remaining = template.split(system_slot)
+        if payload_slot not in remaining:
+            raise RuntimeError("Chat template put the user payload before its system prompt")
+        middle, suffix = remaining.split(payload_slot)
         payload = json.dumps(dict(transcript=case["input"], preferredTerms=case["terms"], language="en"),
                              ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         tokens = self.tokenizer.encode(prefix, add_special_tokens=False, split_special_tokens=False)
+        tokens += self.tokenizer.encode(prompt, add_special_tokens=False, split_special_tokens=True)
+        tokens += self.tokenizer.encode(middle, add_special_tokens=False, split_special_tokens=False)
         tokens += self.tokenizer.encode(payload, add_special_tokens=False, split_special_tokens=True)
         tokens += self.tokenizer.encode(suffix, add_special_tokens=False, split_special_tokens=False)
+        if len(tokens) + 2048 > 8192:
+            raise ValueError("Cleanup prompt, transcript, dictionary, and output exceed the production context budget")
         chunks, first, last = [], None, None
         for response in stream_generate(self.model, self.tokenizer, tokens, max_tokens=2048,
                                         sampler=make_sampler(temp=0), prefill_step_size=512):
@@ -172,7 +175,7 @@ class GGUFEngine:
     def correct(self, case, prompt):
         start = time.perf_counter()
         self.process.stdin.write(json.dumps(dict(type="correct", id=case["id"], text=case["input"],
-                                                terms=case["terms"], language="en")) + "\n")
+                                                terms=case["terms"], language="en", systemPrompt=prompt)) + "\n")
         self.process.stdin.flush()
         result = self.receive(20)
         if result["type"] != "result":
@@ -204,9 +207,7 @@ def run(args):
     os.environ["HF_HUB_OFFLINE"] = "1"
     os.environ["TRANSFORMERS_OFFLINE"] = "1"
     cases = json.loads(args.cases.read_text())["cases"]
-    prompt = args.prompt.read_text().strip() if args.prompt else system_prompt()
-    if args.prompt and args.backend != "mlx":
-        raise ValueError("The production GGUF helper owns its prompt; custom prompts are MLX-only")
+    prompt = load_cleanup_prompt(args)
     manifest = json.loads(args.model.read_text()) if args.backend == "mlx" else dict(
         id="Qwen3-4B-Instruct-2507-Q4_K_M", path=str(args.model), weightBytes=args.model.stat().st_size)
     path = Path(manifest["path"])
@@ -216,7 +217,7 @@ def run(args):
                   python=platform.python_version(), macOS=platform.mac_ver()[0],
                   timestamp=time.strftime("%Y-%m-%dT%H:%M:%S%z"),
                   promptSHA256=hashlib.sha256(prompt.encode()).hexdigest(),
-                  promptSource=str(args.prompt) if args.prompt else "TextEngine/worker.cpp:systemPrompt",
+                  promptSource=str(args.prompt) if args.prompt else str(args.server) + ":--print-default-proofreading-prompt",
                   casesSHA256=hashlib.sha256(args.cases.read_bytes()).hexdigest(),
                   repeats=args.repeats, promptCache=False, thinking=False, temperature=0,
                   measurements=[])
@@ -280,7 +281,7 @@ def main():
     bench.add_argument("--model", type=Path, required=True, help="MLX download manifest or GGUF file")
     bench.add_argument("--output", type=Path, required=True)
     bench.add_argument("--repeats", type=int, default=3)
-    bench.add_argument("--prompt", type=Path, help="Optional shared experimental MLX prompt")
+    add_prompt_arguments(bench)
     bench.add_argument("--cases", type=Path, default=Path(__file__).with_name("correction-cases.json"))
     bench.add_argument("--grader", type=Path, default=CACHE / "grade-corrections")
     bench.add_argument("--helper", type=Path, default=ROOT / ".build/server-llama/sotto-text-engine")

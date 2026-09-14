@@ -47,7 +47,7 @@ Edit these under **Server preferences**, then choose **Save shared preferences**
 | Preference | Behavior |
 | --- | --- |
 | `language` | Recognition language; default `en`, with `auto` and the supported language choices in the UI. |
-| `cleanText` | Light filler cleanup; default on. |
+| `proofreadingPrompt` | Shared cleanup system prompt, editable in Server preferences; up to 4,096 UTF-8 bytes. Reset restores the default. |
 | `vocabulary` | Additional recognition hints, bounded to 16 KiB. |
 | `dictionary` | Always-active named lists of preferred spellings and explicit aliases. |
 | `textCorrectionEnabled` | Qwen proofreading; default on. Disabled/unavailable proofreading preserves deterministic dictionary/list processing. |

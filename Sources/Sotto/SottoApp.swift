@@ -210,7 +210,7 @@ final class SottoAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate 
 
 private final class DictationPanel: NSPanel {
     init(controller: SottoController) {
-        super.init(contentRect: NSRect(x: 0, y: 0, width: DictationHUD.width + 36, height: DictationHUD.height + 36),
+        super.init(contentRect: NSRect(x: 0, y: 0, width: DictationHUD.width + 36, height: DictationHUD.height + DictationHUD.noticeHeight + 36),
                    styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         isFloatingPanel = true
         level = .statusBar
@@ -235,7 +235,9 @@ private final class DictationPanel: NSPanel {
         let screen = NSScreen.screens.first(where: { $0.frame.contains(mouse) }) ?? NSScreen.main
         if let screen {
             let visible = screen.visibleFrame
-            setFrameOrigin(NSPoint(x: visible.midX - frame.width / 2, y: visible.minY + 20))
+            // The extra transparent footprint sits below the capsule, keeping
+            // its original resting position whether a limit notice is shown.
+            setFrameOrigin(NSPoint(x: visible.midX - frame.width / 2, y: visible.minY + 20 - DictationHUD.noticeHeight))
         }
         orderFrontRegardless()
     }

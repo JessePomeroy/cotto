@@ -11,6 +11,7 @@ build/
 
 # Personal development notes and local-only release archives
 .local/
+__pycache__/
 
 # Local credentials and model artifacts
 .env

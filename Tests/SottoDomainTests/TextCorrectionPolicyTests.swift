@@ -118,4 +118,106 @@ final class TextCorrectionPolicyTests: XCTestCase {
             candidate: "Please open Codex and Codex, and then close the settings window.", preferredTerms: ["Codex"]))
     }
 
+    func testRejectsMissingShortAnswersEvenBesideLongSurvivingContext() {
+        let context = "Keep the existing server running while we review the history and compare the recorded audio against the finished transcript because the whole discussion matters for our implementation and for the next review of the feature."
+        for answers in ["A. Agreed. A. Agreed. A. Agreed.", "A\nAgreed\nA\nAgreed\nA\nAgreed"] {
+            XCTAssertEqual(TextCorrectionPolicy.rejectionReason(original: answers + "\n" + context, candidate: context), "The rewrite removed an answer or sentence.")
+            XCTAssertNotNil(TextCorrectionPolicy.rejectionReason(original: answers + "\n" + context, candidate: "A. Agreed. " + context))
+        }
+        XCTAssertNil(TextCorrectionPolicy.rejectionReason(original: "A. Agreed. A. Agreed. " + context,
+            candidate: "A, agreed; A, agreed. " + context))
+        XCTAssertNotNil(TextCorrectionPolicy.rejectionReason(original: "Keep the audio. " + context, candidate: context))
+        let startsWithA = "A detailed implementation plan should preserve the audio and every individual answer during processing and review."
+        XCTAssertNotNil(TextCorrectionPolicy.rejectionReason(original: "A. " + startsWithA, candidate: startsWithA))
+        let endsWithAudio = "We should preserve the original recording for review while processing every individual answer in the audio."
+        XCTAssertNotNil(TextCorrectionPolicy.rejectionReason(original: endsWithAudio + " Audio.", candidate: endsWithAudio))
+    }
+
+    func testAcceptsOnlyAnchoredExplicitSpokenRepairExceptions() {
+        for (original, candidate) in [
+            ("Orange, err, yellow.", "Yellow."),
+            ("I want the color to be orange, er, yellow.", "I want the color to be yellow."),
+            ("I want the color to be orange, erm, yellow today.", "I want the color to be yellow today."),
+            ("42, sorry, 24.", "24."),
+            ("Make it 42, I mean, 24.", "Make it 24."),
+            ("Make it 42, correction, 24 before lunch.", "Make it 24 before lunch."),
+            ("I cannot merge this, sorry, I can merge this.", "I can merge this."),
+            ("I can merge this, I mean, I cannot merge this.", "I cannot merge this."),
+            ("We should not ship this, correction, we should ship this tomorrow.", "We should ship this tomorrow."),
+        ] {
+            let result = TextCorrectionPolicy.evaluate(original: original, candidate: candidate)
+            XCTAssertNil(result.rejectionReason, "\(original): \(result.rejectionReason ?? "")")
+            XCTAssertEqual(result.verifiedRepairs.count, 1, original)
+        }
+    }
+
+    func testRepairDoesNotExemptUnrelatedNumbersNegationsOrAnswers() {
+        for (original, candidate) in [
+            ("Make it 42, err, 24. Keep the other 15 records.", "Make it 24. Keep the other 16 records."),
+            ("Make it 42, err, 24. Never merge the result.", "Make it 24. Merge the result."),
+            ("Make it 42, err, 24. Agreed. Keep every other word of this lengthy final paragraph because it documents the details for the current decision.", "Make it 24. Keep every other word of this lengthy final paragraph because it documents the details for the current decision."),
+            ("5. Apples.\n6. Oranges, err, 7. Pears.", "5. Apples.\n7. Pears."),
+        ] {
+            XCTAssertNotNil(TextCorrectionPolicy.rejectionReason(original: original, candidate: candidate), original)
+        }
+    }
+
+    func testAlternativesIdentifiersQuotesAndApologiesAreNotRepairCues() {
+        for (original, candidate) in [
+            ("Orange or yellow.", "Yellow."),
+            ("Use the err variable.", "Use the variable."),
+            ("Orange, ‘err’, yellow.", "Yellow."),
+            ("Orange, `err`, yellow.", "Yellow."),
+            ("I am sorry, I cannot merge this.", "I can merge this."),
+            ("Orange. Sorry, yellow.", "Yellow."),
+        ] {
+            let result = TextCorrectionPolicy.evaluate(original: original, candidate: candidate)
+            XCTAssertTrue(result.verifiedRepairs.isEmpty, original)
+            XCTAssertNotNil(result.rejectionReason, original)
+        }
+        XCTAssertNil(TextCorrectionPolicy.rejectionReason(original: "I want the color to be orange or yellow.", candidate: "I want the color to be orange or yellow."))
+    }
+
+    func testNegationsRemainAttachedToTheirOriginalAction() {
+        for (original, candidate) in [
+            ("I cannot merge this change before the review.", "I can merge this change before the review."),
+            ("There is nothing we should change in this section.", "There is something we should change in this section."),
+            ("Do not merge the branch and do deploy the service.", "Do merge the branch and do not deploy the service."),
+            ("Nobody should deploy this service before the review.", "Somebody should deploy this service before the review."),
+            ("I do not want to merge this change.", "I do want not to merge this change."),
+        ] {
+            XCTAssertNotNil(TextCorrectionPolicy.rejectionReason(original: original, candidate: candidate), candidate)
+        }
+        XCTAssertNil(TextCorrectionPolicy.rejectionReason(original: "I haven’t merged this change.", candidate: "I have not merged this change."))
+        XCTAssertNil(TextCorrectionPolicy.rejectionReason(original: "I cannot merge this change.", candidate: "I can’t merge this change."))
+    }
+
+    func testModelMayRemoveIsolatedHesitationsWithoutExemptingIdentifiers() {
+        for (original, candidate) in [
+            ("Um, hello.", "Hello."),
+            ("Er, open settings.", "Open settings."),
+            ("Please, erm, open settings.", "Please open settings."),
+            ("Open settings, uh.", "Open settings."),
+        ] {
+            let evaluation = TextCorrectionPolicy.evaluate(original: original, candidate: candidate)
+            XCTAssertNil(evaluation.rejectionReason, original)
+            XCTAssertTrue(evaluation.verifiedRepairs.isEmpty, original)
+        }
+        XCTAssertNotNil(TextCorrectionPolicy.rejectionReason(original: "Print the err variable.", candidate: "Print the variable."))
+        XCTAssertNotNil(TextCorrectionPolicy.rejectionReason(original: "Print ‘err’, please.", candidate: "Print, please."))
+    }
+
+    func testProcessingDiagnosticsAreBoundedAndOlderRecordsDecode() throws {
+        let evaluation = TextCorrectionPolicy.evaluate(original: "42, sorry, 24.", candidate: "24.")
+        let record = TextProcessingRecord(dictionaryTerms: [], dictionaryChangedText: false, inputText: "42, sorry, 24.", outputText: "24.", enabled: true, status: .applied, proposedText: String(repeating: "x", count: 13_000), verifiedRepairs: evaluation.verifiedRepairs)
+        XCTAssertEqual(record.proposedText?.count, 12_000)
+        XCTAssertEqual(record.verifiedRepairs?.first?.abandoned.text, "42")
+        XCTAssertEqual(record.verifiedRepairs?.first?.cue.text, "sorry")
+        XCTAssertEqual(record.verifiedRepairs?.first?.replacement.text, "24")
+        let oldJSON = #"{"dictionaryTerms":[],"dictionaryChangedText":false,"inputText":"hello","outputText":"Hello.","enabled":true,"status":"applied"}"#.data(using: .utf8)!
+        let decoded = try JSONDecoder().decode(TextProcessingRecord.self, from: oldJSON)
+        XCTAssertNil(decoded.proposedText)
+        XCTAssertNil(decoded.verifiedRepairs)
+    }
+
 }

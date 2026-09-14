@@ -29,6 +29,7 @@
 #include <optional>
 #include <string>
 #include <thread>
+#include <unordered_set>
 #include <variant>
 #include <vector>
 #include <unistd.h>
@@ -43,7 +44,9 @@ namespace {
 
 using json = nlohmann::json;
 using Clock = std::chrono::steady_clock;
-constexpr size_t maxRequestBytes = 64 * 1024;
+constexpr size_t maxRequestBytes = 1024 * 1024;
+constexpr size_t maxVocabularyBytes = 384 * 1024;
+constexpr size_t maxPromptBytes = 8192;
 constexpr size_t minSamples = WHISPER_SAMPLE_RATE / 5;
 constexpr size_t maxSamples = WHISPER_SAMPLE_RATE * 180;
 
@@ -174,6 +177,71 @@ std::optional<std::string> stringField(const json &request, const char *key) {
     return value;
 }
 
+std::variant<std::vector<std::string>, std::string> vocabularyTerms(const json &request) {
+    const auto field = request.find("vocabularyTerms");
+    if (field == request.end()) {
+        // Older callers supplied unstructured text. Preserve it as one complete
+        // hint, or omit all of it if it cannot fit; never silently take a suffix.
+        const auto prompt = request.contains("prompt") ? stringField(request, "prompt") : std::optional<std::string>("");
+        if (!prompt || prompt->size() > maxPromptBytes) {
+            return "Custom vocabulary must be a string of at most 8192 bytes.";
+        }
+        return prompt->empty() ? std::vector<std::string>{} : std::vector<std::string>{*prompt};
+    }
+    if (!field->is_array() || field->size() > 8192) {
+        return "Vocabulary terms must be an ordered array of at most 8192 strings.";
+    }
+    std::vector<std::string> terms;
+    std::unordered_set<std::string> seen;
+    size_t bytes = 0;
+    for (const auto &entry : *field) {
+        if (!entry.is_string()) return "Vocabulary terms must contain only strings.";
+        const auto term = entry.get<std::string>();
+        if (term.empty() || term.size() > 16384 || trim(term) != term ||
+            std::any_of(term.begin(), term.end(), [](unsigned char character) { return character < 32 || character == 127; })) {
+            return "Vocabulary terms must be nonempty single-line text of at most 16384 bytes without surrounding whitespace.";
+        }
+        bytes += term.size();
+        if (bytes > maxVocabularyBytes) return "Vocabulary terms exceed the 384 KB text limit.";
+        if (seen.insert(term).second) terms.push_back(term);
+    }
+    return terms;
+}
+
+struct VocabularyHints {
+    std::vector<std::string> included;
+    std::vector<std::string> omitted;
+    std::vector<whisper_token> tokens;
+    int tokenBudget;
+};
+
+VocabularyHints selectVocabulary(whisper_context *context, const std::vector<std::string> &terms) {
+    const auto defaults = whisper_full_default_params(WHISPER_SAMPLING_BEAM_SEARCH);
+    // whisper_full reserves the previous-text marker, then retains this many
+    // carried initial-prompt tokens. Use the loaded model's tokenizer and pass
+    // these exact tokens, avoiding upstream's suffix truncation entirely.
+    VocabularyHints hints{{}, {}, {}, std::max(0, std::min(defaults.n_max_text_ctx, whisper_n_text_ctx(context) / 2) - 1)};
+    std::string prompt;
+    for (const auto &term : terms) {
+        const auto candidate = prompt.empty() ? term : prompt + ", " + term;
+        if (candidate.size() > maxPromptBytes || hints.tokenBudget == 0) {
+            hints.omitted.push_back(term);
+            continue;
+        }
+        std::vector<whisper_token> tokens(static_cast<size_t>(hints.tokenBudget));
+        const auto count = whisper_tokenize(context, candidate.c_str(), tokens.data(), hints.tokenBudget);
+        if (count <= 0) {
+            hints.omitted.push_back(term);
+            continue;
+        }
+        tokens.resize(static_cast<size_t>(count));
+        hints.included.push_back(term);
+        hints.tokens = std::move(tokens);
+        prompt = candidate;
+    }
+    return hints;
+}
+
 void transcribe(whisper_context *context, whisper_vad_context *vad, int threads, const json &request) {
     const auto id = stringField(request, "id");
     if (!id || id->empty() || id->size() > 256) {
@@ -190,13 +258,14 @@ void transcribe(whisper_context *context, whisper_vad_context *vad, int threads,
         emitError("The requested language is not supported.", *id);
         return;
     }
-    const auto prompt = request.contains("prompt") ? stringField(request, "prompt") : std::optional<std::string>("");
-    if (!prompt || prompt->size() > 8192) {
-        emitError("Custom vocabulary must be a string of at most 8192 bytes.", *id);
+    const auto vocabulary = vocabularyTerms(request);
+    if (const auto failure = std::get_if<std::string>(&vocabulary)) {
+        emitError(*failure, *id);
         return;
     }
 
     const auto start = Clock::now();
+    const auto hints = selectVocabulary(context, std::get<std::vector<std::string>>(vocabulary));
     auto loaded = readAudio(*path);
     if (const auto failure = std::get_if<std::string>(&loaded)) {
         emitError(*failure, *id);
@@ -241,8 +310,9 @@ void transcribe(whisper_context *context, whisper_vad_context *vad, int threads,
         parameters.suppress_blank = true;
         parameters.suppress_nst = true;
         parameters.language = language->c_str();
-        parameters.initial_prompt = prompt->empty() ? nullptr : prompt->c_str();
-        parameters.carry_initial_prompt = !prompt->empty();
+        parameters.prompt_tokens = hints.tokens.empty() ? nullptr : hints.tokens.data();
+        parameters.prompt_n_tokens = static_cast<int>(hints.tokens.size());
+        parameters.carry_initial_prompt = !hints.tokens.empty();
         parameters.temperature = 0;
         parameters.temperature_inc = 0; // Deterministic, bounded dictation latency.
         parameters.beam_search.beam_size = 5;
@@ -265,7 +335,8 @@ void transcribe(whisper_context *context, whisper_vad_context *vad, int threads,
     reportProgress(nullptr, nullptr, 100, &progress);
     emit({{"type", "result"}, {"id", *id}, {"text", trim(std::move(text))},
           {"duration", audio.duration}, {"elapsed", std::chrono::duration<double>(Clock::now() - start).count()},
-          {"language", detectedLanguage}});
+          {"language", detectedLanguage}, {"includedTerms", hints.included}, {"omittedTerms", hints.omitted},
+          {"tokenCount", hints.tokens.size()}, {"tokenBudget", hints.tokenBudget}});
 }
 
 } // namespace
@@ -332,7 +403,7 @@ int main(int argc, char **argv) {
     emit({{"type", "ready"}, {"engineVersion", whisper_version()}});
 
     // Fixed-size reads prevent a malformed caller from allocating unbounded RAM.
-    std::array<char, maxRequestBytes + 1> buffer{};
+    std::vector<char> buffer(maxRequestBytes + 1);
     while (std::cin.getline(buffer.data(), buffer.size())) {
         const auto request = json::parse(buffer.data(), nullptr, false);
         if (request.is_discarded() || !request.is_object()) {
@@ -348,7 +419,7 @@ int main(int argc, char **argv) {
         transcribe(context.get(), vad.get(), threads, request);
     }
     if (!std::cin.eof()) {
-        emitError("The request exceeds the 64 KB limit.");
+        emitError("The request exceeds the 1 MB limit.");
         return 2;
     }
     return 0;

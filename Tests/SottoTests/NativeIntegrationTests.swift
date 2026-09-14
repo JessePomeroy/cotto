@@ -730,6 +730,51 @@ final class NativeIntegrationTests: XCTestCase {
     }
 
     @MainActor
+    func testRecordingLimitNoticeTracksFinalThirtySecondsAndExplicitStop() {
+        let feedback = RecordingFeedback()
+        var notices: [RecordingLimitNotice?] = []
+        let observation = feedback.$limitNotice.dropFirst().sink { notices.append($0) }
+        defer { observation.cancel() }
+
+        feedback.updateElapsed(149.99)
+        XCTAssertNil(feedback.limitNotice)
+        feedback.updateElapsed(150)
+        XCTAssertEqual(feedback.limitNotice?.text, "Recording limit in 0:30")
+        for _ in 0..<20 { feedback.updateElapsed(150.9); feedback.append(0.5) }
+        XCTAssertEqual(notices.count, 1, "Subsecond and waveform changes do not republish the warning")
+        feedback.updateElapsed(179)
+        XCTAssertEqual(feedback.limitNotice?.text, "Recording limit in 0:01")
+        feedback.updateElapsed(180)
+        feedback.finish(atLimit: true)
+        XCTAssertEqual(feedback.limitNotice, .stopped)
+        XCTAssertEqual(feedback.limitNotice?.text, "Stopped at the 3-minute limit")
+        feedback.clearLevels()
+        XCTAssertEqual(feedback.limitNotice, .stopped, "Processing retains the reason capture stopped")
+        feedback.reset()
+        XCTAssertNil(feedback.limitNotice, "A cancelled, dismissed, or new session starts without stale feedback")
+
+        feedback.updateElapsed(165)
+        feedback.finish(atLimit: false)
+        XCTAssertNil(feedback.limitNotice, "A normal release during the warning is not a cutoff")
+    }
+
+    @MainActor
+    func testRecordingLimitNoticeKeepsItsFootprintWhenHiddenAndVisible() throws {
+        let feedback = RecordingFeedback()
+        let view = NSHostingView(rootView: RecordingLimitNote(feedback: feedback)
+            .frame(width: DictationHUD.width, height: DictationHUD.noticeHeight))
+        let expected = NSSize(width: DictationHUD.width, height: DictationHUD.noticeHeight)
+        for seconds in [0, 149, 150, 179] {
+            feedback.updateElapsed(Double(seconds))
+            view.layoutSubtreeIfNeeded()
+            XCTAssertEqual(view.fittingSize, expected)
+        }
+        feedback.finish(atLimit: true)
+        view.layoutSubtreeIfNeeded()
+        XCTAssertEqual(view.fittingSize, expected)
+    }
+
+    @MainActor
     func testRecordingFeedbackNormalizesSamplesAndResetIsIdempotent() {
         let feedback = RecordingFeedback()
         for sample: Float in [.nan, .infinity, -1] { feedback.append(sample) }

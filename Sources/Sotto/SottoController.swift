@@ -326,7 +326,7 @@ final class SottoController: ObservableObject {
         activeGenerationID = nil
         activeClient = nil
         serverSealed = false
-        resetLevels()
+        recordingFeedback.reset()
     }
 
     private func failSession(_ message: String, cancelServer: Bool) {
@@ -351,11 +351,13 @@ final class SottoController: ObservableObject {
         continuationAnchors.removeAll()
         lastTranscript = ""; lastTranscriptionSeconds = nil; lastAudioSeconds = nil
         lastDelivery = ""; lastDeliveryStatus = .none; errorMessage = nil; activity = .idle
+        recordingFeedback.reset()
     }
 
     func dismissFeedback() {
         guard !isBusy else { return }
         hudTask?.cancel()
+        recordingFeedback.reset()
         onHUDVisibility?(false)
         if activity == .success { activity = .idle }
     }
@@ -484,7 +486,7 @@ final class SottoController: ObservableObject {
         }
     }
 
-    private func finishDictation() {
+    private func finishDictation(atLimit: Bool = false) {
         guard isCapturing else { return }
         recorder.stopAcceptingAudio()
         guard activity == .recording else { cancelDictation(); return }
@@ -494,6 +496,7 @@ final class SottoController: ObservableObject {
             failSession("This recording has no server session.", cancelServer: true); return
         }
         stopRecordingTimer(); resetLevels()
+        recordingFeedback.finish(atLimit: atLimit)
         activity = .transcribing
         statusMessage = "Finishing upload…"
         let current = sessionID
@@ -642,6 +645,7 @@ final class SottoController: ObservableObject {
     }
 
     private func showError(_ message: String) {
+        recordingFeedback.reset()
         activity = .failed; errorMessage = message; statusMessage = message
         onHUDVisibility?(true)
         dismissHUDAfter(seconds: 4)
@@ -653,6 +657,7 @@ final class SottoController: ObservableObject {
             do { try await Task.sleep(for: .seconds(seconds)) } catch { return }
             guard let self, !isBusy else { return }
             onHUDVisibility?(false)
+            recordingFeedback.reset()
             if activity == .success { activity = .idle; statusMessage = isServerReady ? "Ready when you are" : serverStatusMessage }
         }
     }
@@ -760,7 +765,7 @@ final class SottoController: ObservableObject {
                 guard let self, self.isCapturing else { return }
                 let elapsed = ProcessInfo.processInfo.systemUptime - self.recordingStart
                 self.recordingFeedback.updateElapsed(elapsed)
-                if elapsed >= LifecyclePolicy.maximumRecordingSeconds { self.finishDictation() }
+                if elapsed >= LifecyclePolicy.maximumRecordingSeconds { self.finishDictation(atLimit: true) }
             }
         }
         timer.tolerance = 0.025

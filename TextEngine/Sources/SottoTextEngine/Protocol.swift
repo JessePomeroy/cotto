@@ -4,10 +4,11 @@ import Foundation
 enum Limits {
     static let requestBytes = 64 * 1024
     static let textBytes = 24 * 1024
+    static let systemPromptBytes = 4096
     static let contextTokens = 8192
     static let outputTokens = 2048
     static let inferenceSeconds: Double = 15
-    static let engineVersion = "mlx-swift-0.31.4-lm-3.31.4-sotto1"
+    static let engineVersion = "mlx-swift-0.31.4-lm-3.31.4-sotto2"
 }
 
 struct EngineFailure: Error, Sendable {
@@ -20,6 +21,7 @@ struct CorrectionRequest: Sendable {
     let text: String
     let language: String
     let terms: [String]
+    let systemPrompt: String
 
     static func parse(_ data: Data) -> Result<Self, EngineFailure> {
         guard String(data: data, encoding: .utf8) != nil,
@@ -40,6 +42,10 @@ struct CorrectionRequest: Sendable {
               language.utf8.count <= 32 else {
             return .failure(.init(message: "A correction request needs a valid language.", id: id))
         }
+        guard let systemPrompt = string(object["systemPrompt"]), !trim(systemPrompt).isEmpty,
+              systemPrompt.utf8.count <= Limits.systemPromptBytes else {
+            return .failure(.init(message: "The cleanup system prompt must be nonempty and fit within 4 KB.", id: id))
+        }
         guard let values = object["terms"] as? [Any], values.count <= 256 else {
             return .failure(.init(message: "Preferred terms must be a list of at most 256 words or phrases.", id: id))
         }
@@ -55,7 +61,7 @@ struct CorrectionRequest: Sendable {
             }
             terms.append(term)
         }
-        return .success(.init(id: id, text: text, language: language, terms: terms))
+        return .success(.init(id: id, text: text, language: language, terms: terms, systemPrompt: systemPrompt))
     }
 
     private static func string(_ value: Any?) -> String? {

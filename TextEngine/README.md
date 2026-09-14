@@ -31,35 +31,36 @@ only while resolving build dependencies, not while running the helper.
 After loading, the helper emits a single JSON line:
 
 ```json
-{"type":"ready","engineVersion":"mlx-swift-0.31.4-lm-3.31.4-sotto1"}
+{"type":"ready","engineVersion":"mlx-swift-0.31.4-lm-3.31.4-sotto2"}
 ```
 
 Requests and responses are newline-delimited UTF-8 JSON:
 
 ```json
-{"type":"correct","id":"example","text":"i use code ex.","terms":["Codex"],"language":"en"}
+{"type":"correct","id":"example","text":"i use code ex.","terms":["Codex"],"language":"en","systemPrompt":"Return the corrected transcript only. Preserve all spoken content and use preferred names when they match."}
 {"type":"result","id":"example","text":"I use Codex.","elapsed":0.2}
 ```
 
 An error has `type`, `message`, and the request `id` when one was valid. A failed
 request never returns a partial rewrite. The app keeps the deterministic
 transcript on errors or when its additional content-preservation checks reject a
-rewrite. Dictionary aliases and list continuity remain app-owned rules, not
+rewrite. Dictionary aliases and list continuity remain server-owned rules, not
 model memory.
 
 ## Bounds and lifecycle
 
-- 64 KiB per request, 24 KiB transcript, at most 256 preferred terms totaling
-  16 KiB, 256 bytes per term. The app imposes a smaller 6,000-character transcript
+- 64 KiB per request, 24 KiB transcript, a required nonempty 4 KiB system prompt,
+  and at most 256 preferred terms totaling 16 KiB, 256 bytes per term. The server imposes a smaller 6,000-character transcript
   cap and limits dictionary hints before calling the helper.
-- 8,192-token context, 2,048 generated-token limit, greedy decoding. Oversized
+- 8,192-token context including prompt, JSON, role framing, and the reserved
+  2,048 generated-token allowance; greedy decoding. Oversized
   context, output exhaustion, and empty output fail rather than truncate text.
 - 15-second inference deadline inside the helper, followed by a 2-second hard
   process-exit backstop if GPU work cannot settle; the Swift client resets a hung
   helper at 18 seconds and bounds model startup at 30 seconds.
-- The production prompt is unchanged from the previous helper and treats
-  questions, commands, and instructions as dictated content. A separate raw
-  tokenizer excludes all added control tokens from untrusted JSON/text; trusted
+- The server supplies its snapshotted, user-editable cleanup prompt on every
+  request. Helpers have no fallback behavior prompt. A separate raw
+  tokenizer excludes all added control tokens from both custom system text and JSON; trusted
   ChatML framing is tokenized separately. Literal role markers therefore do not
   become structural control IDs. This is not a guarantee against semantic prompt
   injection or model mistakes; the app still validates output before accepting it.
@@ -76,12 +77,20 @@ without a microphone or user history. Metal access is required. Swift fake-helpe
 tests separately cover shared startup, task cancellation, timeouts, stale replies,
 and unload/reload races without model files or network access.
 
+Tests and `scripts/benchmarks/benchmark-corrections.py` load the single canonical
+default using `.build/debug/sotto-server --print-default-proofreading-prompt`.
+Use `--server PATH` for another server executable, or `--prompt FILE` to exercise
+an explicit custom prompt on either MLX or llama.cpp. Benchmark results record
+the exact prompt's SHA-256 hash.
+
 The [historical model comparison](../docs/benchmarks/2026-09-04/README.md) used
 Python MLX-LM and different quantizations from the legacy GGUF helper; it is not
 a native Swift startup/performance test.
 
 The native names fixture permits a lowercase **i** in one sentence while
-keeping preferred-name spellings and all remaining words exact. Capitalization,
+keeping preferred-name spellings and all remaining words exact. The apology
+fixture permits MLX to omit the optional "that" in "I am sorry that the server
+is offline" while retaining the apology and its meaning. Capitalization,
 homophone overcorrection, and dictated-instruction handling remain known
 [correction limitations](../docs/text-correction.md#correction-limitations).
 Synthetic checks do not establish live microphone or cross-app insertion behavior.

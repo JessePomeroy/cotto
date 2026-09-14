@@ -48,7 +48,7 @@ Models warm at server startup and remain loaded for reuse. There is no idle-unlo
 
 ## Processing and delivery safety
 
-The server pipeline is **Whisper → cleanup → dictionary → deterministic lists → optional Qwen → dictionary → rewrite checks → composer**. Model output cannot create list continuation state. Rejected proofreading retains the already-formatted source; the generation records the outcome and reason.
+The server pipeline is **Whisper → mechanical cleanup → dictionary → deterministic lists → optional Qwen → dictionary → rewrite checks → composer**. Model output cannot create list continuation state. Rejected proofreading retains the already-formatted source; the generation records the candidate, outcome, and reason. Cleanup behavior comes from the server-owned prompt frozen in the generation settings; valid local spoken repairs can change quantities or negations only in their verified correction spans.
 
 The composer distinguishes the new `insertionText` from an accumulated `previewText`. Only the former is eligible for insertion. List continuation uses a previous completed generation ID from the same device plus an exact client-side confirmed cursor anchor; server checks include delivery state, mode, and age. Accessibility handles and surrounding editor text never cross the API.
 

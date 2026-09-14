@@ -8,10 +8,15 @@ Edit named lists under **Server preferences**, then save the shared preferences.
 
 - Preferred spellings normalize capitalization: `minimax` becomes `MiniMax`. Aliases are explicit whole-word/phrase replacements; `mini max` becomes `MiniMax` only when mapped to it.
 - Matching is case-insensitive with Unicode word boundaries. Longer phrases take precedence, and replacements do not cascade or change matching substrings inside unrelated identifiers.
-- Preferred terms supplement additional Whisper recognition hints. Aliases are excluded from recognition hints. The complete dictionary performs deterministic replacement; model hints are bounded separately.
+- Star priority terms to suggest them first. Whisper packs whole terms into its loaded model’s actual token budget, then reports included/omitted terms. Qwen uses the same dictionary priority order within its separate limits. Omitted terms appear in history details. All dictionary entries still perform exact replacements.
+- Prefer narrow phrase aliases such as `off middleware → auth middleware`; a broad `off → auth` alias also corrupts legitimate “turn off.” Vocabulary hints can improve recognition but do not guarantee homophone disambiguation.
 - The initial **Personal** list contains **MiniMax** and **Codex**. Explicitly removing them or saving an empty dictionary is respected. There is no fuzzy replacement or automatic learning from editor changes.
 
-Dictionary lists, aliases, recognition hints, and the proofreading toggle belong to the server's revisioned preferences, not the Mac's device configuration.
+Dictionary lists, aliases, priority, recognition hints, the cleanup system prompt, and the proofreading toggle belong to the server's revisioned preferences, not the Mac's device configuration.
+
+## Cleanup instructions
+
+Server preferences provides a fixed-height **Cleanup system prompt** editor and **Reset to default**. Save commits the draft for all clients; current recordings keep their original snapshot. The default asks Qwen to preserve intentional “like,” repetition, and every answer while interpreting explicit spoken corrections such as “orange, erm, yellow.” Custom instructions change cleanup behavior within the content-preservation guards. Disabling Qwen preserves fillers as well as other recognized words.
 
 ## Model and runtime
 
@@ -32,12 +37,14 @@ The server warms helpers at startup and keeps models loaded for reuse. A cancell
 ## Processing and safeguards
 
 1. Whisper recognizes the complete take with language and bounded preferred-term/vocabulary hints.
-2. Light cleanup runs, followed by exact dictionary rules.
+2. Mechanical whitespace/model-marker cleanup runs, followed by exact dictionary rules. Hesitation and repair cues remain available to Qwen.
 3. The deterministic English list formatter establishes bullets, numbers, and continuation state.
-4. Qwen proofreads the new formatted chunk. Dictionary rules run again on its candidate.
+4. Qwen proofreads the new formatted chunk using the server-owned prompt snapshotted for this generation. Dictionary rules run again on its candidate.
 5. Rewrite checks accept the candidate or retain the source. The composer calculates insertion and preview text; the client performs guarded delivery.
 
-Proofreading cannot create or advance list state. Checks reject changed list markers/structure, protected quantities, altered negation, lost preferred terms, excessive wording changes, control tokens, and response preambles. A change from digits to words can be rejected to preserve a quantity's original representation.
+Standalone numeric answers remain content; repeated numbered items preserve their spoken starting values. Formatting verifies content preservation and falls back to the source if it would lose content.
+
+Proofreading cannot create or advance list state. Checks reject changed list markers/structure, protected quantities, altered negation, lost preferred terms, excessive wording changes, control tokens, and response preambles. A change from digits to words can be rejected to preserve a quantity's original representation. Ordered answer coverage rejects deletion of short answers or whole sentences even when a long paragraph remains. Explicit localized corrections may replace quantities or negations only within a verified abandoned phrase; other words remain protected. Existing list-marker corrections remain subject to the list-state guard.
 
 Input is bounded to 6,000 characters. Helpers use an 8,192-token context and a 2,048-token output limit. Preferred-term hints are bounded to 80 terms, 4,096 UTF-8 bytes total, and 256 bytes per term. Token/context limits can reject an otherwise short multilingual or vocabulary-heavy input.
 
@@ -47,21 +54,25 @@ The guards do not prove semantic equivalence. Qwen can still change a homophone 
 
 ## Data boundary and checks
 
-The proofreader receives the dictated chunk, detected language, and bounded preferred terms. It receives no surrounding document, screenshots, Accessibility handles, clipboard history, or accumulated preview. It does not learn from saved history or later edits. These inputs travel to the selected server and are processed by its native helper over private pipes.
+The proofreader receives the dictated chunk, detected language, bounded preferred terms, and the snapshotted cleanup system prompt. It receives no surrounding document, screenshots, Accessibility handles, clipboard history, or accumulated preview. It does not learn from saved history or later edits. These inputs travel to the selected server and are processed by its native helper over private pipes.
 
-Shared generation metadata retains raw/final text, accepted settings, correction source/output, outcome/reason, model identity/hash, engine version, and timings when available. See [shared history](local-history.md).
+Shared generation metadata retains raw/final text, accepted settings, correction source/proposed/accepted output and verified repair spans, vocabulary selection, outcome/reason, model identity/hash, engine version, and timings when available. See [shared history](local-history.md).
 
 Run `swift test` for portable dictionary/list/rewrite policy and server/client tests. Native helper harnesses exercise protocol and synthetic inputs without opening a microphone:
 
 ```sh
 python3 scripts/test-text-engine.py \
   --helper build/server/helpers/sotto-text-engine \
-  --model /absolute/path/to/Qwen3-4B-Instruct-2507-MLX-4bit
+  --model /absolute/path/to/Qwen3-4B-Instruct-2507-MLX-4bit \
+  --server build/server/sotto-server
 
 # Use the GGUF harness with a packaged Linux helper:
 python3 scripts/test-llama-engine.py \
   --engine build/server/helpers/sotto-text-engine \
-  --model /absolute/path/to/Qwen3-4B-Instruct-2507-Q4_K_M.gguf
+  --model /absolute/path/to/Qwen3-4B-Instruct-2507-Q4_K_M.gguf \
+  --server build/server/sotto-server
 ```
 
 There is no legacy desktop transcription/correction CLI or model importer. File-based integration uses the [server HTTP contract](client-server-contract.md).
+
+Audio rechecking for negations Whisper omitted is a [separate follow-up](follow-ups/missing-negation-recognition.md). The current guards compare recognized text; they do not guarantee detection of words missing from ASR.
