@@ -170,7 +170,7 @@ struct ServerPreferencesPage: View {
                     Toggle("Proofread with Qwen", isOn: $draft.textCorrectionEnabled)
                     VStack(alignment: .leading, spacing: 8) {
                         HStack {
-                            Text("Cleanup system prompt")
+                            Text("Cleanup instructions")
                             Spacer()
                             Button("Reset to default") {
                                 draft.proofreadingPrompt = ServerPreferences.defaultProofreadingPrompt
@@ -182,10 +182,10 @@ struct ServerPreferencesPage: View {
                             .font(.body)
                             .scrollContentBackground(.hidden)
                             .padding(7)
-                            .frame(height: 152)
+                            .frame(height: 352)
                             .background(SottoPalette.surface, in: RoundedRectangle(cornerRadius: 6))
                             .overlay { RoundedRectangle(cornerRadius: 6).stroke(SottoPalette.muted.opacity(0.25)) }
-                            .accessibilityLabel("Cleanup system prompt")
+                            .accessibilityLabel("Cleanup instructions")
                             .accessibilityIdentifier("preferences.cleanup-prompt")
                     }
                     TextField("Recognition vocabulary", text: $draft.vocabulary, axis: .vertical)
