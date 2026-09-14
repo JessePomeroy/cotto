@@ -39,14 +39,17 @@ final class NativeInferenceTests: XCTestCase {
         await inference.shutdown()
     }
 
-    func testDuplicateVocabularyIsRejectedBeforeCallingTheHelper() async throws {
+    func testInvalidVocabularyIsRejectedBeforeCallingTheHelper() async throws {
         let fixture = try Fixture(body: "exit 1")
         defer { fixture.remove() }
         let inference = NativeInference(configuration: fixture.configuration())
-        do {
-            _ = try await inference.transcribe(fixture.model, language: "en", vocabularyTerms: ["auth", "auth"])
-            XCTFail("Duplicate hints must fail request validation, not helper diagnostics.")
-        } catch InferenceError.invalidRequest { }
+        for terms in [["auth", "auth"], [" auth"], ["auth "], [" "],
+                      ["auth\u{00a0}"], [String(repeating: "x", count: 16_385)]] {
+            do {
+                _ = try await inference.transcribe(fixture.model, language: "en", vocabularyTerms: terms)
+                XCTFail("Invalid hints must fail request validation, not helper diagnostics.")
+            } catch InferenceError.invalidRequest { }
+        }
         let state = await inference.readiness(proofreadingEnabled: false)
         XCTAssertFalse(state.speechLoaded)
         await inference.shutdown()

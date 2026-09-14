@@ -33,6 +33,7 @@ public struct ServerPreferences: Codable, Equatable, Sendable {
     public var textCorrectionEnabled: Bool
     public var keepOriginalAudio: Bool
     public static let maximumProofreadingPromptBytes = 4096
+    public static let maximumVocabularyTermBytes = 16_384
     public static let defaultProofreadingPrompt = """
         Return only the cleaned transcript field from the user JSON as plain text, without JSON, labels, quotes, or explanations.
         Resolve explicit spoken corrections first. In "old phrase, er/err/erm/I mean/sorry/correction, new phrase", replace the abandoned old phrase and cue with the new phrase. Examples: "I want orange, erm, yellow" becomes "I want yellow"; "Make it 42, sorry, 24" becomes "Make it 24"; "Do merge, correction, do not merge" becomes "Do not merge". Only an explicit repair cue permits removing abandoned words. A contrast such as "42 dollars, not 24 dollars" is not a repair: keep both numbers and "not". Never turn a correction into an alternative using "or". Preserve genuine alternatives and non-corrective apologies.
@@ -70,6 +71,11 @@ public struct ServerPreferences: Codable, Equatable, Sendable {
             !$0.properties.isWhitespace && [.control, .format].contains($0.properties.generalCategory)
         }) {
             return "Vocabulary must fit within 16 KB and contain no hidden control characters."
+        }
+        if dictionary.lists.contains(where: { list in
+            list.entries.contains { $0.term.utf8.count > Self.maximumVocabularyTermBytes }
+        }) {
+            return "Each dictionary word must fit within 16 KB for speech recognition."
         }
         return dictionary.validationError
     }

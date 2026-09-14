@@ -199,9 +199,10 @@ final class GenerationServiceTests: XCTestCase {
             let url = fixture.configuration.dataDirectory.appendingPathComponent("preferences.json")
             let priorData = try Data(contentsOf: url)
             var update = previous
-            update.preferences.dictionary = PersonalDictionary(lists: [DictionaryList(name: "Terms", entries: [
-                DictionaryEntry(term: "a" + String(repeating: "\u{0301}", count: 140_000)),
-            ])])
+            let entries = (0..<20).map { index in
+                DictionaryEntry(term: "term\(index)" + String(repeating: "\u{0301}", count: 8_000))
+            }
+            update.preferences.dictionary = PersonalDictionary(lists: [DictionaryList(name: "Terms", entries: entries)])
             XCTAssertNil(update.preferences.validationError)
             do { _ = try await service.updatePreferences(update); XCTFail("Oversized preferences must not be saved") }
             catch let error as ServiceError { XCTAssertEqual(error.code, "preferences_too_large") }

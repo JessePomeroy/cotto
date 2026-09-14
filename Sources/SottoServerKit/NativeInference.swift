@@ -147,7 +147,11 @@ public actor NativeInference {
         guard FileManager.default.isReadableFile(atPath: audioURL.path),
               !language.isEmpty, language.utf8.count <= 32, !language.contains("\0"),
               vocabularyTerms.count <= 8_192,
-              vocabularyTerms.allSatisfy({ !$0.isEmpty && $0.utf8.count <= 16_384 && $0.rangeOfCharacter(from: .controlCharacters) == nil }),
+              vocabularyTerms.allSatisfy({
+                  !$0.isEmpty && $0.utf8.count <= ServerPreferences.maximumVocabularyTermBytes
+                      && $0 == $0.trimmingCharacters(in: .whitespacesAndNewlines)
+                      && $0.rangeOfCharacter(from: .controlCharacters) == nil
+              }),
               vocabularyTerms.reduce(0, { $0 + $1.utf8.count }) <= 384 * 1024 else {
             throw InferenceError.invalidRequest("Audio, language, or Whisper prompt is invalid.")
         }
