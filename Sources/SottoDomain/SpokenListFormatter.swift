@@ -13,6 +13,12 @@ public struct SpokenListContext: Codable, Equatable, Sendable {
         self.style = style
         self.nextNumber = max(0, nextNumber)
     }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(style: try values.decode(Style.self, forKey: .style),
+                  nextNumber: try values.decode(Int.self, forKey: .nextNumber))
+    }
 }
 
 public struct FormattedDictation: Equatable, Sendable {

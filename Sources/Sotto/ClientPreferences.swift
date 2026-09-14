@@ -21,26 +21,33 @@ final class ClientPreferencesStore: ObservableObject {
     private let url: URL
     private let credentialAccount: String
 
-    init(root: URL) {
+    init(root: URL, environment: [String: String] = ProcessInfo.processInfo.environment,
+         readCredential: ((String) -> String)? = nil) {
         url = root.appendingPathComponent("client.json")
         credentialAccount = root.standardizedFileURL.path
         let saved = (try? Data(contentsOf: url)).flatMap { try? JSONDecoder().decode(Settings.self, from: $0) }
-        let resolvedEndpoint = ProcessInfo.processInfo.environment["SOTTO_SERVER_URL"] ?? saved?.endpoint ?? "http://127.0.0.1:8391"
+        let resolvedEndpoint = environment["SOTTO_SERVER_URL"] ?? saved?.endpoint ?? "http://127.0.0.1:8391"
         endpoint = resolvedEndpoint
         deviceID = saved?.deviceID ?? UUID().uuidString.lowercased()
         deviceName = saved?.deviceName ?? Host.current().localizedName ?? "My Mac"
-        token = Self.readToken(account: root.standardizedFileURL.path + "|" + resolvedEndpoint)
-        if saved == nil { persist() }
+        token = ""
+        do {
+            let validated = try ServerEndpoint(resolvedEndpoint)
+            endpoint = validated.address
+            let account = credentialAccount + "|" + validated.address
+            token = readCredential?(account) ?? Self.readToken(account: account)
+            if saved == nil { persist() }
+        } catch {
+            errorMessage = error.localizedDescription
+        }
     }
 
     @discardableResult
     func save(endpoint: String, token: String, deviceName: String) -> Bool {
-        let endpoint = endpoint.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let components = URLComponents(string: endpoint),
-              ["http", "https"].contains(components.scheme?.lowercased() ?? ""),
-              components.host?.isEmpty == false, components.user == nil,
-              components.password == nil, components.query == nil, components.fragment == nil else {
-            errorMessage = "Enter an HTTP or HTTPS server address without credentials, a query, or a fragment."
+        let normalizedEndpoint: String
+        do { normalizedEndpoint = try ServerEndpoint(endpoint).address }
+        catch {
+            errorMessage = error.localizedDescription
             return false
         }
         let name = deviceName.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -53,7 +60,6 @@ final class ClientPreferencesStore: ObservableObject {
             errorMessage = "Use a server token without whitespace, up to 4 KB."
             return false
         }
-        let normalizedEndpoint = endpoint.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         // Scope credentials to their exact endpoint so a failed settings write
         // or environment override cannot send one server's key to another.
         guard Self.writeToken(trimmedToken, account: credentialAccount + "|" + normalizedEndpoint) else {

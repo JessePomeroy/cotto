@@ -28,10 +28,10 @@
 	<string>Sotto Dev records your microphone only while you dictate and sends audio to your configured Sotto server for transcription and shared history.</string>
 	<key>NSInputMonitoringUsageDescription</key>
 	<string>Sotto Dev listens for your chosen hold-to-dictate key. It does not store your keystrokes.</string>
-	<!-- The user chooses an HTTP or HTTPS server endpoint, including private-network hostnames. -->
+	<!-- HTTP is validated in ServerEndpoint and limited to loopback/Tailscale IPs. -->
 	<key>NSAppTransportSecurity</key>
 	<dict>
-		<key>NSAllowsArbitraryLoads</key>
+		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>
 	<key>NSLocalNetworkUsageDescription</key>
