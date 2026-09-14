@@ -142,7 +142,9 @@ public struct PersonalDictionary: Codable, Equatable, Sendable {
         return terms.filter { seen.insert(DictionaryValidation.key($0)).inserted }
     }
 
-    public func apply(to text: String) -> String {
+    /// When bounded, keep the entire source if replacements would exceed the
+    /// output budget. Never return a partial transcript or partial dictionary pass.
+    public func apply(to text: String, maximumOutputUTF8Bytes: Int? = nil) -> String {
         guard !text.isEmpty, validationError == nil else { return text }
         var replacements: [String: String] = [:]
         // Swift String equality is canonically equivalent, so a Set<String>
@@ -173,17 +175,24 @@ public struct PersonalDictionary: Codable, Equatable, Sendable {
         let characterBoundaries = Set(text.indices).union([text.endIndex])
         // Build from the original text once. Replacement output is never matched again.
         var result = ""
-        result.reserveCapacity(text.utf8.count)
+        result.reserveCapacity(min(text.utf8.count, max(0, maximumOutputUTF8Bytes ?? text.utf8.count)))
+        var outputBytes = 0
         var cursor = text.startIndex
         for match in matches {
             guard let range = Range(match.range, in: text),
                   characterBoundaries.contains(range.lowerBound), characterBoundaries.contains(range.upperBound),
                   let replacement = replacements[DictionaryValidation.key(String(text[range]))] else { continue }
-            result.append(contentsOf: text[cursor..<range.lowerBound])
+            let unchanged = text[cursor..<range.lowerBound]
+            let nextBytes = outputBytes + unchanged.utf8.count + replacement.utf8.count
+            if let maximumOutputUTF8Bytes, nextBytes > maximumOutputUTF8Bytes { return text }
+            result.append(contentsOf: unchanged)
             result.append(replacement)
+            outputBytes = nextBytes
             cursor = range.upperBound
         }
-        result.append(contentsOf: text[cursor...])
+        let remaining = text[cursor...]
+        if let maximumOutputUTF8Bytes, outputBytes + remaining.utf8.count > maximumOutputUTF8Bytes { return text }
+        result.append(contentsOf: remaining)
         return result
     }
 }

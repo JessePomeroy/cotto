@@ -13,6 +13,9 @@ public struct ServiceError: LocalizedError, Sendable {
 /// The sole owner of durable product state. Actor isolation serializes admission,
 /// chunk commits and preference revisions; native inference never blocks this actor.
 public actor GenerationService {
+    private static let maximumMetadataBytes = 1_048_576
+    private static let maximumPreferencesBytes = 262_144
+    private static let maximumDictionaryOutputBytes = 24 * 1_024
     private struct Chunk {
         var offset: UInt64
         var count: Int
@@ -52,7 +55,7 @@ public actor GenerationService {
         if files.fileExists(atPath: preferencesURL.path) {
             let attributes = try files.attributesOfItem(atPath: preferencesURL.path)
             guard attributes[.type] as? FileAttributeType == .typeRegular,
-                  let size = attributes[.size] as? NSNumber, size.intValue <= 262_144 else {
+                  let size = attributes[.size] as? NSNumber, size.intValue <= Self.maximumPreferencesBytes else {
                 throw ServiceError(500, "invalid_preferences", "Server preferences must be a regular JSON file of at most 256 KiB.")
             }
             preferences = try SottoAPI.decoder().decode(PreferencesSnapshot.self, from: Data(contentsOf: preferencesURL))
@@ -70,7 +73,7 @@ public actor GenerationService {
             guard files.fileExists(atPath: metadata.path) else { continue }
             let metadataAttributes = try files.attributesOfItem(atPath: metadata.path)
             guard metadataAttributes[.type] as? FileAttributeType == .typeRegular,
-                  let metadataSize = metadataAttributes[.size] as? NSNumber, metadataSize.intValue <= 1_048_576 else {
+                  let metadataSize = metadataAttributes[.size] as? NSNumber, metadataSize.intValue <= Self.maximumMetadataBytes else {
                 throw ServiceError(500, "invalid_archive", "Generation metadata must be a regular JSON file of at most 1 MiB.")
             }
             var record = try SottoAPI.decoder().decode(GenerationRecord.self, from: Data(contentsOf: metadata))
@@ -83,7 +86,10 @@ public actor GenerationService {
                 for name in ["inference.raw", "original.raw", "inference.wav.partial", "original.wav.partial"] {
                     try? files.removeItem(at: child.appendingPathComponent(name))
                 }
-                try SottoAPI.encoder().encode(record).write(to: metadata, options: .atomic)
+                let recovered = try SottoAPI.encoder().encode(record)
+                // Recovery adds an error message. If a nearly full record has
+                // no room for it, leave its readable on-disk snapshot intact.
+                if recovered.count <= Self.maximumMetadataBytes { try recovered.write(to: metadata, options: .atomic) }
             }
             records[id] = record
         }
@@ -134,7 +140,11 @@ public actor GenerationService {
         guard update.revision == preferences.revision else { throw ServiceError(409, "stale_preferences", "Preferences changed on another device. Reload and try again.") }
         if let error = update.preferences.validationError { throw ServiceError(400, "invalid_preferences", error) }
         let next = PreferencesSnapshot(revision: preferences.revision + 1, preferences: update.preferences)
-        try SottoAPI.encoder().encode(next).write(to: configuration.dataDirectory.appendingPathComponent("preferences.json"), options: .atomic)
+        let data = try SottoAPI.encoder().encode(next)
+        guard data.count <= Self.maximumPreferencesBytes else {
+            throw ServiceError(413, "preferences_too_large", "Server preferences exceeded the 256 KiB storage limit.")
+        }
+        try data.write(to: configuration.dataDirectory.appendingPathComponent("preferences.json"), options: .atomic)
         preferences = next
         if activeID == nil { beginWarmup() }
         return next
@@ -362,7 +372,7 @@ public actor GenerationService {
             record.speech = ModelProvenance(modelID: "whisper-large-v3-turbo", modelSHA256: speech.modelSHA256, backend: Self.speechBackend,
                                            engineVersion: speech.engineVersion, processingSeconds: speech.processingSeconds)
             let cleaned = TranscriptCleaner.clean(speech.text)
-            let transcript = settings.dictionary.apply(to: cleaned)
+            let transcript = settings.dictionary.apply(to: cleaned, maximumOutputUTF8Bytes: Self.maximumDictionaryOutputBytes)
             let structured = SpokenListFormatter.format(transcript, context: previous?.list)
             record.formattingRejectionReason = structured.formattingRejectionReason
             record.consumedListControls = structured.consumedControls
@@ -423,7 +433,8 @@ public actor GenerationService {
             let proof = try await inference.correct(text, terms: TextCorrectionPolicy.modelHints(terms), language: language,
                                                     systemPrompt: settings.proofreadingPrompt)
             try Task.checkCancellation()
-            let candidate = settings.dictionary.apply(to: proof.text.trimmingCharacters(in: .whitespacesAndNewlines))
+            let candidate = settings.dictionary.apply(to: proof.text.trimmingCharacters(in: .whitespacesAndNewlines),
+                                                      maximumOutputUTF8Bytes: Self.maximumDictionaryOutputBytes)
             let evaluation = TextCorrectionPolicy.evaluate(original: text, candidate: candidate, preferredTerms: terms)
             if let reason = evaluation.rejectionReason {
                 return make(.rejected, reason: reason, proposedText: candidate, verifiedRepairs: evaluation.verifiedRepairs,
@@ -464,7 +475,11 @@ public actor GenerationService {
     }
 
     private func save(_ record: GenerationRecord) throws {
-        try SottoAPI.encoder().encode(record).write(to: directory(record.id).appendingPathComponent("metadata.json"), options: .atomic)
+        let data = try SottoAPI.encoder().encode(record)
+        guard data.count <= Self.maximumMetadataBytes else {
+            throw ServiceError(413, "metadata_too_large", "The generation metadata exceeded its 1 MiB storage limit.")
+        }
+        try data.write(to: directory(record.id).appendingPathComponent("metadata.json"), options: .atomic)
         publish(record)
     }
     private func publish(_ record: GenerationRecord) {

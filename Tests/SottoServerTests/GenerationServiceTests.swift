@@ -148,6 +148,73 @@ final class GenerationServiceTests: XCTestCase {
         }
     }
 
+    func testDictionaryExpansionPreservesFullSourceAndReadableHistory() async throws {
+        let source = Array(repeating: "alias", count: 300).joined(separator: " ")
+        try await withFixture(speechText: source, proofText: source) { service, fixture in
+            var preferences = await service.getPreferences()
+            preferences.preferences.textCorrectionEnabled = true
+            preferences.preferences.dictionary = PersonalDictionary(lists: [DictionaryList(name: "Terms", entries: [
+                DictionaryEntry(term: "a" + String(repeating: "\u{0301}", count: 2_048), aliases: ["alias"]),
+            ])])
+            _ = try await service.updatePreferences(preferences)
+            let record = try await service.create(Self.request())
+            _ = try await service.appendAudio(record.id, kind: .inference, sequence: 0, format: Self.mono, data: Self.audio(frames: 8_000))
+            _ = try await service.finish(record.id, request: .init(inferenceFrames: 8_000))
+            for await _ in try await service.events(record.id) { }
+            let completed = try await service.get(record.id)
+            XCTAssertEqual(completed.status, .completed, completed.error ?? "")
+            XCTAssertEqual(completed.rawText, source)
+            XCTAssertEqual(completed.finalText, source)
+            XCTAssertEqual(completed.textProcessing?.status, .unchanged)
+            let restarted = try GenerationService(configuration: fixture.configuration)
+            let restored = try await restarted.get(record.id)
+            XCTAssertEqual(restored.finalText, source)
+            await restarted.shutdown()
+        }
+    }
+
+    func testOversizedMetadataFailsWithoutPoisoningRestartOrLosingAudio() async throws {
+        try await withFixture(speechText: String(repeating: "a", count: 220_000)) { service, fixture in
+            let record = try await service.create(Self.request())
+            _ = try await service.appendAudio(record.id, kind: .inference, sequence: 0, format: Self.mono, data: Self.audio(frames: 8_000))
+            _ = try await service.finish(record.id, request: .init(inferenceFrames: 8_000))
+            for await _ in try await service.events(record.id) { }
+            let failed = try await service.get(record.id)
+            XCTAssertEqual(failed.status, .failed)
+            XCTAssertTrue(failed.error?.contains("metadata") == true, failed.error ?? "")
+            let metadata = try await service.artifact(record.id, filename: "metadata.json")
+            XCTAssertLessThanOrEqual(try Data(contentsOf: metadata).count, 1_048_576)
+            let restarted = try GenerationService(configuration: fixture.configuration)
+            let restored = try await restarted.get(record.id)
+            XCTAssertEqual(restored.status, .failed)
+            let audio = try await restarted.artifact(record.id, filename: "inference.wav")
+            XCTAssertEqual(try Data(contentsOf: audio).count, 32_044)
+            await restarted.shutdown()
+        }
+    }
+
+    func testOversizedPreferencesKeepPriorRevisionAndReadableStoredState() async throws {
+        try await withFixture { service, fixture in
+            let previous = await service.getPreferences()
+            let url = fixture.configuration.dataDirectory.appendingPathComponent("preferences.json")
+            let priorData = try Data(contentsOf: url)
+            var update = previous
+            update.preferences.dictionary = PersonalDictionary(lists: [DictionaryList(name: "Terms", entries: [
+                DictionaryEntry(term: "a" + String(repeating: "\u{0301}", count: 140_000)),
+            ])])
+            XCTAssertNil(update.preferences.validationError)
+            do { _ = try await service.updatePreferences(update); XCTFail("Oversized preferences must not be saved") }
+            catch let error as ServiceError { XCTAssertEqual(error.code, "preferences_too_large") }
+            let unchanged = await service.getPreferences()
+            XCTAssertEqual(unchanged, previous)
+            XCTAssertEqual(try Data(contentsOf: url), priorData)
+            let restarted = try GenerationService(configuration: fixture.configuration)
+            let restored = await restarted.getPreferences()
+            XCTAssertEqual(restored, previous)
+            await restarted.shutdown()
+        }
+    }
+
     func testSealingFailureTerminatesGenerationAndReleasesAdmission() async throws {
         try await withFixture(keepOriginal: true) { service, fixture in
             let record = try await service.create(Self.request())
@@ -259,8 +326,9 @@ final class GenerationServiceTests: XCTestCase {
     private static func request() -> CreateGenerationRequest { CreateGenerationRequest(device: .init(id: "mac-test", name: "Test Mac")) }
     private static func audio(frames: Int) -> Data { Data(repeating: 0, count: frames * 4) }
 
-    private func withFixture(keepOriginal: Bool = false, _ work: (GenerationService, Fixture) async throws -> Void) async throws {
-        let fixture = try Fixture()
+    private func withFixture(keepOriginal: Bool = false, speechText: String = "hello code ex.", proofText: String = "Hello Codex.",
+                             _ work: (GenerationService, Fixture) async throws -> Void) async throws {
+        let fixture = try Fixture(speechText: speechText, proofText: proofText)
         let inference = NativeInference(configuration: fixture.configuration.inference)
         try await inference.warmUp()
         let service = try GenerationService(configuration: fixture.configuration, inference: inference)
@@ -278,22 +346,24 @@ final class GenerationServiceTests: XCTestCase {
     private struct Fixture {
         let directory: URL
         let configuration: ServerConfiguration
-        init() throws {
+        init(speechText: String, proofText: String) throws {
             directory = FileManager.default.temporaryDirectory.appendingPathComponent("sotto-service-\(UUID().uuidString)")
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             let helper = directory.appendingPathComponent("helper")
             let model = directory.appendingPathComponent("model")
             try Data("fixture model".utf8).write(to: model)
+            try JSONEncoder().encode(speechText).write(to: directory.appendingPathComponent("speech.json"))
+            try JSONEncoder().encode(proofText).write(to: directory.appendingPathComponent("proof.json"))
             let script = #"""
             #!/bin/sh
             printf '{"type":"ready","engineVersion":"fixture-1"}\n'
             while IFS= read -r line; do
                 id=$(printf '%s' "$line" | sed -n 's/.*"id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
                 case "$line" in
-                  *'"type":"correct"'*) text='Hello Codex.' ;;
-                  *) text='hello code ex.' ;;
+                  *'"type":"correct"'*) text=$(cat "$(dirname "$0")/proof.json") ;;
+                  *) text=$(cat "$(dirname "$0")/speech.json") ;;
                 esac
-                printf '{"type":"result","id":"%s","text":"%s","duration":0.5,"elapsed":0.01,"language":"en"}\n' "$id" "$text"
+                printf '{"type":"result","id":"%s","text":%s,"duration":0.5,"elapsed":0.01,"language":"en"}\n' "$id" "$text"
             done
             """#
             try Data(script.utf8).write(to: helper)
