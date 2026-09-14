@@ -31,6 +31,35 @@ final class TextCorrectionPolicyTests: XCTestCase {
         XCTAssertNotNil(TextCorrectionPolicy.rejectionReason(original: "...", candidate: "Something new."))
     }
 
+    func testRejectsDenseUnicodeBeforeWeightedAlignmentCanOverflow() {
+        let original = String(repeating: "a\u{0301}", count: TextCorrectionPolicy.maximumInputCharacters)
+        XCTAssertEqual(original.count, TextCorrectionPolicy.maximumInputCharacters)
+        XCTAssertLessThanOrEqual(original.utf8.count, 24 * 1024) // Native inference's byte limit.
+        XCTAssertEqual(CorrectionAlignment.tokens(original).count, 6_000)
+        // These 6,000 matches previously scored 71,996 in a UInt16 matrix.
+        XCTAssertEqual(TextCorrectionPolicy.rejectionReason(original: original, candidate: original),
+                       "The rewrite was too complex to validate.")
+    }
+
+    func testRejectsUnboundedUnicodeSequencesInsideOneGrapheme() {
+        let source = String(repeating: "\u{0915}\u{094D}\u{200D}", count: 9_000)
+        let candidate = String(repeating: "\u{0915}\u{094D}\u{200D}", count: 17_000)
+        XCTAssertEqual(source.count, 1)
+        XCTAssertEqual(candidate.count, 1)
+        XCTAssertEqual(TextCorrectionPolicy.rejectionReason(original: source, candidate: "Hello."),
+                       "The source was too long to validate.")
+        XCTAssertEqual(TextCorrectionPolicy.rejectionReason(original: "Hello.", candidate: candidate),
+                       "The rewrite was too long.")
+    }
+
+    func testLongOrdinaryDictationRemainsWithinAlignmentBudget() {
+        let original = String(repeating: "Please preserve every recorded answer. ", count: 150)
+        XCTAssertGreaterThan(original.count, 5_000)
+        XCTAssertLessThanOrEqual(original.count, TextCorrectionPolicy.maximumInputCharacters)
+        XCTAssertNil(TextCorrectionPolicy.rejectionReason(original: original,
+            candidate: original.replacingOccurrences(of: ". ", with: ".\n")))
+    }
+
     func testRejectsChangedNumbersSignsCurrenciesPercentagesAndWrittenQuantities() {
         for (original, candidate) in [
             ("Please order 25 microphones for the project.", "Please order 26 microphones for the project."),

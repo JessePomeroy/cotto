@@ -51,6 +51,14 @@ enum CorrectionAlignment {
         }
     }
 
+    static func isWithinAlignmentBudget(original: String, candidate: String) -> Bool {
+        // Two score passes run sequentially. Cap each UInt32 matrix at 64 MB;
+        // grapheme counts alone do not bound the number of Unicode word tokens.
+        let maximumCells = 16_000_000
+        let width = tokens(candidate).count + 1
+        return tokens(original).count + 1 <= maximumCells / width
+    }
+
     static func preservationReason(original: String, candidate: String, preferredTerms: Set<String>) -> String? {
         let output = tokens(candidate)
         let input = joinedTerms(tokens(original), candidates: preferredTerms.intersection(output.map(\.word)))
@@ -243,11 +251,11 @@ enum CorrectionAlignment {
 
     private static func alignment(_ before: [Token], _ after: [Token], preferredTerms: Set<String>) -> [(Int, Int)] {
         let width = after.count + 1
-        var scores = [UInt16](repeating: 0, count: (before.count + 1) * width)
-        func weight(_ i: Int, _ j: Int) -> UInt16 {
+        var scores = [UInt32](repeating: 0, count: (before.count + 1) * width)
+        func weight(_ i: Int, _ j: Int) -> UInt32 {
             // Prefer coherent phrases over stealing an isolated "A" or "agreed"
             // from a surviving long answer to satisfy an omitted short answer.
-            var value: UInt16 = 8
+            var value: UInt32 = 8
             if i > 0, j > 0, equivalent(before[i - 1].word, after[j - 1].word, preferredTerms) { value += 2 }
             if i + 1 < before.count, j + 1 < after.count, equivalent(before[i + 1].word, after[j + 1].word, preferredTerms) { value += 2 }
             return value

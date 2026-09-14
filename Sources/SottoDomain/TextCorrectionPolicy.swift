@@ -28,10 +28,12 @@ public enum TextCorrectionPolicy {
     }
 
     private static func assess(original: String, candidate: String, preferredTerms: [String], repairs: inout [VerifiedTextRepair]) -> String? {
-        guard original.count <= maximumInputCharacters else { return "The source was too long to validate." }
+        guard original.count <= maximumInputCharacters,
+              original.utf16.count <= maximumInputCharacters * 4 else { return "The source was too long to validate." }
         let output = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !output.isEmpty else { return "The text model returned no text." }
-        guard output.count <= maximumInputCharacters * 2 else { return "The rewrite was too long." }
+        guard output.count <= maximumInputCharacters * 2,
+              output.utf16.count <= maximumInputCharacters * 8 else { return "The rewrite was too long." }
         guard !output.contains("<|"), !output.contains("<think>"), !output.contains("</think>") else {
             return "The text model returned control tokens."
         }
@@ -39,6 +41,9 @@ public enum TextCorrectionPolicy {
             if output.lowercased().hasPrefix(prefix), !original.lowercased().hasPrefix(prefix) {
                 return "The text model added commentary."
             }
+        }
+        guard CorrectionAlignment.isWithinAlignmentBudget(original: original, candidate: output) else {
+            return "The rewrite was too complex to validate."
         }
         // Lists are structured before proofreading; their explicit numbering,
         // bullets, and item count must survive unchanged for continuation.

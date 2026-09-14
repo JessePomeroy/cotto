@@ -11,6 +11,27 @@ import XCTest
 
 final class NativeIntegrationTests: XCTestCase {
     @MainActor
+    func testHiddenRecordingNoticeRemovesExtraWindowAreaWithoutMovingHUDContent() {
+        let expanded = NSRect(x: 200, y: 100, width: DictationPanelLayout.contentSize.width,
+                              height: DictationPanelLayout.contentSize.height)
+        let collapsed = DictationPanelLayout.windowFrame(from: expanded, showsNotice: false)
+        XCTAssertEqual(collapsed.maxY, expanded.maxY)
+        XCTAssertEqual(collapsed.width, expanded.width)
+        XCTAssertEqual(collapsed.minY - expanded.minY, DictationHUD.noticeHeight)
+
+        let extraArea = NSPoint(x: expanded.midX, y: expanded.minY + DictationHUD.noticeHeight / 2)
+        XCTAssertTrue(expanded.contains(extraArea))
+        XCTAssertFalse(collapsed.contains(extraArea), "The hidden notice must not reserve a native mouse hit area")
+
+        let expandedContent = DictationPanelLayout.contentFrame(in: expanded.size)
+            .offsetBy(dx: expanded.minX, dy: expanded.minY)
+        let collapsedContent = DictationPanelLayout.contentFrame(in: collapsed.size)
+            .offsetBy(dx: collapsed.minX, dy: collapsed.minY)
+        XCTAssertEqual(collapsedContent, expandedContent, "Resizing must not re-center the SwiftUI capsule")
+        XCTAssertEqual(DictationPanelLayout.windowFrame(from: collapsed, showsNotice: true), expanded)
+    }
+
+    @MainActor
     func testGlacierTextRemainsLegibleOnReadingAndOpaqueFallbackSurfaces() throws {
         let app = NSApplication.shared
         let previousAppearance = app.appearance

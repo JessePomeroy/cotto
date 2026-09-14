@@ -208,9 +208,34 @@ final class SottoAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate 
     }
 }
 
+enum DictationPanelLayout {
+    static var contentSize: NSSize {
+        NSSize(width: DictationHUD.width + 36, height: DictationHUD.height + DictationHUD.noticeHeight + 36)
+    }
+
+    static func windowFrame(from frame: NSRect, showsNotice: Bool) -> NSRect {
+        let height = contentSize.height - (showsNotice ? 0 : DictationHUD.noticeHeight)
+        return NSRect(x: frame.minX, y: frame.maxY - height, width: frame.width, height: height)
+    }
+
+    static func contentFrame(in windowSize: NSSize) -> NSRect {
+        NSRect(x: 0, y: windowSize.height - contentSize.height, width: contentSize.width, height: contentSize.height)
+    }
+}
+
 private final class DictationPanel: NSPanel {
+    private let hostedHUD: NSView
+    private var noticeSubscription: AnyCancellable?
+    private var showsNotice = false
+
     init(controller: SottoController) {
-        super.init(contentRect: NSRect(x: 0, y: 0, width: DictationHUD.width + 36, height: DictationHUD.height + DictationHUD.noticeHeight + 36),
+        let hostingView = NSHostingView(rootView: DictationHUD(controller: controller).padding(18))
+        hostingView.sizingOptions = []
+        hostedHUD = hostingView
+        let initialFrame = DictationPanelLayout.windowFrame(
+            from: NSRect(origin: .zero, size: DictationPanelLayout.contentSize), showsNotice: false
+        )
+        super.init(contentRect: initialFrame,
                    styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         isFloatingPanel = true
         level = .statusBar
@@ -224,20 +249,35 @@ private final class DictationPanel: NSPanel {
         ignoresMouseEvents = false
         isReleasedWhenClosed = false
         animationBehavior = .none
-        contentView = NSHostingView(rootView: DictationHUD(controller: controller).padding(18))
+        let container = NSView(frame: NSRect(origin: .zero, size: initialFrame.size))
+        contentView = container
+        container.addSubview(hostedHUD)
+        hostedHUD.frame = DictationPanelLayout.contentFrame(in: frame.size)
+        noticeSubscription = controller.recordingFeedback.$limitNotice
+            .map { $0 != nil }
+            .removeDuplicates()
+            .sink { [weak self] visible in self?.setNoticeVisible(visible) }
     }
 
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
+
+    private func setNoticeVisible(_ visible: Bool) {
+        guard visible != showsNotice else { return }
+        showsNotice = visible
+        // Only extend the native hit area while the notice is visible. Keep
+        // the hosted content anchored to the top so the capsule never moves.
+        setFrame(DictationPanelLayout.windowFrame(from: frame, showsNotice: visible), display: false)
+        hostedHUD.frame = DictationPanelLayout.contentFrame(in: frame.size)
+    }
 
     func present() {
         let mouse = NSEvent.mouseLocation
         let screen = NSScreen.screens.first(where: { $0.frame.contains(mouse) }) ?? NSScreen.main
         if let screen {
             let visible = screen.visibleFrame
-            // The extra transparent footprint sits below the capsule, keeping
-            // its original resting position whether a limit notice is shown.
-            setFrameOrigin(NSPoint(x: visible.midX - frame.width / 2, y: visible.minY + 20 - DictationHUD.noticeHeight))
+            let noticeOffset = showsNotice ? DictationHUD.noticeHeight : 0
+            setFrameOrigin(NSPoint(x: visible.midX - frame.width / 2, y: visible.minY + 20 - noticeOffset))
         }
         orderFrontRegardless()
     }
