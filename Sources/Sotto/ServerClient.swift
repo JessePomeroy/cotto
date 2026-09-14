@@ -27,10 +27,7 @@ struct ServerClient: Sendable {
     private let session: URLSession
 
     init(endpoint: String, token: String, session: URLSession? = nil) throws {
-        guard let url = URL(string: endpoint), ["http", "https"].contains(url.scheme?.lowercased() ?? ""),
-              url.host != nil, url.user == nil, url.password == nil,
-              url.query == nil, url.fragment == nil else { throw ServerClientError.invalidEndpoint }
-        self.endpoint = url
+        self.endpoint = try ServerEndpoint(endpoint).url
         self.token = token
         self.session = session ?? Self.defaultSession
     }

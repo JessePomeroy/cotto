@@ -13,7 +13,7 @@ The normal Dev client directory is `~/Library/Application Support/Sotto Dev`. `S
 | macOS Keychain | Bearer credential scoped to the exact endpoint and client data directory. |
 | Native app defaults / macOS | Window and appearance state, first-launch bookkeeping, privacy grants, login-item approval. |
 
-`SOTTO_SERVER_URL` overrides the saved endpoint for a run. The default is `http://127.0.0.1:8391`. Use **This Mac** to set the server URL, token, and device name. URLs cannot contain embedded credentials, queries, or fragments. The HTTP client does not follow redirects with credentials.
+`SOTTO_SERVER_URL` overrides the saved endpoint for a run. The default is `http://127.0.0.1:8391`. Use **This Mac** to set the server URL, token, and device name. URLs cannot contain embedded credentials, queries, or fragments. Saved settings and environment overrides use the same validation before loading credentials or making requests. Whitespace and trailing slashes are removed before selecting the endpoint's Keychain entry. The HTTP client does not follow redirects with credentials.
 
 Device config example:
 
@@ -64,7 +64,7 @@ There is no history-disable or idle-unload setting in this version. The server o
 Bind address, port, token file, data directory, and model/helper paths are runner settings. They are configured on the server, separately from shared product preferences. See [server setup](../Server/README.md) for command arguments and environment variables.
 
 - Same-machine: loopback HTTP, normally port 8391.
-- Remote: the client accepts an explicitly configured HTTP or HTTPS endpoint. Use HTTPS for public hosting; plain HTTP can run over private Tailscale. Nonloopback server binding requires a token of at least 32 characters.
+- Remote: HTTPS is required except for literal Tailscale IPs in `100.64.0.0/10` or `fd7a:115c:a1e0::/48`, which can use HTTP over the encrypted tailnet. For a MagicDNS name, use HTTPS or enter the machine's Tailscale IP; ordinary LAN IPs and unverified hostnames cannot use HTTP. Loopback HTTP accepts `localhost`, `127.0.0.0/8`, and `::1`. Nonloopback server binding requires a token of at least 32 characters.
 - Dev runner: `.local/server` for persistent server data, `.local/client` for device settings, `.local/server.log` for output, `.local/server.pid` for process tracking.
 - Hosted runner: choose durable storage and supervise the independent process with launchd, systemd, or a container runtime.
 

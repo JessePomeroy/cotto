@@ -2,6 +2,22 @@ import XCTest
 @testable import SottoDomain
 
 final class SpokenListFormatterTests: XCTestCase {
+    func testDecodedContextClampsNegativeNextNumber() throws {
+        let data = Data(#"{"style":"numbered","nextNumber":-5}"#.utf8)
+        let context = try JSONDecoder().decode(SpokenListContext.self, from: data)
+        XCTAssertEqual(context, SpokenListContext(style: .numbered, nextNumber: 0))
+        XCTAssertEqual(SpokenListFormatter.format("Apples.", context: context).text, "0. Apples")
+    }
+
+    func testContextCodableRoundTrip() throws {
+        for context in [SpokenListContext(style: .numbered, nextNumber: 5),
+                        SpokenListContext(style: .bulleted),
+                        SpokenListContext(style: .numbered, nextNumber: Int.max)] {
+            XCTAssertEqual(try JSONDecoder().decode(SpokenListContext.self,
+                                                   from: JSONEncoder().encode(context)), context)
+        }
+    }
+
     func testActualScreenshotDictationDropsOnlyResumeChatterAndPreservesNumbers() {
         let input = "Sorry, I wanted that screenshot. Go ahead. My voice to text was just ruined. Let me go back to where I was with that list. Three, oranges. Four, a trip to the beach. Seven, more syrup. That's the end of the list."
         let result = SpokenListFormatter.format(input)
