@@ -64,7 +64,7 @@ There is no history-disable or idle-unload setting in this version. The server o
 Bind address, port, token file, data directory, and model/helper paths are runner settings. They are configured on the server, separately from shared product preferences. See [server setup](../Server/README.md) for command arguments and environment variables.
 
 - Same-machine: loopback HTTP, normally port 8391.
-- Remote: HTTPS is required except for literal Tailscale IPs in `100.64.0.0/10` or `fd7a:115c:a1e0::/48`, which can use HTTP over the encrypted tailnet. For a MagicDNS name, use HTTPS or enter the machine's Tailscale IP; ordinary LAN IPs and unverified hostnames cannot use HTTP. Loopback HTTP accepts `localhost`, `127.0.0.0/8`, and `::1`. Nonloopback server binding requires a token of at least 32 characters.
+- Remote: HTTPS is required except for literal Tailscale IPs in `100.64.0.0/10` or `fd7a:115c:a1e0::/48`, which can use HTTP when they belong to your server on a connected tailnet. This is a deployment precondition: Sotto checks address ranges but does not verify Tailscale routing; the IPv4 range is also used by carrier-grade NAT. Use HTTPS if that condition cannot be maintained. For a MagicDNS name, use HTTPS or enter the machine's Tailscale IP; ordinary LAN IPs and unverified hostnames cannot use HTTP. Loopback HTTP accepts `localhost`, `127.0.0.0/8`, and `::1`. Nonloopback server binding requires a token of at least 32 characters.
 - Dev runner: `.local/server` for persistent server data, `.local/client` for device settings, `.local/server.log` for output, `.local/server.pid` for process tracking.
 - Hosted runner: choose durable storage and supervise the independent process with launchd, systemd, or a container runtime.
 

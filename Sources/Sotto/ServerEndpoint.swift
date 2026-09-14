@@ -1,8 +1,9 @@
 import Darwin
 import Foundation
 
-/// Validate before loading credentials or creating requests. DNS names alone
-/// cannot establish that an HTTP connection stays on an encrypted tailnet.
+/// Validate before loading credentials or creating requests. The HTTP exception
+/// for Tailscale address ranges requires a connected tailnet configured by the
+/// operator; address validation does not attest network routing.
 struct ServerEndpoint {
     enum ValidationError: LocalizedError {
         case invalidAddress
