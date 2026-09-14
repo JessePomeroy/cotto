@@ -127,6 +127,7 @@ public enum SpokenListFormatter {
                     continue
                 }
                 let contextSupportsMarker = context != nil && event.evidence != .inlineSeries && event.evidence != .unanchoredSeries
+                    && event.evidence != .copularSeries
                     && !(event.evidence == .series && containsInlineCandidates && !inferred.contains(index))
                 guard contextSupportsMarker
                     || event.evidence == .explicit || event.evidence == .numeric || inferred.contains(index) else {
@@ -241,6 +242,7 @@ public enum SpokenListFormatter {
         case series
         case unanchoredSeries
         case inlineSeries
+        case copularSeries
         case contextOnly
     }
 
@@ -312,10 +314,12 @@ public enum SpokenListFormatter {
         var afterDirective = false
         var itemBodyStart: Int?
         var hasListEvidence = false
+        var hasListIntroduction = false
         while index < tokens.count {
             let afterComma = index > 0 && tokens[index - 1].value == ","
             let atBoundary = index == 0 || tokens[index - 1].isBoundary || afterDirective || afterComma
             afterDirective = false
+            if atBoundary, introducesList(tokens, at: index) { hasListIntroduction = true }
             guard index != itemBodyStart || (index > 0 && tokens[index - 1].isBoundary) else { index += 1; continue }
             if atBoundary, let match = directive(tokens, at: index) {
                 events.append(Event(range: tokens[index].range.lowerBound..<tokens[match.end - 1].range.upperBound,
@@ -323,15 +327,28 @@ public enum SpokenListFormatter {
                 index = match.end
                 afterDirective = true
                 itemBodyStart = nil
-                if case .end = match.action { hasListEvidence = false } else { hasListEvidence = true }
+                if case .end = match.action {
+                    hasListEvidence = false
+                    hasListIntroduction = false
+                } else {
+                    hasListEvidence = true
+                    hasListIntroduction = true
+                }
             } else if var match = marker(tokens, at: index) {
+                // "One is ... Three is ..." needs an announced list, not just
+                // an old continuation. Keep ordinary "this one is ..." prose.
+                if match.evidence == .copularSeries,
+                   !hasListIntroduction || (index > 0 && ["this", "that", "the", "each", "every", "only", "which"].contains(tokens[index - 1].value)) {
+                    index += 1
+                    continue
+                }
                 if match.evidence == .numeric, !hasListEvidence,
                    index > 0, tokens[index - 1].value != "\n" {
                     // A number after prose ("The answer is: 24. That is
                     // final.") needs repeated item evidence, not just a stop.
                     match = Match(end: match.end, action: match.action, evidence: .unanchoredSeries)
                 }
-                if !atBoundary {
+                if !atBoundary && match.evidence != .copularSeries {
                     // Whisper sometimes omits every separator between items:
                     // "5, Apples 6, Bananas". Interior comma markers are only
                     // candidates; a complete anchored series must validate them.
@@ -345,7 +362,7 @@ public enum SpokenListFormatter {
                 }
                 // Commas are also common ASR item separators, but a sequence of
                 // bare numbers ("one, two, three") is content, not three items.
-                if afterComma {
+                if afterComma && match.evidence != .copularSeries {
                     let previousWasNumber = index >= 2 && number(tokens, at: index - 2)?.end == index - 1
                     if (!hasListEvidence && match.evidence != .explicit) || (previousWasNumber && match.evidence != .explicit) {
                         index += 1
@@ -399,6 +416,9 @@ public enum SpokenListFormatter {
         let parenthesized = tokens[start].value == "("
         if parenthesized { numberStart += 1 }
         guard let parsed = number(tokens, at: numberStart) else { return nil }
+        if !parenthesized, parsed.value < 1_000, parsed.end < tokens.count, tokens[parsed.end].value == "is" {
+            return Match(end: parsed.end + 1, action: .item(.number(parsed.value)), evidence: .copularSeries)
+        }
         if prefixed { return phraseMarker(parsed.end, .number(parsed.value)) }
         let end = endAfterSeparator(parsed.end)
         let separator = parsed.end < tokens.count ? tokens[parsed.end].value : ""
@@ -412,6 +432,16 @@ public enum SpokenListFormatter {
         let explicit = parenthesized || (numeric && parsed.value < 1_000 && [".", ")", ":"].contains(separator))
         let evidence: Evidence = explicit ? .numeric : .series
         return Match(end: end, action: .item(.number(parsed.value)), evidence: evidence)
+    }
+
+    // Announcements establish intent but remain part of the dictated prose.
+    private static func introducesList(_ tokens: [Token], at start: Int) -> Bool {
+        for prefix in [["i", "have"], ["we", "have"], ["here", "is"], ["here's"], ["this", "is"]] {
+            let end = start + prefix.count
+            if end <= tokens.count, Array(tokens[start..<end].map(\.value)) == prefix,
+               listDescriptor(tokens, at: end) != nil { return true }
+        }
+        return false
     }
 
     private static func directive(_ tokens: [Token], at start: Int) -> Match? {

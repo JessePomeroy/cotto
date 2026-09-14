@@ -3,6 +3,25 @@ import XCTest
 @testable import SottoDomain
 
 final class TextCorrectionPolicyTests: XCTestCase {
+    func testDictionaryHintsCannotReplaceUnrelatedWordsInALongItem() {
+        let context = "One is book the room. Three is pick up the keys. Two is send the invitation. "
+        let source = context + "Four is I need to get God, what's it called? I need to get the meeting room sorted so I need to go down there and figure out whether I can get this meeting room."
+        let candidate = context + "Four is I need to get Codex sorted so I need to go down there and figure out whether I can get this meeting room."
+        let result = TextCorrectionPolicy.evaluate(original: source, candidate: candidate, preferredTerms: ["Codex"])
+        XCTAssertEqual(result.rejectionReason, "The rewrite introduced an unsupported dictionary term.")
+        XCTAssertTrue(result.verifiedRepairs.isEmpty)
+    }
+
+    func testDictionaryHintValidationKeepsSupportedSpellingAndSpokenRepairs() {
+        for (source, candidate) in [
+            ("Open codeks and mini max settings.", "Open Codex and MiniMax settings."),
+            ("Open Calendar, err, Codex now.", "Open Codex now."),
+        ] {
+            XCTAssertNil(TextCorrectionPolicy.rejectionReason(original: source, candidate: candidate,
+                                                              preferredTerms: ["Codex", "MiniMax"]), source)
+        }
+    }
+
     func testAcceptsConservativeSpellingCasingAndPunctuationCorrections() {
         XCTAssertNil(TextCorrectionPolicy.rejectionReason(
             original: "please open codecks and minimax settings for this project",

@@ -6,6 +6,34 @@ import SottoAPI
 import XCTest
 
 final class GenerationServiceTests: XCTestCase {
+    func testOutOfOrderListSurvivesUnsupportedProofreadingName() async throws {
+        let source = "I have a list of things to do. One is book the room Three is pick up the keys. Two is send the invitation. Four is I need to get God, what's it called? I need to get the meeting room sorted so I can go there and figure out whether I can get this meeting room."
+        let formatted = "I have a list of things to do.\n\n1. book the room\n3. pick up the keys\n2. send the invitation\n4. I need to get God, what's it called? I need to get the meeting room sorted so I can go there and figure out whether I can get this meeting room."
+        let proposal = formatted.replacingOccurrences(of: "God, what's it called? I need to get the meeting room", with: "Codex")
+        try await withFixture(speechText: source, proofText: proposal) { service, _ in
+            var preferences = await service.getPreferences()
+            preferences.preferences.textCorrectionEnabled = true
+            preferences.preferences.dictionary = PersonalDictionary(lists: [DictionaryList(name: "Terms", entries: [DictionaryEntry(term: "Codex")])])
+            _ = try await service.updatePreferences(preferences)
+            let record = try await service.create(Self.request())
+            _ = try await service.appendAudio(record.id, kind: .inference, sequence: 0, format: Self.mono, data: Self.audio(frames: 8_000))
+            _ = try await service.finish(record.id, request: .init(inferenceFrames: 8_000))
+            for await _ in try await service.events(record.id) { }
+            let completed = try await service.get(record.id)
+            XCTAssertEqual(completed.status, .completed)
+            XCTAssertEqual(completed.rawText, source)
+            XCTAssertEqual(completed.textProcessing?.inputText, formatted)
+            XCTAssertEqual(completed.textProcessing?.status, .rejected)
+            XCTAssertEqual(completed.textProcessing?.reason, "The rewrite introduced an unsupported dictionary term.")
+            XCTAssertEqual(completed.textProcessing?.proposedText, proposal)
+            XCTAssertEqual(completed.finalText, formatted)
+            XCTAssertEqual(completed.insertionText, formatted)
+            XCTAssertEqual(completed.continuation?.list?.nextNumber, 5)
+            let transcript = try await service.artifact(record.id, filename: "transcript.txt")
+            XCTAssertEqual(try String(contentsOf: transcript, encoding: .utf8), formatted)
+        }
+    }
+
     func testChunkReplayGapAndExactFinishCounts() async throws {
         try await withFixture { service, _ in
             let record = try await service.create(Self.request())

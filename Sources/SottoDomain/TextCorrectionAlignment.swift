@@ -83,6 +83,12 @@ enum CorrectionAlignment {
         }
 
         let aligned = alignment(input, output, preferredTerms: preferredTerms)
+        // Vocabulary hints can correct a matching spoken name, but cannot
+        // license inserting that name in place of unrelated dictated content.
+        let matchedOutput = Set(aligned.map(\.1))
+        for index in output.indices where preferredTerms.contains(output[index].word) && !matchedOutput.contains(index) {
+            return "The rewrite introduced an unsupported dictionary term."
+        }
         // Use nonnegative anchors: matching the word "not" itself would hide a
         // move from one otherwise unchanged action to another.
         let positiveInput = input.indices.filter { !isNegative(input[$0].word) }

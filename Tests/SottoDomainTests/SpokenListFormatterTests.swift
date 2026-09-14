@@ -2,6 +2,41 @@ import XCTest
 @testable import SottoDomain
 
 final class SpokenListFormatterTests: XCTestCase {
+    func testAnnouncedListPreservesOutOfOrderCopularMarkersWithoutASRPunctuation() {
+        let source = "Okay, I have a list of things to do today. One is I need to book the room Three is I need to pick up the keys. Two is I need to send the invitation. Four is I need to check the meeting room."
+        let result = SpokenListFormatter.format(source)
+        XCTAssertEqual(result.text, "Okay, I have a list of things to do today.\n\n1. I need to book the room\n3. I need to pick up the keys\n2. I need to send the invitation\n4. I need to check the meeting room")
+        XCTAssertTrue(result.containsList)
+        XCTAssertEqual(result.context?.nextNumber, 5)
+        XCTAssertNil(result.formattingRejectionReason)
+    }
+
+    func testCopularListMarkersPreserveSkippedRepeatedAndDecreasingNumbers() {
+        for introduction in ["I have a list.", "Here's my numbered list.", "We have a list.", "Start a list."] {
+            let result = SpokenListFormatter.format("\(introduction) Five is book the room. Three is check that this one is available. Three is call the host.")
+            XCTAssertTrue(result.text.hasSuffix("5. book the room\n3. check that this one is available\n3. call the host"), result.text)
+            XCTAssertEqual(result.context?.nextNumber, 4)
+            XCTAssertNil(result.formattingRejectionReason)
+        }
+    }
+
+    func testCopularNumbersNeedRepeatedMarkersAndListIntent() {
+        for source in ["One is enough. Three is excessive.", "This one is ready. That one is missing.",
+                       "I have a list. This one is ready. That one is missing.",
+                       "I have a list. One is missing.", "First is not necessarily best."] {
+            let result = SpokenListFormatter.format(source)
+            XCTAssertEqual(result.text, source)
+            XCTAssertFalse(result.containsList)
+            XCTAssertNil(result.formattingRejectionReason)
+        }
+    }
+
+    func testCopularMarkersAcceptDigitsAndExplicitNumberPrefixes() {
+        let result = SpokenListFormatter.format("Start a list. Number five is book the room. 3 is pick up the keys. Item two is send the invitation.")
+        XCTAssertEqual(result.text, "5. book the room\n3. pick up the keys\n2. send the invitation")
+        XCTAssertNil(result.formattingRejectionReason)
+    }
+
     func testDecodedContextClampsNegativeNextNumber() throws {
         let data = Data(#"{"style":"numbered","nextNumber":-5}"#.utf8)
         let context = try JSONDecoder().decode(SpokenListContext.self, from: data)
