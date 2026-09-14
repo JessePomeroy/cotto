@@ -259,6 +259,32 @@ final class TextCorrectionPolicyTests: XCTestCase {
         }
     }
 
+    func testHyphenatedComponentsAreNotRepairCuesOrHesitations() {
+        for cue in ["er", "err", "erm", "sorry", "correction", "I mean"] {
+            for original in ["Use error-\(cue)-code.", "Use error-\(cue), code.", "Use error, \(cue)-code."] {
+                let result = TextCorrectionPolicy.evaluate(original: original, candidate: "Use code.")
+                XCTAssertTrue(result.verifiedRepairs.isEmpty, original)
+                XCTAssertNotNil(result.rejectionReason, original)
+            }
+        }
+        for cue in ["um", "uh", "er", "err", "erm"] {
+            for (original, candidate) in [
+                ("Use error-\(cue)-code.", "Use error-code."),
+                ("\(cue)-code.", "Code."),
+                ("Use code-\(cue).", "Use code."),
+            ] {
+                XCTAssertNotNil(TextCorrectionPolicy.rejectionReason(original: original, candidate: candidate), original)
+            }
+        }
+    }
+
+    func testWhitespaceDelimitedDashesStillAllowSpokenRepairsAndHesitations() {
+        let result = TextCorrectionPolicy.evaluate(original: "Use orange - correction - yellow.", candidate: "Use yellow.")
+        XCTAssertNil(result.rejectionReason)
+        XCTAssertEqual(result.verifiedRepairs.count, 1)
+        XCTAssertNil(TextCorrectionPolicy.rejectionReason(original: "Please - erm - open settings.", candidate: "Please open settings."))
+    }
+
     func testNegationsRemainAttachedToTheirOriginalAction() {
         for (original, candidate) in [
             ("I cannot merge this change before the review.", "I can merge this change before the review."),

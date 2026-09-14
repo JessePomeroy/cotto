@@ -120,7 +120,8 @@ enum CorrectionAlignment {
         var repairedUnits: Set<Int> = []
         let cues = matches(repairCuePattern, original)
         for cue in cues where repairs.count < 8 {
-            guard let firstCue = input.firstIndex(where: { NSIntersectionRange($0.range, cue.range).length > 0 }),
+            guard !touchesHyphen(cue.range, in: source),
+                  let firstCue = input.firstIndex(where: { NSIntersectionRange($0.range, cue.range).length > 0 }),
                   let lastCue = input.lastIndex(where: { NSIntersectionRange($0.range, cue.range).length > 0 }),
                   firstCue > 0, lastCue + 1 < input.count,
                   let unitIndex = units.firstIndex(where: { $0.contains(firstCue) }),
@@ -209,6 +210,7 @@ enum CorrectionAlignment {
         let quotes = CharacterSet(charactersIn: "\"'‘’“”`")
         var removals: [NSRange] = []
         for index in input.indices where hesitations.contains(input[index].word) {
+            guard !touchesHyphen(input[index].range, in: source) else { continue }
             let start = index == 0 ? 0 : NSMaxRange(input[index - 1].range)
             let end = index + 1 == input.count ? source.length : input[index + 1].range.location
             let before = source.substring(with: NSRange(location: start, length: input[index].range.location - start))
@@ -227,6 +229,13 @@ enum CorrectionAlignment {
         let result = NSMutableString(string: original)
         for range in removals.reversed() { result.replaceCharacters(in: range, with: "") }
         return result as String
+    }
+
+    private static func touchesHyphen(_ range: NSRange, in source: NSString) -> Bool {
+        // ASCII hyphens attached to a word belong to identifiers or compounds;
+        // spaced hyphens can still delimit a spoken correction or hesitation.
+        (range.location > 0 && source.character(at: range.location - 1) == 45)
+            || (NSMaxRange(range) < source.length && source.character(at: NSMaxRange(range)) == 45)
     }
 
     private static func answerUnits(_ text: String, _ tokens: [Token]) -> [[Int]] {

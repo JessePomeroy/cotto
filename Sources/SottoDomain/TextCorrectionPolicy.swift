@@ -214,7 +214,22 @@ public struct TextProcessingRecord: Codable, Equatable, Sendable {
         self.engineVersion = engineVersion
         self.processingSeconds = processingSeconds
         self.wallSeconds = wallSeconds
-        self.proposedText = proposedText.map { String($0.prefix(TextCorrectionPolicy.maximumInputCharacters * 2)) }
+        self.proposedText = proposedText.map(Self.boundedProposal)
         self.verifiedRepairs = verifiedRepairs.map { Array($0.prefix(8)) }
+    }
+
+    private static func boundedProposal(_ text: String) -> String {
+        // A single grapheme can contain arbitrarily many combining or joined
+        // scalars. Bound code units first so rejected dictionary expansions
+        // cannot make archived metadata exceed its read limit on restart.
+        var bounded = ""
+        var codeUnits = 0
+        for scalar in text.unicodeScalars {
+            let width = scalar.value > 0xFFFF ? 2 : 1
+            guard codeUnits + width <= TextCorrectionPolicy.maximumInputCharacters * 8 else { break }
+            bounded.unicodeScalars.append(scalar)
+            codeUnits += width
+        }
+        return String(bounded.prefix(TextCorrectionPolicy.maximumInputCharacters * 2))
     }
 }
