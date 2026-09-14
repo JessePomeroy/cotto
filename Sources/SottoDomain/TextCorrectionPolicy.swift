@@ -68,7 +68,7 @@ public enum TextCorrectionPolicy {
         guard numberWords(before) == numberWords(after) else { return "The rewrite changed a quantity." }
         guard !before.isEmpty else { return output == original ? nil : "The rewrite added content." }
         let allowed = Set(preferredTerms.flatMap { words($0) })
-        let comparedBefore = joinRecognizedTerms(before, candidates: allowed.intersection(after))
+        let comparedBefore = CorrectionAlignment.recognizedTerms(in: protectedSource, candidates: allowed.intersection(after)).map(\.word)
         let ratio = Double(after.count) / Double(comparedBefore.count)
         guard ratio >= 0.75, ratio <= 1.35 else { return "The rewrite changed too much text." }
         let shared = orderedOverlap(comparedBefore, after, preferred: allowed)
@@ -82,7 +82,7 @@ public enum TextCorrectionPolicy {
         let rewrittenItems = listItems(output)
         for (beforeItem, afterItem) in zip(originalItems, rewrittenItems) {
             let b = words(afterItem)
-            let a = joinRecognizedTerms(words(beforeItem), candidates: allowed.intersection(b))
+            let a = CorrectionAlignment.recognizedTerms(in: beforeItem, candidates: allowed.intersection(b)).map(\.word)
             guard Double(orderedOverlap(a, b, preferred: allowed)) / Double(max(1, max(a.count, b.count))) >= 0.72 else {
                 return "The rewrite changed a list item."
             }
@@ -133,31 +133,6 @@ public enum TextCorrectionPolicy {
             }
         }
         return row.last ?? 0
-    }
-
-    // ASR often splits a name: “mini max” / “code ex”. Permit the model to join
-    // recognizable fragments into a provided spelling without treating that as
-    // deleted content. This only evaluates a proposal; it never edits a transcript.
-    private static func joinRecognizedTerms(_ tokens: [String], candidates: Set<String>) -> [String] {
-        let candidates = candidates.filter { $0.count >= 4 }.sorted()
-        var result: [String] = []
-        var index = 0
-        while index < tokens.count {
-            var joined = false
-            for width in [3, 2] where index + width <= tokens.count {
-                let fragments = tokens[index..<(index + width)]
-                guard fragments.allSatisfy({ $0.count >= 2 }) else { continue }
-                let phrase = fragments.joined()
-                if let term = candidates.first(where: { editDistance(phrase, $0) <= 1 }) {
-                    result.append(term)
-                    index += width
-                    joined = true
-                    break
-                }
-            }
-            if !joined { result.append(tokens[index]); index += 1 }
-        }
-        return result
     }
 
     private static func editDistance(_ a: String, _ b: String) -> Int {

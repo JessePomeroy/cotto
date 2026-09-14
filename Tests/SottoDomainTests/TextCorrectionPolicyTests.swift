@@ -180,6 +180,16 @@ final class TextCorrectionPolicyTests: XCTestCase {
             candidate: "Please open Codex and Codex, and then close the settings window.", preferredTerms: ["Codex"]))
     }
 
+    func testPreferredTermFragmentsCannotCrossPunctuationOrAnswerBreaks() {
+        for original in ["New. York.", "New, York.", "New; York.", "New-York.", "New\nYork.", "New\r\nYork."] {
+            XCTAssertNotNil(TextCorrectionPolicy.rejectionReason(original: original, candidate: "NewYork.", preferredTerms: ["NewYork"]), original)
+        }
+        for original in ["New York.", "New\tYork.", "Please open mini max."] {
+            let candidate = original.hasPrefix("New") ? "NewYork." : "Please open MiniMax."
+            XCTAssertNil(TextCorrectionPolicy.rejectionReason(original: original, candidate: candidate, preferredTerms: ["NewYork", "MiniMax"]), original)
+        }
+    }
+
     func testRejectsMissingShortAnswersEvenBesideLongSurvivingContext() {
         let context = "Keep the existing server running while we review the history and compare the recorded audio against the finished transcript because the whole discussion matters for our implementation and for the next review of the feature."
         for answers in ["A. Agreed. A. Agreed. A. Agreed.", "A\nAgreed\nA\nAgreed\nA\nAgreed"] {

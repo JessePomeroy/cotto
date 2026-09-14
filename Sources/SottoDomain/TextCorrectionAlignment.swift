@@ -75,7 +75,7 @@ enum CorrectionAlignment {
 
     static func preservationReason(original: String, candidate: String, preferredTerms: Set<String>) -> String? {
         let output = tokens(candidate)
-        let input = joinedTerms(tokens(original), candidates: preferredTerms.intersection(output.map(\.word)))
+        let input = recognizedTerms(in: original, candidates: preferredTerms.intersection(output.map(\.word)))
         let inputNegatives = input.indices.filter { isNegative(input[$0].word) }
         let outputNegatives = output.indices.filter { isNegative(output[$0].word) }
         guard inputNegatives.map({ input[$0].word }) == outputNegatives.map({ output[$0].word }) else {
@@ -308,7 +308,11 @@ enum CorrectionAlignment {
         return result.reversed()
     }
 
-    private static func joinedTerms(_ tokens: [Token], candidates: Set<String>) -> [Token] {
+    // ASR can split a preferred name ("mini max"). Join only horizontally
+    // separated fragments so punctuation and answer boundaries stay protected.
+    static func recognizedTerms(in text: String, candidates: Set<String>) -> [Token] {
+        let tokens = tokens(text)
+        let source = text as NSString
         let candidates = candidates.filter { $0.count >= 4 }.sorted()
         var result: [Token] = []
         var index = 0
@@ -316,7 +320,13 @@ enum CorrectionAlignment {
             var joined = false
             for width in [3, 2] where index + width <= tokens.count {
                 let fragments = tokens[index..<(index + width)]
-                guard fragments.allSatisfy({ $0.word.count >= 2 }) else { continue }
+                guard fragments.allSatisfy({ $0.word.count >= 2 }),
+                      zip(fragments, fragments.dropFirst()).allSatisfy({ left, right in
+                          let start = NSMaxRange(left.range)
+                          guard right.range.location > start else { return false }
+                          let gap = source.substring(with: NSRange(location: start, length: right.range.location - start))
+                          return gap.unicodeScalars.allSatisfy { $0 == " " || $0 == "\t" }
+                      }) else { continue }
                 let phrase = fragments.map(\.word).joined()
                 if let term = candidates.first(where: { editDistance(phrase, $0) <= 1 }) {
                     result.append(Token(word: term, range: NSRange(location: tokens[index].range.location, length: NSMaxRange(tokens[index + width - 1].range) - tokens[index].range.location)))
