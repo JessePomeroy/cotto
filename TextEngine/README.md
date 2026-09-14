@@ -72,8 +72,15 @@ model memory.
 
 ## Verification
 
-`python3 scripts/test-text-engine.py` checks the real model using synthetic text,
-without a microphone or user history. Metal access is required. Swift fake-helper
+Build the canonical prompt exporter before testing a standalone helper build:
+
+```sh
+swift build --product sotto-server
+python3 scripts/test-text-engine.py
+```
+
+This checks the real model using synthetic text, without a microphone or user
+history. Metal access is required. Swift fake-helper
 tests separately cover shared startup, task cancellation, timeouts, stale replies,
 and unload/reload races without model files or network access.
 
