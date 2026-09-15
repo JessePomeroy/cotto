@@ -53,7 +53,7 @@ struct SottoMenuView: View {
 }
 
 struct DictationHUD: View {
-    static let width: CGFloat = 220
+    static let width: CGFloat = SottoBuild.current.isDevelopment ? 200 : 160
     static let height: CGFloat = 44
     static let noticeHeight: CGFloat = 30
     @ObservedObject var controller: SottoController
@@ -81,7 +81,6 @@ struct DictationHUD: View {
             }
             .font(.system(size: 11, weight: .medium))
             .foregroundStyle(SottoPalette.muted)
-            .frame(maxWidth: .infinity)
             Button {
                 if controller.isBusy { controller.cancelDictation() }
                 else { controller.dismissFeedback() }
@@ -145,6 +144,7 @@ struct RecordingLimitNote: View {
             .font(.system(size: 11, weight: .medium))
             .monospacedDigit()
             .lineLimit(1)
+            .minimumScaleFactor(0.8)
             .foregroundStyle(SottoPalette.ink)
             .padding(.horizontal, 9)
             .padding(.vertical, 4)
