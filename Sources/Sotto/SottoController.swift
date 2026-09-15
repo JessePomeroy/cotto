@@ -123,6 +123,9 @@ final class SottoController: ObservableObject {
     private var wisprFlowPrepareGate: WisprFlowPreparationGate?
     private var wisprFlowPrepareRevision = 0
     private var wisprFlowImportTask: Task<Void, Never>?
+    private var wisprFlowMaterializationTask: Task<WisprFlowSourceSession, Error>?
+    private var wisprFlowImportRevision = 0
+    private var wisprFlowActiveReaders: [Int: WisprFlowSourceReader] = [:]
     private var wisprFlowDestinationEndpoint: String?
     let configuration: ConfigurationStore
     let microphones: MicrophonePreferencesStore
@@ -410,14 +413,32 @@ final class SottoController: ObservableObject {
         do { connection = try client() }
         catch { wisprFlowImportState = .failed(error.localizedDescription); return }
         let counts = WisprFlowImportCounts(total: reader.sourceIDs.count)
+        wisprFlowImportRevision += 1
+        let revision = wisprFlowImportRevision
+        // The import task owns this reader until its detached work and artifact
+        // cleanup finish. A new preview may start immediately after cancellation.
+        wisprFlowActiveReaders[revision] = reader
+        wisprFlowReader = nil
         wisprFlowImportState = .running(preview, counts)
         wisprFlowImportTask = Task { [weak self] in
-            await self?.runWisprFlowImport(reader: reader, preview: preview, connection: connection, counts: counts)
+            await self?.runWisprFlowImport(reader: reader, preview: preview, connection: connection,
+                                           counts: counts, revision: revision)
         }
     }
 
     func cancelWisprFlowImport() {
-        wisprFlowImportTask?.cancel()
+        if case .running(let preview, let counts) = wisprFlowImportState {
+            // Awaiting an unstructured reader task does not wake when its parent
+            // is cancelled. Release the sheet now; the old task retains and
+            // cleans its reader when materialization actually stops.
+            wisprFlowImportRevision += 1
+            wisprFlowMaterializationTask?.cancel()
+            wisprFlowMaterializationTask = nil
+            wisprFlowImportTask?.cancel()
+            wisprFlowImportTask = nil
+            wisprFlowDestinationEndpoint = nil
+            wisprFlowImportState = .finished(preview, counts, cancelled: true)
+        }
         wisprFlowPrepareTask?.cancel()
     }
 
@@ -432,7 +453,8 @@ final class SottoController: ObservableObject {
     }
 
     private func runWisprFlowImport(reader: WisprFlowSourceReader, preview: WisprFlowImportPreview,
-                                    connection: ServerClient, counts initialCounts: WisprFlowImportCounts) async {
+                                    connection: ServerClient, counts initialCounts: WisprFlowImportCounts,
+                                    revision: Int) async {
         var counts = initialCounts
         var cancelled = false
         var stoppedEarly = false
@@ -442,10 +464,10 @@ final class SottoController: ObservableObject {
             var materializedSession: WisprFlowSourceSession?
             var activeTransferID: UUID?
             do {
-                let session = try await Task.detached(priority: .utility) {
-                    try reader.session(for: sourceID)
-                }.value
+                let session = try await materializeWisprFlowSession(reader: reader, sourceID: sourceID,
+                                                                     revision: revision)
                 materializedSession = session
+                try Task.checkCancellation()
                 let manifests = try await Task.detached(priority: .utility) {
                     try session.artifacts.map {
                         try ServerClient.wisprFlowArtifactManifest(filename: $0.filename, url: $0.url)
@@ -468,6 +490,7 @@ final class SottoController: ObservableObject {
                         throw ServerClientError.invalidResponse
                     }
                 }
+                try Task.checkCancellation()
                 // A cancelled/lost response can hide a durable server commit.
                 completionAttempted = true
                 let result = try await connection.completeWisprFlowImport(transfer.id)
@@ -482,10 +505,13 @@ final class SottoController: ObservableObject {
                         let sourceReported = session.unarchivedArtifacts.map { omitted in
                             "\(omitted.filename.rawValue) (\(ByteCountFormatter.string(fromByteCount: Int64(omitted.byteCount), countStyle: .file)), SHA-256 \(omitted.sha256))"
                         }
-                        let names = sourceReported.isEmpty
+                        let mediaNames = sourceReported.isEmpty
                             ? result.unarchivedArtifactNames.map(\.rawValue).joined(separator: ", ")
                             : sourceReported.joined(separator: ", ")
-                        counts.unarchivedWarning = "Session \(sourceID.uuidString) has unarchived media: \(names). Source version details are in source.json."
+                        let mediaWarning = mediaNames.isEmpty ? nil
+                            : "Session \(sourceID.uuidString) has unarchived media: \(mediaNames). Source version details are in source.json."
+                        let warnings = [mediaWarning, session.provenanceWarning].compactMap { $0 }
+                        if !warnings.isEmpty { counts.unarchivedWarning = warnings.joined(separator: "\n") }
                     }
                 }
             } catch is CancellationError {
@@ -515,9 +541,10 @@ final class SottoController: ObservableObject {
                     reader.discardArtifacts(for: materializedSession)
                 }
             }
+            if Task.isCancelled { cancelled = true }
             if cancelled { break }
             counts.processed += 1
-            wisprFlowImportState = .running(preview, counts)
+            if revision == wisprFlowImportRevision { wisprFlowImportState = .running(preview, counts) }
             if stoppedEarly { break }
         }
         if !cancelled, !stoppedEarly, preview.dictionaryCount > 0 {
@@ -537,14 +564,28 @@ final class SottoController: ObservableObject {
             }
         }
         cancelled = cancelled || Task.isCancelled
-        wisprFlowImportTask = nil
-        retireWisprFlowReader()
-        wisprFlowDestinationEndpoint = nil
-        wisprFlowImportState = .finished(preview, counts, cancelled: cancelled)
+        await Task.detached(priority: .utility) { reader.close() }.value
+        wisprFlowActiveReaders.removeValue(forKey: revision)
         if completionAttempted || counts.imported + counts.enriched + counts.skipped + counts.partial > 0 {
             if historySourceFilter == "wispr-flow" { refreshHistory() }
             else { setHistorySourceFilter("wispr-flow") }
         }
+        guard revision == wisprFlowImportRevision else { return }
+        wisprFlowImportTask = nil
+        wisprFlowDestinationEndpoint = nil
+        wisprFlowImportState = .finished(preview, counts, cancelled: cancelled)
+    }
+
+    private func materializeWisprFlowSession(reader: WisprFlowSourceReader, sourceID: UUID,
+                                              revision: Int) async throws -> WisprFlowSourceSession {
+        let task = Task.detached(priority: .utility) {
+            try reader.session(for: sourceID)
+        }
+        if revision == wisprFlowImportRevision { wisprFlowMaterializationTask = task }
+        defer {
+            if revision == wisprFlowImportRevision { wisprFlowMaterializationTask = nil }
+        }
+        return try await task.value
     }
 
     private func retireWisprFlowReader() {
@@ -681,8 +722,11 @@ final class SottoController: ObservableObject {
         guard !isShuttingDown else { return }
         isShuttingDown = true
         wisprFlowPrepareTask?.cancel(); wisprFlowImportTask?.cancel()
+        wisprFlowMaterializationTask?.cancel()
         wisprFlowPrepareGate?.cancel(waitForWorker: true)
         wisprFlowPrepareGate = nil
+        for reader in wisprFlowActiveReaders.values { reader.close() }
+        wisprFlowActiveReaders.removeAll()
         wisprFlowReader?.close()
         wisprFlowReader = nil
         stopShortcutCheck()

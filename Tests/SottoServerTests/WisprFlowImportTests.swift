@@ -171,6 +171,96 @@ final class WisprFlowImportTests: XCTestCase {
         await service.shutdown()
     }
 
+    func testCompactedProvenanceKeepsTextButRemainsPartialOnRerun() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let sourceID = UUID(uuidString: "88888888-8888-4888-8888-888888888888")!
+        let source = try Self.provenanceSourceJSON(for: sourceID, omitted: true)
+        let request = Self.request(sourceID: sourceID, text: "Recovered words", artifacts: [(.sourceJSON, source)])
+        let service = try GenerationService(configuration: fixture.configuration)
+
+        let first = try await service.beginWisprFlowImport(request)
+        _ = try await service.uploadWisprFlowArtifact(first.id, filename: .sourceJSON, data: source)
+        let imported = try await service.completeWisprFlowImport(first.id)
+        XCTAssertEqual(imported.outcome, .partial)
+        XCTAssertTrue(imported.unarchivedArtifactNames.isEmpty)
+        XCTAssertEqual(imported.record.finalText, "Recovered words")
+        let archived = try await service.artifact(imported.record.id, filename: "source.json")
+        let archivedDocument = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: archived)) as? [String: Any])
+        XCTAssertEqual(archivedDocument["provenanceStatus"] as? String, "partial")
+        XCTAssertEqual(archivedDocument["provenanceOmittedFieldCount"] as? Int, 1)
+        let archivedSources = try XCTUnwrap(archivedDocument["sources"] as? [[String: Any]])
+        let values = try XCTUnwrap(archivedSources.first?["values"] as? [String: Any])
+        let field = try XCTUnwrap(values["largeMetadata"] as? [String: Any])
+        XCTAssertNil(field["value"])
+        XCTAssertEqual(field["archiveStatus"] as? String, "not-archived")
+        XCTAssertEqual(field["sha256"] as? String, String(repeating: "c", count: 64))
+
+        let again = try await service.beginWisprFlowImport(request)
+        _ = try await service.uploadWisprFlowArtifact(again.id, filename: .sourceJSON, data: source)
+        let rerun = try await service.completeWisprFlowImport(again.id)
+        XCTAssertEqual(rerun.outcome, .partial)
+        XCTAssertTrue(rerun.unarchivedArtifactNames.isEmpty)
+        XCTAssertEqual(rerun.record.id, imported.record.id)
+        await service.shutdown()
+    }
+
+    func testLaterMediaAndFullRowVersionDoNotEraseCompactedProvenance() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let sourceID = UUID(uuidString: "99999999-9999-4999-8999-999999999999")!
+        let compacted = try Self.provenanceSourceJSON(for: sourceID, omitted: true)
+        let complete = try Self.provenanceSourceJSON(for: sourceID, omitted: false)
+        let wav = Self.smallWAV
+        let service = try GenerationService(configuration: fixture.configuration)
+
+        let first = try await service.beginWisprFlowImport(Self.request(sourceID: sourceID, text: "Words",
+                                                            artifacts: [(.sourceJSON, compacted)]))
+        _ = try await service.uploadWisprFlowArtifact(first.id, filename: .sourceJSON, data: compacted)
+        let imported = try await service.completeWisprFlowImport(first.id)
+        XCTAssertEqual(imported.outcome, .partial)
+
+        let second = try await service.beginWisprFlowImport(Self.request(sourceID: sourceID, text: "Words",
+                                                             artifacts: [(.sourceJSON, complete), (.sourceWAV, wav)]))
+        _ = try await service.uploadWisprFlowArtifact(second.id, filename: .sourceJSON, data: complete)
+        _ = try await service.uploadWisprFlowArtifact(second.id, filename: .sourceWAV, data: wav)
+        let enriched = try await service.completeWisprFlowImport(second.id)
+        XCTAssertEqual(enriched.outcome, .partial)
+        XCTAssertTrue(enriched.unarchivedArtifactNames.isEmpty)
+        XCTAssertEqual(enriched.record.id, imported.record.id)
+        let archivedWAV = try await service.artifact(imported.record.id, filename: "source.wav")
+        XCTAssertEqual(try Data(contentsOf: archivedWAV), wav)
+        let archivedSource = try await service.artifact(imported.record.id, filename: "source.json")
+        let document = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: archivedSource)) as? [String: Any])
+        XCTAssertEqual(document["provenanceStatus"] as? String, "partial")
+        XCTAssertEqual(document["provenanceOmittedFieldCount"] as? Int, 1)
+        XCTAssertEqual((document["sources"] as? [[String: Any]])?.count, 2)
+        await service.shutdown()
+    }
+
+    func testIncompleteProvenanceStatusIsRejectedBeforeHistoryChanges() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let sourceID = UUID(uuidString: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")!
+        var document = try XCTUnwrap(JSONSerialization.jsonObject(
+            with: Self.provenanceSourceJSON(for: sourceID, omitted: true)) as? [String: Any])
+        document.removeValue(forKey: "provenanceOmittedFieldCount")
+        let invalid = try JSONSerialization.data(withJSONObject: document, options: [.sortedKeys])
+        let service = try GenerationService(configuration: fixture.configuration)
+        let session = try await service.beginWisprFlowImport(Self.request(sourceID: sourceID, text: "Words",
+                                                                artifacts: [(.sourceJSON, invalid)]))
+        do {
+            _ = try await service.uploadWisprFlowArtifact(session.id, filename: .sourceJSON, data: invalid)
+            XCTFail("A partial provenance status needs counts for omitted source values.")
+        } catch let error as ServiceError {
+            XCTAssertEqual(error.status, 400)
+            XCTAssertEqual(error.code, "invalid_source_json")
+        }
+        let known = try await service.knownWisprFlowIDs(.init(sourceIDs: [sourceID]))
+        XCTAssertTrue(known.knownSourceIDs.isEmpty)
+        await service.shutdown()
+    }
+
     func testDictionaryOverFormerLimitArchivesAllRowsWithoutChangingActiveDictionary() async throws {
         let fixture = try Fixture()
         defer { fixture.remove() }
@@ -299,6 +389,26 @@ final class WisprFlowImportTests: XCTestCase {
     private static func sourceJSON(for id: UUID, version: Int = 0) -> Data {
         let sources = version == 0 ? "[]" : "[{\"syntheticVersion\":\(version)}]"
         return Data(#"{"schemaVersion":1,"provider":"wispr-flow","sourceID":"\#(id.uuidString.lowercased())","sources":\#(sources)}"#.utf8)
+    }
+
+    private static func provenanceSourceJSON(for id: UUID, omitted: Bool) throws -> Data {
+        let field: [String: Any] = omitted
+            ? ["type": "text", "byteCount": 4_000_000, "sha256": String(repeating: "c", count: 64),
+               "archiveStatus": "not-archived", "archiveReason": "exceeds-source-json-limit"]
+            : ["type": "text", "value": "Restored metadata"]
+        var document: [String: Any] = [
+            "schemaVersion": 1, "provider": "wispr-flow", "sourceID": id.uuidString,
+            "sources": [["name": "flow.sqlite", "role": "current", "rowID": 1,
+                         "values": ["largeMetadata": field]]],
+            "archiveOmissions": [],
+        ]
+        if omitted {
+            document["provenanceStatus"] = "partial"
+            document["provenanceOmittedFieldCount"] = 1
+            document["provenanceOmittedSourceCount"] = 0
+            document["provenanceOmittedMediaVersionCount"] = 0
+        }
+        return try JSONSerialization.data(withJSONObject: document, options: [.sortedKeys])
     }
 
     private static func sha256(_ data: Data) -> String {

@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import SQLite3
 import SottoAPI
@@ -116,6 +117,66 @@ final class WisprFlowSourceReaderTests: XCTestCase {
         XCTAssertEqual(textOnly.displayText, "Current pasted text")
     }
 
+    func testOversizedHistoryProvenanceKeepsTranscriptAndTypedFieldSummaries() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        try fixture.addProvenanceFields(blobBytes: 9_000_000, textBytes: 9_000_000)
+        let reader = try WisprFlowSourceReader(sourceURLs: [fixture.urls[0]])
+        let session = try reader.session(for: Fixture.sharedID)
+        XCTAssertEqual(session.displayText, "Current pasted text")
+        XCTAssertNotNil(session.provenanceWarning)
+        let source = try XCTUnwrap(session.artifacts.first(where: { $0.filename == .sourceJSON }))
+        let data = try Data(contentsOf: source.url)
+        XCTAssertLessThanOrEqual(data.count, WisprFlowImportLimits.maximumArtifactBytes)
+        let document = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(document["provenanceStatus"] as? String, "partial")
+        XCTAssertEqual(document["provenanceOmittedFieldCount"] as? Int, 2)
+        XCTAssertEqual(document["provenanceOmittedSourceCount"] as? Int, 0)
+        XCTAssertEqual(document["provenanceOmittedMediaVersionCount"] as? Int, 0)
+        let sources = try XCTUnwrap(document["sources"] as? [[String: Any]])
+        XCTAssertEqual(sources.count, 1)
+        let values = try XCTUnwrap(sources[0]["values"] as? [String: [String: Any]])
+        XCTAssertEqual(values["pastedText"]?["value"] as? String, "Current pasted text")
+        XCTAssertEqual(values["extraPayload"]?["type"] as? String, "blob")
+        XCTAssertEqual(values["extraPayload"]?["byteCount"] as? Int, 9_000_000)
+        XCTAssertNil(values["extraPayload"]?["base64"])
+        XCTAssertEqual(values["extraPayload"]?["sha256"] as? String,
+                       Self.digest(Data(repeating: 0, count: 9_000_000)))
+        XCTAssertEqual(values["longNote"]?["type"] as? String, "text")
+        XCTAssertEqual(values["longNote"]?["byteCount"] as? Int, 9_000_000)
+        XCTAssertNil(values["longNote"]?["value"])
+        XCTAssertEqual(values["longNote"]?["sha256"] as? String,
+                       Self.digest(Data(repeating: 0x6e, count: 9_000_000)))
+        for name in ["extraPayload", "longNote"] {
+            XCTAssertEqual(values[name]?["archiveStatus"] as? String, "not-archived")
+            XCTAssertEqual(values[name]?["archiveReason"] as? String, "exceeds-source-json-limit")
+        }
+    }
+
+    func testSourceArchiveCompactsLargeBlobBeforeSmallTextAndRetainsSourceColumns() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        try fixture.addProvenanceFields(blobBytes: 5_000_000, textBytes: 2_000_000)
+        let reader = try WisprFlowSourceReader(sourceURLs: [fixture.urls[0]])
+        let session = try reader.session(for: Fixture.sharedID)
+        let source = try XCTUnwrap(session.artifacts.first(where: { $0.filename == .sourceJSON }))
+        let data = try Data(contentsOf: source.url)
+        XCTAssertLessThanOrEqual(data.count, WisprFlowImportLimits.maximumArtifactBytes)
+        let document = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(document["provenanceStatus"] as? String, "partial")
+        XCTAssertEqual(document["provenanceOmittedFieldCount"] as? Int, 1)
+        let sources = try XCTUnwrap(document["sources"] as? [[String: Any]])
+        let values = try XCTUnwrap(sources[0]["values"] as? [String: [String: Any]])
+        XCTAssertEqual(values["extraPayload"]?["byteCount"] as? Int, 5_000_000)
+        XCTAssertEqual(values["extraPayload"]?["archiveReason"] as? String, "exceeds-source-json-limit")
+        XCTAssertEqual((values["longNote"]?["value"] as? String)?.utf8.count, 2_000_000)
+        XCTAssertEqual(session.displayText, "Current pasted text")
+    }
+
+    private static func digest(_ data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
     func testDictionaryLargerThanOldLimitIsWholeAndAboveNewLimitFailsClearly() throws {
         let fixture = try Fixture()
         defer { fixture.remove() }
@@ -132,6 +193,30 @@ final class WisprFlowSourceReaderTests: XCTestCase {
         XCTAssertEqual(rows.count, 1_000)
 
         try fixture.addOversizedDictionaryBlob()
+        let oversizedReader = try WisprFlowSourceReader(sourceURLs: [fixture.urls[0]])
+        XCTAssertThrowsError(try oversizedReader.dictionaryArtifactURL()) { error in
+            guard case WisprFlowSourceReaderError.dictionaryTooLarge(let bytes) = error else {
+                return XCTFail("Expected a size-specific dictionary error, got \(error)")
+            }
+            XCTAssertGreaterThan(bytes, WisprFlowImportLimits.maximumDictionaryBytes)
+        }
+    }
+
+    func testEscapedDictionaryTextIsRecoveredUntilArchiveLimit() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        try fixture.addEscapedDictionaryText(id: "escaped-small", count: 1_024)
+        let reader = try WisprFlowSourceReader(sourceURLs: [fixture.urls[0]])
+        let archive = try Data(contentsOf: XCTUnwrap(reader.dictionaryArtifactURL()))
+        let document = try XCTUnwrap(JSONSerialization.jsonObject(with: archive) as? [String: Any])
+        let sources = try XCTUnwrap(document["sources"] as? [[String: Any]])
+        let rows = try XCTUnwrap(sources.first?["rows"] as? [[String: [String: Any]]])
+        XCTAssertEqual(rows.first?["phrase"]?["value"] as? String, String(repeating: "\n", count: 1_024))
+
+        // The raw SQLite value fits in 8 MiB, but JSON escaping doubles it.
+        try fixture.addEscapedDictionaryText(
+            id: "escaped-large", count: WisprFlowImportLimits.maximumDictionaryBytes / 2 + 1_024
+        )
         let oversizedReader = try WisprFlowSourceReader(sourceURLs: [fixture.urls[0]])
         XCTAssertThrowsError(try oversizedReader.dictionaryArtifactURL()) { error in
             guard case WisprFlowSourceReaderError.dictionaryTooLarge(let bytes) = error else {
@@ -224,6 +309,33 @@ final class WisprFlowSourceReaderTests: XCTestCase {
             }
         }
 
+        func addProvenanceFields(blobBytes: Int, textBytes: Int) throws {
+            try withWritableLiveDatabase { database in
+                let schema = "ALTER TABLE History ADD COLUMN extraPayload BLOB; ALTER TABLE History ADD COLUMN longNote TEXT;"
+                guard sqlite3_exec(database, schema, nil, nil, nil) == SQLITE_OK,
+                      sqlite3_exec(database,
+                                   "UPDATE History SET extraPayload = zeroblob(\(blobBytes)) WHERE rowid = 1",
+                                   nil, nil, nil) == SQLITE_OK else {
+                    throw NSError(domain: "WisprFlowFixture", code: 15,
+                                  userInfo: [NSLocalizedDescriptionKey: String(cString: sqlite3_errmsg(database))])
+                }
+                var statement: OpaquePointer?
+                guard sqlite3_prepare_v2(database, "UPDATE History SET longNote = ? WHERE rowid = 1",
+                                         -1, &statement, nil) == SQLITE_OK,
+                      let statement else { throw NSError(domain: "WisprFlowFixture", code: 16) }
+                defer { sqlite3_finalize(statement) }
+                let text = String(repeating: "n", count: textBytes)
+                try text.withCString { pointer in
+                    sqlite3_bind_text(statement, 1, pointer, Int32(textBytes), nil)
+                    guard sqlite3_step(statement) == SQLITE_DONE else {
+                        throw NSError(domain: "WisprFlowFixture", code: 17,
+                                      userInfo: [NSLocalizedDescriptionKey: String(cString: sqlite3_errmsg(database))])
+                    }
+                    sqlite3_reset(statement)
+                }
+            }
+        }
+
         func addDictionaryRows(count: Int, valueSize: Int) throws {
             try withWritableLiveDatabase { database in
                 guard sqlite3_exec(database, "CREATE TABLE IF NOT EXISTS Dictionary (id TEXT PRIMARY KEY, phrase TEXT)", nil, nil, nil) == SQLITE_OK else {
@@ -256,6 +368,28 @@ final class WisprFlowSourceReaderTests: XCTestCase {
                 guard sqlite3_exec(database, "ALTER TABLE Dictionary ADD COLUMN payload BLOB", nil, nil, nil) == SQLITE_OK,
                       sqlite3_exec(database, "INSERT INTO Dictionary (id, payload) VALUES ('huge', zeroblob(7000000))", nil, nil, nil) == SQLITE_OK else {
                     throw NSError(domain: "WisprFlowFixture", code: 11)
+                }
+            }
+        }
+
+        func addEscapedDictionaryText(id: String, count: Int) throws {
+            try withWritableLiveDatabase { database in
+                guard sqlite3_exec(database, "CREATE TABLE IF NOT EXISTS Dictionary (id TEXT PRIMARY KEY, phrase TEXT)", nil, nil, nil) == SQLITE_OK else {
+                    throw NSError(domain: "WisprFlowFixture", code: 15)
+                }
+                var statement: OpaquePointer?
+                guard sqlite3_prepare_v2(database, "INSERT INTO Dictionary VALUES (?, ?)", -1, &statement, nil) == SQLITE_OK,
+                      let statement else { throw NSError(domain: "WisprFlowFixture", code: 16) }
+                defer { sqlite3_finalize(statement) }
+                let phrase = String(repeating: "\n", count: count)
+                try id.withCString { idPointer in
+                    try phrase.withCString { phrasePointer in
+                        sqlite3_bind_text(statement, 1, idPointer, -1, nil)
+                        sqlite3_bind_text(statement, 2, phrasePointer, -1, nil)
+                        guard sqlite3_step(statement) == SQLITE_DONE else {
+                            throw NSError(domain: "WisprFlowFixture", code: 17)
+                        }
+                    }
                 }
             }
         }

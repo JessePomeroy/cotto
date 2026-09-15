@@ -306,7 +306,7 @@ public actor GenerationService {
     public func history(limit: Int, before: String?, source: String? = nil) throws -> GenerationPage {
         guard (1...100).contains(limit) else { throw ServiceError(400, "invalid_limit", "History page size must be between 1 and 100.") }
         guard source == nil || source == "wispr-flow" || source == "sotto" else {
-            throw ServiceError(400, "invalid_source", "Choose Wispr Flow or Soto history.")
+            throw ServiceError(400, "invalid_source", "Choose Wispr Flow or Sotto history.")
         }
         let selected = records.values.filter { record in
             switch source {
@@ -459,6 +459,7 @@ public actor GenerationService {
                 throw ServiceError(400, "invalid_source_json", "The source artifact must describe this Wispr Flow session.")
             }
             let recorded = try Self.sourceOmissions(source)
+            _ = try Self.sourceProvenanceIsPartial(source)
             let recordedKeys = Set(recorded.map { "\($0.filename.rawValue):\($0.byteCount):\($0.sha256)" })
             guard (stage.request.unarchivedArtifacts ?? []).allSatisfy({
                 recordedKeys.contains("\($0.filename.rawValue):\($0.byteCount):\($0.sha256)")
@@ -529,11 +530,17 @@ public actor GenerationService {
                 && (request.durationSeconds == nil || source.durationSeconds == request.durationSeconds)
                 && Set(request.variantNames).isSubset(of: Set(source.variantNames))
             if sameArtifacts && sameMetadata {
+                let archivedSource = try Data(contentsOf: directory(existingID).appendingPathComponent("source.json"))
+                guard let document = try? JSONSerialization.jsonObject(with: archivedSource) as? [String: Any],
+                      let provenancePartial = try? Self.sourceProvenanceIsPartial(document) else {
+                    throw ServiceError(500, "invalid_archive", "The existing source archive is invalid.")
+                }
                 try files.removeItem(at: stage.directory)
                 importStages[id] = nil
                 let unarchived = (source.unarchivedArtifactSHA256 ?? [:]).keys
                     .compactMap(WisprFlowArtifactName.init(rawValue:)).sorted { $0.rawValue < $1.rawValue }
-                return WisprFlowImportResult(outcome: unarchived.isEmpty ? .skipped : .partial, record: record,
+                return WisprFlowImportResult(outcome: unarchived.isEmpty && !provenancePartial ? .skipped : .partial,
+                                             record: record,
                                              unarchivedArtifactNames: unarchived)
             }
             let earlierDirectory = directory(existingID)
@@ -603,7 +610,8 @@ public actor GenerationService {
             importStages[id] = nil
             let unarchived = reconciliation.unarchivedHashes.keys
                 .compactMap(WisprFlowArtifactName.init(rawValue:)).sorted { $0.rawValue < $1.rawValue }
-            return WisprFlowImportResult(outcome: unarchived.isEmpty ? .enriched : .partial, record: record,
+            return WisprFlowImportResult(outcome: unarchived.isEmpty && !reconciliation.provenancePartial ? .enriched : .partial,
+                                         record: record,
                                          unarchivedArtifactNames: unarchived)
         }
 
@@ -639,7 +647,7 @@ public actor GenerationService {
         importStages[id] = nil
         let unarchived = reconciliation.unarchivedHashes.keys
             .compactMap(WisprFlowArtifactName.init(rawValue:)).sorted { $0.rawValue < $1.rawValue }
-        return WisprFlowImportResult(outcome: unarchived.isEmpty ? .imported : .partial,
+        return WisprFlowImportResult(outcome: unarchived.isEmpty && !reconciliation.provenancePartial ? .imported : .partial,
                                      record: record, unarchivedArtifactNames: unarchived)
     }
 
@@ -848,12 +856,74 @@ public actor GenerationService {
             return WisprFlowArtifactManifest(filename: filename, byteCount: byteCount, sha256: hash)
         }
     }
+    private static func recordedProvenanceFieldCount(_ document: [String: Any]) throws -> Int {
+        guard let sources = document["sources"] as? [[String: Any]] else {
+            throw ServiceError(400, "invalid_source_json", "Source provenance rows must be objects.")
+        }
+        var recordedFieldCount = 0
+        for source in sources {
+            for key in ["omittedValueCount", "omittedColumnCount"] {
+                guard let rawCount = source[key] else { continue }
+                guard let count = rawCount as? Int, count >= 0, count <= Int.max - recordedFieldCount else {
+                    throw ServiceError(400, "invalid_source_json", "Source row omission counts are invalid.")
+                }
+                recordedFieldCount += count
+            }
+            if let digest = source["omittedValuesSHA256"] {
+                guard let hash = digest as? String, validSHA256(hash) else {
+                    throw ServiceError(400, "invalid_source_json", "Source row omission digests are invalid.")
+                }
+            }
+            for field in (source["values"] as? [String: Any] ?? [:]).values {
+                guard let value = field as? [String: Any],
+                      value["archiveReason"] as? String == "exceeds-source-json-limit" else { continue }
+                guard let type = value["type"] as? String, type == "text" || type == "blob",
+                      let byteCount = value["byteCount"] as? Int, byteCount > 0,
+                      let digest = value["sha256"] as? String, validSHA256(digest),
+                      value["archiveStatus"] as? String == "not-archived",
+                      value["value"] == nil, value["base64"] == nil,
+                      recordedFieldCount < Int.max else {
+                    throw ServiceError(400, "invalid_source_json", "Omitted source values need their size, digest, and reason.")
+                }
+                recordedFieldCount += 1
+            }
+        }
+        return recordedFieldCount
+    }
+    private static func sourceProvenanceIsPartial(_ document: [String: Any]) throws -> Bool {
+        let countKeys = ["provenanceOmittedFieldCount", "provenanceOmittedSourceCount",
+                         "provenanceOmittedMediaVersionCount"]
+        let digestKeys = ["provenanceOmittedSourcesSHA256", "provenanceOmittedMediaVersionsSHA256"]
+        let recordedFieldCount = try recordedProvenanceFieldCount(document)
+        guard let status = document["provenanceStatus"] as? String else {
+            guard document["provenanceStatus"] == nil, recordedFieldCount == 0,
+                  (countKeys + ["provenanceOmittedColumnCount"] + digestKeys)
+                    .allSatisfy({ document[$0] == nil }) else {
+                throw ServiceError(400, "invalid_source_json", "Source provenance status and omission counts disagree.")
+            }
+            return false
+        }
+        guard status == "partial",
+              let fields = document[countKeys[0]] as? Int, fields >= 0,
+              let sources = document[countKeys[1]] as? Int, sources >= 0,
+              let mediaVersions = document[countKeys[2]] as? Int, mediaVersions >= 0,
+              fields > 0 || sources > 0 || mediaVersions > 0,
+              fields >= recordedFieldCount,
+              document["provenanceOmittedColumnCount"].map({ ($0 as? Int).map({ $0 >= 0 }) ?? false }) ?? true,
+              digestKeys.allSatisfy({ key in
+                  document[key].map({ ($0 as? String).map(validSHA256) ?? false }) ?? true
+              }) else {
+            throw ServiceError(400, "invalid_source_json", "Partial source provenance needs valid omission counts and digests.")
+        }
+        return true
+    }
     private static func reconciledSourceJSON(_ data: Data, archivedHashes: [String: String]) throws
-        -> (data: Data, unarchivedHashes: [String: String]) {
+        -> (data: Data, unarchivedHashes: [String: String], provenancePartial: Bool) {
         guard var document = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw ServiceError(400, "invalid_source_json", "The source archive is invalid.")
         }
         _ = try sourceOmissions(document)
+        let provenancePartial = try sourceProvenanceIsPartial(document)
         var missing: [String: String] = [:]
         if var omissions = document["archiveOmissions"] as? [[String: Any]] {
             for index in omissions.indices {
@@ -900,7 +970,7 @@ public actor GenerationService {
         guard result.count <= WisprFlowImportLimits.maximumArtifactBytes else {
             throw ServiceError(413, "source_archive_limit", "The preserved source versions exceeded 8 MiB.")
         }
-        return (result, missing)
+        return (result, missing, provenancePartial)
     }
     private static func sourceVersionKey(_ source: Any) throws -> String {
         guard var normalized = source as? [String: Any] else {
@@ -949,6 +1019,23 @@ public actor GenerationService {
         for (key, value) in newer where key != "sources" && key != "archiveOmissions" { merged[key] = value }
         merged["sources"] = combined
         if !combinedOmissions.isEmpty { merged["archiveOmissions"] = combinedOmissions }
+        let earlierPartial = try sourceProvenanceIsPartial(earlier)
+        let newerPartial = try sourceProvenanceIsPartial(newer)
+        if earlierPartial || newerPartial {
+            merged["provenanceStatus"] = "partial"
+            let recordedFields = try recordedProvenanceFieldCount(merged)
+            for key in ["provenanceOmittedFieldCount", "provenanceOmittedSourceCount",
+                        "provenanceOmittedMediaVersionCount", "provenanceOmittedColumnCount"] {
+                let minimum = key == "provenanceOmittedFieldCount" ? recordedFields : 0
+                let count = max(max(earlier[key] as? Int ?? 0, newer[key] as? Int ?? 0), minimum)
+                if key != "provenanceOmittedColumnCount" || count > 0 { merged[key] = count }
+            }
+            for key in ["provenanceOmittedSourcesSHA256", "provenanceOmittedMediaVersionsSHA256"] {
+                if let oldHash = earlier[key] as? String, let newHash = newer[key] as? String,
+                   oldHash != newHash { merged.removeValue(forKey: key) }
+            }
+        }
+        _ = try sourceProvenanceIsPartial(merged)
         guard JSONSerialization.isValidJSONObject(merged) else {
             throw ServiceError(400, "invalid_source_json", "The merged source artifact is invalid.")
         }

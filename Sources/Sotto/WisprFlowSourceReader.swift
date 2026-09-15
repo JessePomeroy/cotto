@@ -34,6 +34,7 @@ struct WisprFlowSourceSession: Sendable {
     let availableVariants: [String]
     let artifacts: [WisprFlowSourceArtifact]
     let unarchivedArtifacts: [WisprFlowArtifactManifest]
+    let provenanceWarning: String?
 }
 
 enum WisprFlowSourceReaderError: LocalizedError {
@@ -58,7 +59,7 @@ enum WisprFlowSourceReaderError: LocalizedError {
         case .sqlite(let message): "Wispr Flow database error: \(message)"
         case .cannotCreateArtifact(let url): "Cannot create import artifact \(url.lastPathComponent)."
         case .dictionaryTooLarge(let bytes):
-            "Wispr Flow dictionary is \(ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)); the archive limit is 8 MiB. No dictionary entries were archived."
+            "Wispr Flow dictionary archive exceeds the 8 MiB limit (at least \(ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file))). No dictionary entries were archived."
         }
     }
 }
@@ -116,6 +117,8 @@ final class WisprFlowSourceReader: @unchecked Sendable {
         "defaultAsrText", "fallbackAsrText", "defaultFormattedText",
         "fallbackFormattedText", "desiredAsr", "desiredFormatted",
     ]
+    // Leave room for the server to add archive reconciliation details.
+    private static let sourceJSONTargetBytes = WisprFlowImportLimits.maximumArtifactBytes - 1_048_576
 
     let preview: WisprFlowImportPreview
     let sourceIDs: [UUID]
@@ -247,8 +250,10 @@ final class WisprFlowSourceReader: @unchecked Sendable {
     }
 
     func session(for sourceID: UUID) throws -> WisprFlowSourceSession {
+        try Task.checkCancellation()
         lock.lock()
         defer { lock.unlock() }
+        try Task.checkCancellation()
         guard !closed else { throw WisprFlowSourceReaderError.sqlite("The import snapshot was released.") }
         guard let rows = locators[sourceID], !rows.isEmpty else {
             throw WisprFlowSourceReaderError.missingSession(sourceID)
@@ -274,7 +279,9 @@ final class WisprFlowSourceReader: @unchecked Sendable {
         var artifacts: [WisprFlowSourceArtifact] = []
         var selectedMedia: [String: (databaseIndex: Int, rowID: Int64)] = [:]
         for (column, filename) in Self.mediaFilenames {
+            try Task.checkCancellation()
             for row in rows where (row.mediaBytes[column] ?? 0) > 0 {
+                try Task.checkCancellation()
                 // A later backup may contain a smaller valid version. Keep
                 // looking rather than letting one oversized blob block text.
                 guard (row.mediaBytes[column] ?? 0) <= WisprFlowImportLimits.maximumArtifactBytes else { continue }
@@ -282,6 +289,7 @@ final class WisprFlowSourceReader: @unchecked Sendable {
                 do {
                     try Self.extract(column: column, rowID: row.rowID,
                                      from: databases[row.databaseIndex].connection, to: output)
+                    try Task.checkCancellation()
                     guard try Self.isValidArtifact(output, filename: filename) else {
                         try? FileManager.default.removeItem(at: output)
                         continue
@@ -293,6 +301,9 @@ final class WisprFlowSourceReader: @unchecked Sendable {
                         contentType: Self.mediaContentTypes[filename] ?? "application/octet-stream"
                     ))
                     break
+                } catch is CancellationError {
+                    try? FileManager.default.removeItem(at: output)
+                    throw CancellationError()
                 } catch {
                     try? FileManager.default.removeItem(at: output)
                     continue
@@ -301,13 +312,19 @@ final class WisprFlowSourceReader: @unchecked Sendable {
         }
         var sources: [[String: Any]] = []
         var variants = Set<String>()
+        var provenanceOmittedFieldCount = 0
         for row in rows {
+            try Task.checkCancellation()
             let database = databases[row.databaseIndex]
-            let values = try Self.sourceValues(for: row, in: database, selectedMedia: selectedMedia)
+            let values = try Self.sourceValues(for: row, in: database, selectedMedia: selectedMedia,
+                                               omittedFieldCount: &provenanceOmittedFieldCount)
+            try Task.checkCancellation()
             for name in Self.textVariantNames {
                 if let field = values[name], field["type"] as? String == "text",
-                   let text = field["value"] as? String,
-                   !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                   (field["archiveStatus"] as? String == "not-archived"
+                    || (field["value"] as? String).map({
+                        !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    }) == true) {
                     variants.insert(name)
                 }
             }
@@ -320,6 +337,7 @@ final class WisprFlowSourceReader: @unchecked Sendable {
         }
         var selectedHashes: [String: String] = [:]
         for source in sources {
+            try Task.checkCancellation()
             guard let values = source["values"] as? [String: [String: Any]] else { continue }
             for (column, filename) in Self.mediaFilenames {
                 if values[column]?["artifact"] as? String == filename,
@@ -332,6 +350,7 @@ final class WisprFlowSourceReader: @unchecked Sendable {
         var unarchived: [WisprFlowArtifactManifest] = []
         var seenMissing = Set<String>()
         for index in sources.indices {
+            try Task.checkCancellation()
             guard var values = sources[index]["values"] as? [String: [String: Any]] else { continue }
             for (column, filename) in Self.mediaFilenames {
                 guard var field = values[column], let byteCount = field["byteCount"] as? Int,
@@ -382,15 +401,14 @@ final class WisprFlowSourceReader: @unchecked Sendable {
             }
             sources[index]["values"] = values
         }
-        let sourceDocument: [String: Any] = [
-            "schemaVersion": 1,
-            "provider": "wispr-flow",
-            "sourceID": sourceID.uuidString,
-            "sources": sources,
-            "archiveOmissions": omissions,
-        ]
+        let bounded = try Self.boundedSourceJSON(
+            sourceID: sourceID, sources: sources, omissions: omissions,
+            unarchived: unarchived, initiallyOmittedFields: provenanceOmittedFieldCount
+        )
+        try Task.checkCancellation()
         let sourceURL = artifactDirectory.appendingPathComponent("source.json")
-        try Self.writeJSON(sourceDocument, to: sourceURL)
+        try bounded.data.write(to: sourceURL, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: sourceURL.path)
         artifacts.insert(WisprFlowSourceArtifact(filename: .sourceJSON, url: sourceURL,
                                                 contentType: "application/json"), at: 0)
         return WisprFlowSourceSession(
@@ -398,7 +416,8 @@ final class WisprFlowSourceReader: @unchecked Sendable {
             rawText: rawText, sourceStatus: sourceStatus,
             durationSeconds: durationSeconds,
             availableVariants: Self.textVariantNames.filter { variants.contains($0) },
-            artifacts: artifacts, unarchivedArtifacts: unarchived
+            artifacts: artifacts, unarchivedArtifacts: bounded.unarchived,
+            provenanceWarning: bounded.warning
         )
         } catch {
             try? FileManager.default.removeItem(at: artifactDirectory)
@@ -413,32 +432,124 @@ final class WisprFlowSourceReader: @unchecked Sendable {
         guard preview.dictionaryCount > 0 else { return nil }
         let url = temporaryDirectory.appendingPathComponent("dictionary.json")
         if FileManager.default.fileExists(atPath: url.path) { return url }
-        var sources: [[String: Any]] = []
+        let limit = WisprFlowImportLimits.maximumDictionaryBytes
+        var archive = Data()
+        archive.reserveCapacity(min(limit, 262_144))
+        try Self.appendDictionaryJSON(Data(#"{"provider":"wispr-flow","schemaVersion":1,"sources":["#.utf8),
+                                      to: &archive, limit: limit)
+        var firstSource = true
         for database in databases where !database.dictionaryColumns.isEmpty {
+            if !firstSource { try Self.appendDictionaryJSON(Data(",".utf8), to: &archive, limit: limit) }
+            firstSource = false
+            let header = try JSONSerialization.data(withJSONObject: [
+                "name": database.sourceURL.lastPathComponent, "role": database.role,
+            ], options: [.sortedKeys])
+            try Self.appendDictionaryJSON(Data(header.dropLast()), to: &archive, limit: limit)
+            try Self.appendDictionaryJSON(Data(#","rows":["#.utf8), to: &archive, limit: limit)
             let sql = "SELECT * FROM \"Dictionary\""
             let statement = try Self.prepare(sql, in: database.connection)
             defer { sqlite3_finalize(statement) }
-            var rows: [[String: Any]] = []
+            let columns = (0..<sqlite3_column_count(statement)).map { column in
+                (column, String(cString: sqlite3_column_name(statement, column)))
+            }.sorted { $0.1 < $1.1 }
+            var firstRow = true
             while try Self.nextRow(statement, in: database.connection) {
-                var values: [String: Any] = [:]
-                for column in 0..<sqlite3_column_count(statement) {
-                    let name = String(cString: sqlite3_column_name(statement, column))
-                    values[name] = Self.typedValue(statement, column: column)
+                if !firstRow { try Self.appendDictionaryJSON(Data(",".utf8), to: &archive, limit: limit) }
+                firstRow = false
+                try Self.appendDictionaryJSON(Data("{".utf8), to: &archive, limit: limit)
+                for (index, entry) in columns.enumerated() {
+                    if index > 0 { try Self.appendDictionaryJSON(Data(",".utf8), to: &archive, limit: limit) }
+                    try Self.appendDictionaryJSON(JSONEncoder().encode(entry.1), to: &archive, limit: limit)
+                    try Self.appendDictionaryJSON(Data(":".utf8), to: &archive, limit: limit)
+                    try Self.appendDictionaryValue(statement, column: entry.0, to: &archive, limit: limit)
                 }
-                rows.append(values)
+                try Self.appendDictionaryJSON(Data("}".utf8), to: &archive, limit: limit)
             }
-            sources.append(["name": database.sourceURL.lastPathComponent,
-                            "role": database.role, "rows": rows])
+            try Self.appendDictionaryJSON(Data("]}".utf8), to: &archive, limit: limit)
         }
-        let document: [String: Any] = ["schemaVersion": 1, "provider": "wispr-flow",
-                                       "table": "Dictionary", "sources": sources]
-        let data = try JSONSerialization.data(withJSONObject: document, options: [.sortedKeys])
-        guard data.count <= WisprFlowImportLimits.maximumDictionaryBytes else {
-            throw WisprFlowSourceReaderError.dictionaryTooLarge(data.count)
-        }
-        try data.write(to: url, options: .atomic)
+        try Self.appendDictionaryJSON(Data(#"],"table":"Dictionary"}"#.utf8), to: &archive, limit: limit)
+        try archive.write(to: url, options: .atomic)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
         return url
+    }
+
+    private static func appendDictionaryJSON(_ chunk: Data, to archive: inout Data, limit: Int) throws {
+        guard chunk.count <= limit - archive.count else {
+            throw WisprFlowSourceReaderError.dictionaryTooLarge(archive.count + chunk.count)
+        }
+        archive.append(chunk)
+    }
+
+    private static func appendDictionaryValue(_ statement: OpaquePointer, column: Int32,
+                                              to archive: inout Data, limit: Int) throws {
+        switch sqlite3_column_type(statement, column) {
+        case SQLITE_TEXT:
+            let count = Int(sqlite3_column_bytes(statement, column))
+            guard count <= limit - archive.count else {
+                throw WisprFlowSourceReaderError.dictionaryTooLarge(archive.count + count)
+            }
+            guard let pointer = sqlite3_column_text(statement, column) else {
+                try appendDictionaryJSON(Data(#"{"type":"text","value":""}"#.utf8), to: &archive, limit: limit)
+                return
+            }
+            let bytes = Data(bytes: pointer, count: count)
+            if let text = String(data: bytes, encoding: .utf8) {
+                try appendDictionaryJSON(Data(#"{"type":"text","value":"#.utf8), to: &archive, limit: limit)
+                try appendDictionaryString(text, to: &archive, limit: limit)
+                try appendDictionaryJSON(Data("}".utf8), to: &archive, limit: limit)
+            } else {
+                let base64Length = ((count + 2) / 3) * 4
+                guard base64Length <= limit - archive.count else {
+                    throw WisprFlowSourceReaderError.dictionaryTooLarge(archive.count + base64Length)
+                }
+                try appendDictionaryJSON(Data(#"{"base64":""#.utf8), to: &archive, limit: limit)
+                try appendDictionaryJSON(Data(bytes.base64EncodedString().utf8), to: &archive, limit: limit)
+                try appendDictionaryJSON(Data(#"","encoding":"raw-bytes","type":"text"}"#.utf8),
+                                         to: &archive, limit: limit)
+            }
+        case SQLITE_BLOB:
+            let count = Int(sqlite3_column_bytes(statement, column))
+            let base64Length = ((count + 2) / 3) * 4
+            guard base64Length <= limit - archive.count else {
+                throw WisprFlowSourceReaderError.dictionaryTooLarge(archive.count + base64Length)
+            }
+            try appendDictionaryJSON(Data(#"{"base64":""#.utf8), to: &archive, limit: limit)
+            if let pointer = sqlite3_column_blob(statement, column) {
+                let bytes = Data(bytes: pointer, count: count)
+                try appendDictionaryJSON(Data(bytes.base64EncodedString().utf8), to: &archive, limit: limit)
+            }
+            try appendDictionaryJSON(Data(#"","type":"blob"}"#.utf8), to: &archive, limit: limit)
+        default:
+            let value = typedValue(statement, column: column)
+            try appendDictionaryJSON(JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]),
+                                     to: &archive, limit: limit)
+        }
+    }
+
+    private static func appendDictionaryString(_ string: String, to archive: inout Data, limit: Int) throws {
+        let hex = Array("0123456789abcdef".utf8)
+        var buffer = Data()
+        buffer.reserveCapacity(4_096)
+        try appendDictionaryJSON(Data("\"".utf8), to: &archive, limit: limit)
+        for byte in string.utf8 {
+            switch byte {
+            case 0x22, 0x5c: buffer.append(contentsOf: [0x5c, byte])
+            case 0x08: buffer.append(contentsOf: [0x5c, 0x62])
+            case 0x09: buffer.append(contentsOf: [0x5c, 0x74])
+            case 0x0a: buffer.append(contentsOf: [0x5c, 0x6e])
+            case 0x0c: buffer.append(contentsOf: [0x5c, 0x66])
+            case 0x0d: buffer.append(contentsOf: [0x5c, 0x72])
+            case 0x00...0x1f:
+                buffer.append(contentsOf: [0x5c, 0x75, 0x30, 0x30, hex[Int(byte >> 4)], hex[Int(byte & 0x0f)]])
+            default: buffer.append(byte)
+            }
+            if buffer.count >= 4_096 {
+                try appendDictionaryJSON(buffer, to: &archive, limit: limit)
+                buffer.removeAll(keepingCapacity: true)
+            }
+        }
+        if !buffer.isEmpty { try appendDictionaryJSON(buffer, to: &archive, limit: limit) }
+        try appendDictionaryJSON(Data("\"".utf8), to: &archive, limit: limit)
     }
 
     func deleteArtifacts(for sourceID: UUID) {
@@ -615,7 +726,8 @@ final class WisprFlowSourceReader: @unchecked Sendable {
 
     private static func sourceValues(
         for row: RowLocator, in database: Database,
-        selectedMedia: [String: (databaseIndex: Int, rowID: Int64)]
+        selectedMedia: [String: (databaseIndex: Int, rowID: Int64)],
+        omittedFieldCount: inout Int
     ) throws -> [String: [String: Any]] {
         let statement = try prepare("SELECT * FROM \"History\" WHERE rowid = ?", in: database.connection)
         defer { sqlite3_finalize(statement) }
@@ -640,10 +752,224 @@ final class WisprFlowSourceReader: @unchecked Sendable {
                     values[name] = reference
                 }
             } else {
-                values[name] = typedValue(statement, column: index)
+                let type = sqliteType(sqlite3_column_type(statement, index))
+                // A single BLOB expands by a third when encoded as base64. A
+                // single very large TEXT value also cannot fit in source.json.
+                let maximumValueBytes = type == "blob" ? sourceJSONTargetBytes * 3 / 4
+                    : sourceJSONTargetBytes
+                let byteCount = (type == "blob" || type == "text")
+                    ? Int(sqlite3_column_bytes(statement, index)) : 0
+                if byteCount > maximumValueBytes {
+                    values[name] = [
+                        "type": type, "byteCount": byteCount,
+                        "sha256": try hashBlob(column: name, rowID: row.rowID,
+                                               from: database.connection),
+                        "archiveStatus": "not-archived",
+                        "archiveReason": "exceeds-source-json-limit",
+                    ]
+                    omittedFieldCount += 1
+                } else {
+                    values[name] = typedValue(statement, column: index)
+                }
             }
         }
         return values
+    }
+
+    private struct BoundedSourceJSON {
+        let data: Data
+        let unarchived: [WisprFlowArtifactManifest]
+        let warning: String?
+    }
+
+    private struct SourceValueCandidate {
+        let sourceIndex: Int
+        let column: String
+        let approximateBytes: Int
+        let priority: Int
+    }
+
+    private static func provenanceSummary(for field: [String: Any]) -> [String: Any]? {
+        guard let type = field["type"] as? String, type == "text" || type == "blob" else { return nil }
+        let bytes: Data
+        if let value = field["value"] as? String {
+            bytes = Data(value.utf8)
+        } else if let base64 = field["base64"] as? String,
+                  let decoded = Data(base64Encoded: base64) {
+            bytes = decoded
+        } else {
+            return nil
+        }
+        var summary: [String: Any] = [
+            "type": type, "byteCount": bytes.count,
+            "sha256": SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined(),
+            "archiveStatus": "not-archived",
+            "archiveReason": "exceeds-source-json-limit",
+        ]
+        if let encoding = field["encoding"] as? String { summary["encoding"] = encoding }
+        return summary
+    }
+
+    private static func boundedSourceJSON(
+        sourceID: UUID, sources originalSources: [[String: Any]],
+        omissions originalOmissions: [[String: Any]],
+        unarchived originalUnarchived: [WisprFlowArtifactManifest],
+        initiallyOmittedFields: Int
+    ) throws -> BoundedSourceJSON {
+        var sources = originalSources
+        var omissions = originalOmissions
+        var omittedFields = initiallyOmittedFields
+        var omittedSources = 0
+        var omittedMediaVersions = 0
+        var omittedColumns = 0
+        var sourceHasher = SHA256()
+        var mediaHasher = SHA256()
+
+        func digest(_ hasher: SHA256) -> String {
+            let copy = hasher
+            return copy.finalize().map { String(format: "%02x", $0) }.joined()
+        }
+        func encode() throws -> Data {
+            try Task.checkCancellation()
+            var document: [String: Any] = [
+                "schemaVersion": 1, "provider": "wispr-flow",
+                "sourceID": sourceID.uuidString,
+                "sources": sources, "archiveOmissions": omissions,
+            ]
+            if omittedFields + omittedSources + omittedMediaVersions + omittedColumns > 0 {
+                document["provenanceStatus"] = "partial"
+                document["provenanceOmittedFieldCount"] = omittedFields
+                document["provenanceOmittedSourceCount"] = omittedSources
+                document["provenanceOmittedMediaVersionCount"] = omittedMediaVersions
+                if omittedColumns > 0 { document["provenanceOmittedColumnCount"] = omittedColumns }
+                if omittedSources > 0 { document["provenanceOmittedSourcesSHA256"] = digest(sourceHasher) }
+                if omittedMediaVersions > 0 {
+                    document["provenanceOmittedMediaVersionsSHA256"] = digest(mediaHasher)
+                }
+            }
+            return try JSONSerialization.data(withJSONObject: document, options: [.sortedKeys])
+        }
+
+        var data = try encode()
+        if data.count > sourceJSONTargetBytes {
+            var candidates: [SourceValueCandidate] = []
+            for (sourceIndex, source) in sources.enumerated() {
+                guard let values = source["values"] as? [String: [String: Any]] else { continue }
+                for (column, field) in values {
+                    guard let type = field["type"] as? String, type == "text" || type == "blob" else { continue }
+                    let approximateBytes = (field["base64"] as? String)?.utf8.count
+                        ?? (field["value"] as? String)?.utf8.count ?? 0
+                    guard approximateBytes > 0 else { continue }
+                    let priority = type == "blob" ? 0 : (textVariantNames.contains(column) ? 2 : 1)
+                    candidates.append(SourceValueCandidate(
+                        sourceIndex: sourceIndex, column: column,
+                        approximateBytes: approximateBytes, priority: priority
+                    ))
+                }
+            }
+            candidates.sort { left, right in
+                if left.approximateBytes != right.approximateBytes {
+                    return left.approximateBytes > right.approximateBytes
+                }
+                if left.priority != right.priority { return left.priority < right.priority }
+                if left.sourceIndex != right.sourceIndex { return left.sourceIndex > right.sourceIndex }
+                return left.column < right.column
+            }
+            for candidate in candidates where data.count > sourceJSONTargetBytes {
+                guard var values = sources[candidate.sourceIndex]["values"] as? [String: [String: Any]],
+                      let field = values[candidate.column],
+                      let summary = provenanceSummary(for: field) else { continue }
+                values[candidate.column] = summary
+                sources[candidate.sourceIndex]["values"] = values
+                omittedFields += 1
+                data = try encode()
+            }
+        }
+
+        // Backup versions are useful provenance, but the first/current row is
+        // the canonical source of the session text and must remain recoverable.
+        while data.count > sourceJSONTargetBytes && sources.count > 1 {
+            let removed = sources.removeLast()
+            sourceHasher.update(data: try JSONSerialization.data(withJSONObject: removed, options: [.sortedKeys]))
+            sourceHasher.update(data: Data([0x0A]))
+            omittedSources += 1
+            data = try encode()
+        }
+
+        // The detailed media records are the last thing we compact. Keep the
+        // first/current version's entries ahead of later backup versions.
+        while data.count > sourceJSONTargetBytes && !omissions.isEmpty {
+            let removed = omissions.removeLast()
+            mediaHasher.update(data: try JSONSerialization.data(withJSONObject: removed, options: [.sortedKeys]))
+            mediaHasher.update(data: Data([0x0A]))
+            omittedMediaVersions += 1
+            data = try encode()
+        }
+
+        if data.count > sourceJSONTargetBytes, var canonical = sources.first,
+           let values = canonical["values"] as? [String: [String: Any]] {
+            let columnNames = values.keys.sorted()
+            let mediaColumns = Set(["audio", "opusChunks", "screenshot", "builtInAudio"])
+            canonical["omittedValuesSHA256"] = SHA256.hash(data: try JSONSerialization.data(
+                withJSONObject: values, options: [.sortedKeys]
+            )).map { String(format: "%02x", $0) }.joined()
+            canonical["columnNames"] = columnNames
+            canonical["omittedValueCount"] = values.count - mediaColumns.intersection(Set(values.keys)).count
+            canonical["values"] = values.filter { mediaColumns.contains($0.key) }
+            omittedFields += values.filter {
+                !mediaColumns.contains($0.key)
+                    && $0.value["archiveReason"] as? String != "exceeds-source-json-limit"
+            }.count
+            sources[0] = canonical
+            data = try encode()
+        }
+
+        while data.count > sourceJSONTargetBytes, var canonical = sources.first,
+              var names = canonical["columnNames"] as? [String], !names.isEmpty {
+            names.removeLast()
+            canonical["columnNames"] = names
+            canonical["omittedColumnCount"] = omittedColumns + 1
+            sources[0] = canonical
+            omittedColumns += 1
+            omittedFields += 1
+            data = try encode()
+        }
+
+        // A malformed source can still have unusually large column metadata.
+        // This final form preserves the canonical row locator and an aggregate
+        // digest, so the transcript import itself never depends on its size.
+        if data.count > sourceJSONTargetBytes, let canonical = sources.first {
+            var minimal: [String: Any] = [
+                "name": canonical["name"] as? String ?? "unknown",
+                "role": canonical["role"] as? String ?? "selected",
+                "rowID": canonical["rowID"] as? Int64 ?? 0,
+                "columnNames": [],
+                "omittedColumnCount": omittedColumns,
+            ]
+            if let hash = canonical["omittedValuesSHA256"] as? String {
+                minimal["omittedValuesSHA256"] = hash
+            }
+            sources = [minimal]
+            omittedFields += 1
+            data = try encode()
+        }
+        guard data.count <= WisprFlowImportLimits.maximumArtifactBytes else {
+            throw WisprFlowSourceReaderError.sqlite("The bounded source archive could not be created.")
+        }
+
+        let recorded = Set(omissions.compactMap { entry -> String? in
+            guard let raw = entry["artifact"] as? String,
+                  let bytes = entry["observedByteCount"] as? Int,
+                  let hash = entry["observedSHA256"] as? String else { return nil }
+            return "\(raw):\(bytes):\(hash)"
+        })
+        let unarchived = originalUnarchived.filter {
+            recorded.contains("\($0.filename.rawValue):\($0.byteCount):\($0.sha256)")
+        }
+        let warning: String? = omittedFields + omittedSources + omittedMediaVersions + omittedColumns > 0
+            ? "Session \(sourceID.uuidString) has partial source provenance: \(omittedFields) field values summarized, \(omittedSources) older source rows omitted, and \(omittedMediaVersions) media version records omitted. source.json keeps available field details and aggregate omission digests."
+            : nil
+        return BoundedSourceJSON(data: data, unarchived: unarchived, warning: warning)
     }
 
     private static func typedValue(_ statement: OpaquePointer, column: Int32) -> [String: Any] {
@@ -694,6 +1020,7 @@ final class WisprFlowSourceReader: @unchecked Sendable {
         let size = Int(sqlite3_blob_bytes(blob))
         var offset = 0
         while offset < size {
+            try Task.checkCancellation()
             let count = min(65_536, size - offset)
             var buffer = [UInt8](repeating: 0, count: count)
             let readResult = buffer.withUnsafeMutableBytes { bytes in
@@ -718,6 +1045,7 @@ final class WisprFlowSourceReader: @unchecked Sendable {
         let size = Int(sqlite3_blob_bytes(blob))
         var offset = 0
         while offset < size {
+            try Task.checkCancellation()
             let count = min(65_536, size - offset)
             var buffer = [UInt8](repeating: 0, count: count)
             let result = buffer.withUnsafeMutableBytes { bytes in
@@ -729,6 +1057,7 @@ final class WisprFlowSourceReader: @unchecked Sendable {
             hasher.update(data: Data(buffer))
             offset += count
         }
+        try Task.checkCancellation()
         return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
