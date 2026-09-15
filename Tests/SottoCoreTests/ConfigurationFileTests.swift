@@ -4,20 +4,19 @@ import XCTest
 @testable import SottoCore
 
 final class ConfigurationFileTests: XCTestCase {
-    func testCreatesPrivateConfigWithMigrationOnlyOnce() async throws {
+    func testCreatesPrivateConfigOnlyOnce() async throws {
         let location = try fixture()
         defer { try? FileManager.default.removeItem(at: location.root) }
         let file = ConfigurationFile(url: location.url)
         let desk = AudioInputDevice(uid: "usb:desk", name: "Desk", transport: .usb)
-        let migration = SottoConfiguration(holdKey: "fn", language: "fr", idleMinutes: -1,
-            cleanText: false, vocabulary: "Sotto, Café", launchAtLogin: true, saveDictationHistory: false,
+        let initial = SottoConfiguration(holdKey: "fn", launchAtLogin: true,
             microphones: MicrophonePreferences(profiles: [MicrophoneProfile(id: "desk", name: "Desk", priority: [desk])],
                                                selection: .fixed(desk)))
-        let created = try await file.load(orCreate: migration).get()
-        XCTAssertEqual(created, migration)
+        let created = try await file.load(orCreate: initial).get()
+        XCTAssertEqual(created, initial)
         let secondLoad = try await file.load(orCreate: .default).get()
-        XCTAssertEqual(secondLoad, migration)
-        XCTAssertEqual(try JSONDecoder().decode(SottoConfiguration.self, from: Data(contentsOf: location.url)), migration)
+        XCTAssertEqual(secondLoad, initial)
+        XCTAssertEqual(try JSONDecoder().decode(SottoConfiguration.self, from: Data(contentsOf: location.url)), initial)
         XCTAssertEqual(try mode(location.url), 0o600)
         XCTAssertEqual(try mode(location.url.deletingLastPathComponent()), 0o700)
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: location.url.deletingLastPathComponent().path), ["config.json"])
@@ -29,50 +28,12 @@ final class ConfigurationFileTests: XCTestCase {
             XCTAssertEqual(try decoder.decode(SottoConfiguration.self, from: Data(json.utf8)), .default)
         }
         for json in [
-            "[]", "null", #"{"language":null}"#, #"{"cleanText":1}"#, #"{"idleMinutes":"5"}"#,
+            "[]", "null", #"{"holdKey":null}"#, #"{"holdKey":1}"#,
             #"{"schemaVersion":2}"#, #"{"schemaVersion":true}"#, #"{"holdKey":"function"}"#,
-            #"{"language":"not-a-language"}"#, #"{"idleMinutes":3}"#, #"{"vocabulary":42}"#,
-            #"{"launchAtLogin":"true"}"#, #"{"saveDictationHistory":null}"#,
-            #"{"textCorrectionEnabled":null}"#, #"{"textCorrectionEnabled":"false"}"#,
-            #"{"dictionary":null}"#, #"{"dictionary":{"lists":false}}"#,
+            #"{"launchAtLogin":"true"}"#, #"{"launchAtLogin":null}"#,
         ] {
             XCTAssertThrowsError(try decoder.decode(SottoConfiguration.self, from: Data(json.utf8)), json)
         }
-    }
-
-    func testExistingConfigurationsGainDictionaryAndOptOutCorrectionWithoutLosingVocabulary() throws {
-        let previous = Data(#"{"schemaVersion":1,"language":"fr","vocabulary":"Raycast, Caf\u00e9","cleanText":false}"#.utf8)
-        let migrated = try JSONDecoder().decode(SottoConfiguration.self, from: previous)
-        XCTAssertEqual(migrated.dictionary, .default)
-        XCTAssertTrue(migrated.textCorrectionEnabled)
-        XCTAssertEqual(migrated.vocabulary, "Raycast, Café")
-        XCTAssertEqual(migrated.language, "fr")
-        XCTAssertFalse(migrated.cleanText)
-
-        var edited = migrated
-        edited.textCorrectionEnabled = false
-        edited.dictionary = PersonalDictionary(lists: [DictionaryList(id: "tools", name: "Tools", entries: [
-            DictionaryEntry(id: "tool", term: "Raycast", aliases: ["ray cast"]),
-        ])])
-        let roundTrip = try JSONDecoder().decode(SottoConfiguration.self, from: JSONEncoder().encode(edited))
-        XCTAssertEqual(roundTrip, edited)
-        XCTAssertEqual(roundTrip.dictionary.apply(to: "ray cast"), "Raycast", "Dictionary stays active when the text model is off.")
-        let empty = try JSONDecoder().decode(SottoConfiguration.self, from: Data(#"{"dictionary":{"lists":[]}}"#.utf8))
-        XCTAssertTrue(empty.dictionary.lists.isEmpty, "An explicitly empty dictionary must not restore seeded words.")
-    }
-
-    func testAmbiguousDictionaryConfigEditsAreRejectedWithoutReplacingTheWorkingFile() async throws {
-        let location = try fixture()
-        defer { try? FileManager.default.removeItem(at: location.root) }
-        let file = ConfigurationFile(url: location.url)
-        let initial = try await file.load(orCreate: .default).get()
-        let bytes = try Data(contentsOf: location.url)
-        var invalid = initial
-        invalid.dictionary.lists.append(DictionaryList(id: "other", name: "Other", entries: [
-            DictionaryEntry(id: "collision", term: "Other Tool", aliases: ["codex"]),
-        ]))
-        assertInvalid(await file.update(from: initial, to: invalid))
-        XCTAssertEqual(try Data(contentsOf: location.url), bytes)
     }
 
     func testStrictMicrophoneValidationDoesNotSilentlyDiscardBadManualEdits() throws {
@@ -106,7 +67,7 @@ final class ConfigurationFileTests: XCTestCase {
         let file = ConfigurationFile(url: location.url)
         let initial = try await file.load(orCreate: .default).get()
         var external = try json(location.url)
-        external["language"] = "fr"
+        external["holdKey"] = "fn"
         external["futureOption"] = ["nested": [1, 2, 3], "enabled": true]
         let microphones = try XCTUnwrap(external["microphones"] as? [String: Any])
         var extendedMicrophones = microphones
@@ -114,12 +75,10 @@ final class ConfigurationFileTests: XCTestCase {
         external["microphones"] = extendedMicrophones
         try JSONSerialization.data(withJSONObject: external).write(to: location.url, options: .atomic)
         var desired = initial
-        desired.idleMinutes = 15
-        desired.vocabulary = "New vocabulary\nTwo lines"
+        desired.launchAtLogin = true
         let merged = try await file.update(from: initial, to: desired).get()
-        XCTAssertEqual(merged.language, "fr")
-        XCTAssertEqual(merged.idleMinutes, 15)
-        XCTAssertEqual(merged.vocabulary, desired.vocabulary)
+        XCTAssertEqual(merged.holdKey, "fn")
+        XCTAssertTrue(merged.launchAtLogin)
         let written = try json(location.url)
         XCTAssertEqual((written["futureOption"] as? NSDictionary), (external["futureOption"] as? NSDictionary))
         XCTAssertEqual((written["microphones"] as? NSDictionary), (external["microphones"] as? NSDictionary))
@@ -130,20 +89,20 @@ final class ConfigurationFileTests: XCTestCase {
         let location = try fixture()
         defer { try? FileManager.default.removeItem(at: location.root) }
         try FileManager.default.createDirectory(at: location.url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        let original = Data(#"{"language":"es","notes":"keep me"}"#.utf8)
+        let original = Data(#"{"holdKey":"fn","notes":"keep me"}"#.utf8)
         try original.write(to: location.url)
         let file = ConfigurationFile(url: location.url)
         let loaded = try await file.load(orCreate: .default).get()
-        XCTAssertEqual(loaded.language, "es")
+        XCTAssertEqual(loaded.holdKey, "fn")
         XCTAssertEqual(try Data(contentsOf: location.url), original)
         let noOp = try await file.update(from: .default, to: .default).get()
-        XCTAssertEqual(noOp.language, "es")
+        XCTAssertEqual(noOp.holdKey, "fn")
         XCTAssertEqual(try Data(contentsOf: location.url), original)
         var desired = loaded
-        desired.cleanText = false
+        desired.launchAtLogin = true
         _ = try await file.update(from: loaded, to: desired).get()
         let written = try json(location.url)
-        XCTAssertEqual(written.keys.sorted(), ["cleanText", "language", "notes"])
+        XCTAssertEqual(written.keys.sorted(), ["holdKey", "launchAtLogin", "notes"])
     }
 
     func testInvalidExistingFileIsUntouchedByLoadAndUpdate() async throws {
@@ -152,8 +111,8 @@ final class ConfigurationFileTests: XCTestCase {
         let file = ConfigurationFile(url: location.url)
         _ = try await file.load(orCreate: .default).get()
         var changed = SottoConfiguration.default
-        changed.language = "fr"
-        for invalid in ["{", #"{"idleMinutes":9}"#, #"{"microphones":{"profiles":null}}"#] {
+        changed.holdKey = "fn"
+        for invalid in ["{", #"{"holdKey":"typo"}"#, #"{"microphones":{"profiles":null}}"#] {
             let bytes = Data(invalid.utf8)
             try bytes.write(to: location.url)
             assertInvalid(await file.load(orCreate: changed))
@@ -173,7 +132,7 @@ final class ConfigurationFileTests: XCTestCase {
         let initial = try await file.load(orCreate: .default).get()
         try FileManager.default.removeItem(at: location.url)
         var changed = initial
-        changed.language = "fr"
+        changed.holdKey = "fn"
         let absentUpdate = await file.update(from: initial, to: changed)
         XCTAssertEqual(absentUpdate, .failure(.missing))
         XCTAssertFalse(FileManager.default.fileExists(atPath: location.url.path))
@@ -225,7 +184,7 @@ final class ConfigurationFileTests: XCTestCase {
         invalid.holdKey = "typo"
         assertInvalid(await file.update(from: initial, to: invalid))
         XCTAssertEqual(try Data(contentsOf: location.url), original)
-        let replacement = SottoConfiguration(holdKey: "fn", saveDictationHistory: false)
+        let replacement = SottoConfiguration(holdKey: "fn", launchAtLogin: true)
         try JSONEncoder().encode(replacement).write(to: location.url, options: .atomic)
         let refreshed = try await file.read().get()
         XCTAssertEqual(refreshed, replacement)
@@ -235,7 +194,7 @@ final class ConfigurationFileTests: XCTestCase {
     private func fixture() throws -> (root: URL, url: URL) {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("Sotto-config-test-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        return (root, root.appendingPathComponent(".murmur", isDirectory: true).appendingPathComponent("config.json"))
+        return (root, root.appendingPathComponent("Sotto Dev", isDirectory: true).appendingPathComponent("config.json"))
     }
 
     private func json(_ url: URL) throws -> [String: Any] {

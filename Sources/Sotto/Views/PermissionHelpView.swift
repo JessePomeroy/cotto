@@ -22,11 +22,11 @@ private struct PermissionHelpView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
-            Text("Add Sotto to Accessibility")
+            Text("Add Sotto Dev to Accessibility")
                 .font(.system(size: 23, weight: .semibold))
                 .foregroundStyle(SottoPalette.ink)
 
-            Text("In System Settings → Privacy & Security → \(paneTitle), click +. Press ⌘⇧G and use this path, then click Open and turn Sotto on.")
+            Text("In System Settings → Privacy & Security → \(paneTitle), click +. Press ⌘⇧G and use this path, then click Open and turn Sotto Dev on.")
                 .font(.system(size: 13))
                 .foregroundStyle(SottoPalette.muted)
                 .fixedSize(horizontal: false, vertical: true)
@@ -38,7 +38,7 @@ private struct PermissionHelpView: View {
                         .font(.system(size: 16, weight: .medium))
                 }
                     .onDrag { NSItemProvider(object: Bundle.main.bundleURL as NSURL) }
-                    .help("You can also drag Sotto into the Accessibility list.")
+                    .help("You can also drag Sotto Dev into the Accessibility list.")
                 Text(Bundle.main.bundleURL.path)
                     .font(.system(size: 11, design: .monospaced))
                     .textSelection(.enabled)
@@ -53,7 +53,7 @@ private struct PermissionHelpView: View {
                 .font(.system(size: 12))
                 .foregroundStyle(SottoPalette.muted)
 
-            Text("Already listed but still blocked? Remove the old Sotto or Murmur entry with −, add this copy again, then quit and reopen Sotto.")
+            Text("Already listed but still blocked? Remove the Sotto Dev entry with −, add this copy again, then quit and reopen Sotto Dev.")
                 .font(.system(size: 12))
                 .foregroundStyle(SottoPalette.muted)
                 .fixedSize(horizontal: false, vertical: true)

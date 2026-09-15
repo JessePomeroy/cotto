@@ -18,7 +18,6 @@ final class ConfigurationStore: ObservableObject {
     }
 
     private let file: ConfigurationFile
-    private let migration: SottoConfiguration
     private var lastValidConfiguration: SottoConfiguration
     private var pendingEdit: Edit?
     private var revision = 0
@@ -31,17 +30,14 @@ final class ConfigurationStore: ObservableObject {
     private var watcher: ConfigurationWatcher?
     private var watchingStopped = false
 
-    init(file: ConfigurationFile = .init(), legacyDefaults: UserDefaults = .standard,
-         legacyLoginEnabled: Bool = false) {
+    init(file: ConfigurationFile = .init()) {
         self.file = file
         url = file.url
-        let migration = Self.migrate(legacyDefaults, loginEnabled: legacyLoginEnabled)
-        self.migration = migration
-        configuration = migration
-        lastValidConfiguration = migration
+        configuration = .default
+        lastValidConfiguration = .default
     }
 
-    /// Only a missing first config is seeded from legacy preferences. Existing JSON wins.
+    /// Create device preferences on first launch; existing JSON remains authoritative.
     func start() async {
         if let startTask {
             await startTask.value
@@ -49,7 +45,7 @@ final class ConfigurationStore: ObservableObject {
         }
         let task = Task { [weak self] in
             guard let self else { return }
-            accept(await file.load(orCreate: migration), publish: pendingEdit == nil)
+            accept(await file.load(orCreate: .default), publish: pendingEdit == nil)
             if !watchingStopped {
                 let watcher = ConfigurationWatcher(url: url) { [weak self] in
                     Task { @MainActor [weak self] in self?.scheduleReload() }
@@ -167,24 +163,6 @@ final class ConfigurationStore: ObservableObject {
             guard let self, !Task.isCancelled else { return }
             await reload()
         }
-    }
-
-    private static func migrate(_ defaults: UserDefaults, loginEnabled: Bool) -> SottoConfiguration {
-        let savedIdle = defaults.object(forKey: "idleMinutes") as? Int ?? 5
-        let savedLanguage = defaults.string(forKey: "language") ?? "en"
-        let microphones = defaults.data(forKey: "microphonePreferences.v1")
-            .flatMap { try? JSONDecoder().decode(MicrophonePreferences.self, from: $0) }
-            ?? MicrophonePreferences()
-        return SottoConfiguration(
-            holdKey: HoldKey(rawValue: defaults.string(forKey: "holdKey") ?? "")?.rawValue ?? HoldKey.rightOption.rawValue,
-            language: SottoConfiguration.supportedLanguages.contains(savedLanguage) ? savedLanguage : "en",
-            idleMinutes: [-1, 0, 5, 15].contains(savedIdle) ? savedIdle : 5,
-            cleanText: defaults.object(forKey: "cleanText") as? Bool ?? true,
-            vocabulary: defaults.string(forKey: "vocabulary") ?? "",
-            launchAtLogin: loginEnabled,
-            saveDictationHistory: defaults.object(forKey: "saveDictationHistory") as? Bool ?? true,
-            microphones: microphones.normalized()
-        )
     }
 }
 

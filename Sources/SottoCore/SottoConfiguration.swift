@@ -1,45 +1,25 @@
 import Foundation
 
-/// The editable preferences in ~/.murmur/config.json. System permissions and window state
-/// belong to macOS, rather than this configuration.
+/// Device-specific preferences. Processing settings and dictation history belong to
+/// the server; connection details and device identity have a separate client store.
 public struct SottoConfiguration: Codable, Equatable, Sendable {
     public let schemaVersion: Int
     public var holdKey: String
-    public var language: String
-    public var idleMinutes: Int
-    public var cleanText: Bool
-    public var vocabulary: String
     public var launchAtLogin: Bool
-    public var saveDictationHistory: Bool
     public var microphones: MicrophonePreferences
-    public var dictionary: PersonalDictionary
-    public var textCorrectionEnabled: Bool
 
     public static let `default` = SottoConfiguration()
-    public static let supportedLanguages = [
-        "en", "auto", "es", "fr", "de", "it", "pt", "nl", "ja", "zh", "ko", "hi", "ar", "pl", "ru", "uk", "sv",
-    ]
 
-    public init(holdKey: String = "rightOption", language: String = "en", idleMinutes: Int = 5,
-                cleanText: Bool = true, vocabulary: String = "", launchAtLogin: Bool = false,
-                saveDictationHistory: Bool = true, microphones: MicrophonePreferences = MicrophonePreferences(),
-                dictionary: PersonalDictionary = .default, textCorrectionEnabled: Bool = true) {
+    public init(holdKey: String = "rightOption", launchAtLogin: Bool = false,
+                microphones: MicrophonePreferences = MicrophonePreferences()) {
         schemaVersion = 1
         self.holdKey = holdKey
-        self.language = language
-        self.idleMinutes = idleMinutes
-        self.cleanText = cleanText
-        self.vocabulary = vocabulary
         self.launchAtLogin = launchAtLogin
-        self.saveDictationHistory = saveDictationHistory
         self.microphones = microphones
-        self.dictionary = dictionary
-        self.textCorrectionEnabled = textCorrectionEnabled
     }
 
     private enum CodingKeys: String, CodingKey {
-        case schemaVersion, holdKey, language, idleMinutes, cleanText, vocabulary
-        case launchAtLogin, saveDictationHistory, microphones, dictionary, textCorrectionEnabled
+        case schemaVersion, holdKey, launchAtLogin, microphones
     }
 
     public init(from decoder: Decoder) throws {
@@ -52,29 +32,15 @@ public struct SottoConfiguration: Codable, Equatable, Sendable {
         guard ["rightOption", "rightControl", "fn"].contains(holdKey) else {
             throw values.invalid(.holdKey, "Use rightOption, rightControl, or fn.")
         }
-        let language = try values.value(String.self, for: .language, default: "en")
-        guard Self.supportedLanguages.contains(language) else {
-            throw values.invalid(.language, "Use a supported language code: \(Self.supportedLanguages.joined(separator: ", ")).")
-        }
-        let idleMinutes = try values.value(Int.self, for: .idleMinutes, default: 5)
-        guard [-1, 0, 5, 15].contains(idleMinutes) else {
-            throw values.invalid(.idleMinutes, "Use -1 (keep loaded), 0, 5, or 15 minutes.")
-        }
-        self.init(holdKey: holdKey, language: language, idleMinutes: idleMinutes,
-                  cleanText: try values.value(Bool.self, for: .cleanText, default: true),
-                  vocabulary: try values.value(String.self, for: .vocabulary, default: ""),
+        self.init(holdKey: holdKey,
                   launchAtLogin: try values.value(Bool.self, for: .launchAtLogin, default: false),
-                  saveDictationHistory: try values.value(Bool.self, for: .saveDictationHistory, default: true),
                   microphones: values.contains(.microphones)
                     ? try values.decode(StrictMicrophones.self, forKey: .microphones).preferences
-                    : MicrophonePreferences(),
-                  dictionary: try values.value(PersonalDictionary.self, for: .dictionary, default: .default),
-                  textCorrectionEnabled: try values.value(Bool.self, for: .textCorrectionEnabled, default: true))
+                    : MicrophonePreferences())
     }
 }
 
-// Legacy microphone preferences intentionally salvage damaged UserDefaults records. A
-// hand-edited config must instead reject mistakes without silently losing a priority list.
+// Reject invalid manual edits without silently losing a microphone priority list.
 private struct StrictMicrophones: Decodable {
     let preferences: MicrophonePreferences
     private enum CodingKeys: String, CodingKey { case profiles, activeProfileID, selection }

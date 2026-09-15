@@ -309,13 +309,13 @@ final class NativeIntegrationTests: XCTestCase {
         XCTAssertFalse(failed.observedMainThread || next.observedMainThread)
     }
 
-    func testOrphanedCapturesFromBothAppNamesAreRemovedWithoutTouchingOtherFiles() throws {
+    func testDevOrphanedCapturesAreRemovedWithoutTouchingStableAppFiles() throws {
         let files = FileManager.default
         let root = files.temporaryDirectory.appendingPathComponent("Sotto-cleanup-test-\(UUID())", isDirectory: true)
         try files.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? files.removeItem(at: root) }
-        let captures = ["Sotto-recording-\(UUID())", "Murmur-recording-\(UUID())"]
-        let unrelated = ["Sotto-recording-notes", "Murmur-recording-notes", "transcripts"]
+        let captures = ["Sotto-Dev-recording-\(UUID())"]
+        let unrelated = ["Sotto-recording-\(UUID())", "Murmur-recording-\(UUID())", "Sotto-recording-notes", "Murmur-recording-notes", "transcripts"]
         for name in captures + unrelated {
             let directory = root.appendingPathComponent(name, isDirectory: true)
             try files.createDirectory(at: directory, withIntermediateDirectories: false)

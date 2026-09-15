@@ -10,14 +10,9 @@ import SwiftUI
 enum SottoApp {
     static func main() {
         signal(SIGPIPE, SIG_IGN)
-        let arguments = Array(CommandLine.arguments.dropFirst())
-        if !arguments.isEmpty {
-            Task { exit(await SottoCommandLine.run(arguments)) }
-            dispatchMain()
-        }
         let app = NSApplication.shared
-        // This shipped identity owns the existing macOS privacy grants.
-        let existing = NSRunningApplication.runningApplications(withBundleIdentifier: "dev.davis.murmur")
+        // Development uses a separate identity and privacy grants.
+        let existing = NSRunningApplication.runningApplications(withBundleIdentifier: "dev.davis.sotto.dev")
             .first { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier }
         if let existing {
             existing.activate(options: [.activateAllWindows])
@@ -44,7 +39,11 @@ final class SottoAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate 
     private var reopenRequested = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        let configuration = ConfigurationStore(legacyLoginEnabled: SMAppService.mainApp.status == .enabled)
+        let root = ProcessInfo.processInfo.environment["SOTTO_CLIENT_DATA_DIR"].map { URL(fileURLWithPath: $0, isDirectory: true) }
+            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/Sotto Dev", isDirectory: true)
+        let configuration = ConfigurationStore(
+            file: ConfigurationFile(url: root.appendingPathComponent("config.json"))
+        )
         self.configuration = configuration
         startupTask = Task {
             // Load the file before installing a hotkey or using any preference.
@@ -66,8 +65,7 @@ final class SottoAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate 
         configureApplicationMenu()
         configureStatusItem()
         let defaults = UserDefaults.standard
-        if reopenRequested || configuration.errorMessage != nil || !defaults.bool(forKey: "hasLaunched") || !controller.allPermissionsGranted ||
-            !FileManager.default.fileExists(atPath: SottoPaths().model.path) {
+        if reopenRequested || configuration.errorMessage != nil || !defaults.bool(forKey: "hasLaunched") || !controller.allPermissionsGranted {
             showWindow()
         }
         defaults.set(true, forKey: "hasLaunched")
@@ -86,13 +84,11 @@ final class SottoAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         configuration?.stopWatching()
         controller?.shutdown()
-        guard startupTask != nil || (controller?.history.pendingSaveCount ?? 0) > 0 ||
-                (configuration?.pendingWriteCount ?? 0) > 0 else { return .terminateNow }
+        guard startupTask != nil || (configuration?.pendingWriteCount ?? 0) > 0 else { return .terminateNow }
         startupTask?.cancel()
         Task {
             await startupTask?.value
             configuration?.stopWatching()
-            await controller?.history.flush()
             await configuration?.flush()
             sender.reply(toApplicationShouldTerminate: true)
         }
@@ -113,7 +109,7 @@ final class SottoAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate 
                 contentRect: NSRect(x: 0, y: 0, width: 940, height: 700),
                 styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView], backing: .buffered, defer: false
             )
-            window.title = "Sotto"
+            window.title = "Sotto Dev"
             // Let native chrome obscure scrolling form content under the title.
             window.titlebarAppearsTransparent = false
             window.titleVisibility = .visible
@@ -124,8 +120,8 @@ final class SottoAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate 
             window.minSize = NSSize(width: 820, height: 620)
             window.contentViewController = NSHostingController(rootView: SottoWindowView(controller: controller))
             window.delegate = self
-            if !window.setFrameUsingName("MurmurMainWindow") { window.center() }
-            window.setFrameAutosaveName("MurmurMainWindow")
+            if !window.setFrameUsingName("SottoDevMainWindow") { window.center() }
+            window.setFrameAutosaveName("SottoDevMainWindow")
             mainWindow = window
         }
         NSApp.setActivationPolicy(.regular)
@@ -160,7 +156,7 @@ final class SottoAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate 
     private func configureStatusItem() {
         // Keep the slot present while swapping artwork; a status transition
         // must never depend on the new image's intrinsic width.
-        statusItem = NSStatusBar.system.statusItem(withLength: 28)
+        statusItem = NSStatusBar.system.statusItem(withLength: 62)
         if let button = statusItem.button {
             SottoBrand.updateStatusButton(button, activity: controller.activity, shortcut: controller.shortcut)
         }
@@ -188,11 +184,11 @@ final class SottoAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate 
         let main = NSMenu()
         let appItem = NSMenuItem()
         let appMenu = NSMenu()
-        let show = NSMenuItem(title: "Open Sotto", action: #selector(showWindow), keyEquivalent: ",")
+        let show = NSMenuItem(title: "Open Sotto Dev", action: #selector(showWindow), keyEquivalent: ",")
         show.target = self
         appMenu.addItem(show)
         appMenu.addItem(.separator())
-        let quit = NSMenuItem(title: "Quit Sotto", action: #selector(self.quit), keyEquivalent: "q")
+        let quit = NSMenuItem(title: "Quit Sotto Dev", action: #selector(self.quit), keyEquivalent: "q")
         quit.target = self
         appMenu.addItem(quit)
         appItem.submenu = appMenu

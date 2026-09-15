@@ -29,20 +29,6 @@ public struct SpeechModel: Sendable {
     )
 }
 
-public struct SottoPaths: Sendable {
-    public let root: URL
-
-    public init(root: URL? = nil) {
-        // Preserve the original model location; renaming the app must not redownload weights.
-        self.root = root ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Murmur", isDirectory: true)
-    }
-
-    public var models: URL { root.appendingPathComponent("Models", isDirectory: true) }
-    public var model: URL { models.appendingPathComponent(SpeechModel.turbo.filename) }
-    public var partialModel: URL { models.appendingPathComponent(SpeechModel.turbo.filename + ".download") }
-}
-
 public enum ModelIntegrityError: LocalizedError, Equatable {
     case missing
     case wrongSize(expected: Int64, actual: Int64)

@@ -29,8 +29,8 @@ enum SottoBrand {
     }
 
     private static let restingStatusImage = makeStatusLogo()
-    private static let recordingStatusImage = makeStatusSymbol("waveform", description: "Sotto — listening")
-    private static let processingStatusImage = makeStatusSymbol("ellipsis", description: "Sotto — processing")
+    private static let recordingStatusImage = makeStatusSymbol("waveform", description: "Sotto Dev — listening")
+    private static let processingStatusImage = makeStatusSymbol("ellipsis", description: "Sotto Dev — processing")
 
     static func statusImage(for activity: DictationActivity = .idle) -> NSImage {
         switch activity {
@@ -44,17 +44,19 @@ enum SottoBrand {
     /// particular, do not bridge the SwiftUI brand tint onto NSStatusBarButton.
     static func updateStatusButton(_ button: NSButton, activity: DictationActivity, shortcut: HoldKey) {
         button.contentTintColor = nil
-        button.imagePosition = .imageOnly
+        button.imagePosition = .imageLeading
+        button.title = " Dev"
+        button.font = .systemFont(ofSize: 10, weight: .medium)
         button.imageScaling = .scaleProportionallyDown
         button.image = statusImage(for: activity)
         let description: String
         switch activity {
-        case .starting: description = "Sotto — starting microphone"
-        case .recording: description = "Sotto — listening"
-        case .transcribing: description = "Sotto — transcribing"
-        case .delivering: description = "Sotto — delivering your words"
-        case .failed: description = "Sotto — dictation needs attention"
-        case .idle, .success: description = "Sotto — hold \(shortcut.title) to dictate"
+        case .starting: description = "Sotto Dev — starting microphone"
+        case .recording: description = "Sotto Dev — listening"
+        case .transcribing: description = "Sotto Dev — transcribing"
+        case .delivering: description = "Sotto Dev — delivering your words"
+        case .failed: description = "Sotto Dev — dictation needs attention"
+        case .idle, .success: description = "Sotto Dev — hold \(shortcut.title) to dictate"
         }
         button.toolTip = description
         button.setAccessibilityLabel(description)
@@ -104,7 +106,7 @@ enum SottoBrand {
             return true
         }
         image.isTemplate = true
-        image.accessibilityDescription = "Sotto"
+        image.accessibilityDescription = "Sotto Dev"
         return image
     }
 }

@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <charconv>
+#include <cerrno>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -13,8 +14,13 @@
 #include <string>
 #include <thread>
 #include <vector>
-#include <sys/event.h>
 #include <unistd.h>
+#if defined(__APPLE__)
+#include <sys/event.h>
+#elif defined(__linux__)
+#include <signal.h>
+#include <sys/prctl.h>
+#endif
 
 namespace {
 using json = nlohmann::json;
@@ -25,7 +31,7 @@ constexpr int contextSize = 8192;
 constexpr int maxOutputTokens = 2048;
 constexpr int batchSize = 512;
 constexpr auto inferenceLimit = std::chrono::seconds(15);
-constexpr auto engineVersion = "llama.cpp-b10516-b95502ba-murmur1";
+constexpr auto engineVersion = "llama.cpp-b10516-b95502ba-sotto2";
 
 void emit(const json &event) {
     std::cout << event.dump(-1, ' ', false, json::error_handler_t::replace) << '\n' << std::flush;
@@ -46,6 +52,12 @@ void libraryLog(ggml_log_level level, const char *message, void *) {
 void watchParent() {
     const pid_t parent = getppid();
     if (parent <= 1) std::_Exit(0);
+#if defined(__linux__)
+    if (prctl(PR_SET_PDEATHSIG, SIGKILL) == 0) {
+        if (getppid() != parent) std::_Exit(0);
+        return;
+    }
+#elif defined(__APPLE__)
     const int queue = kqueue();
     struct kevent change;
     EV_SET(&change, parent, EVFILT_PROC, EV_ADD | EV_ONESHOT, NOTE_EXIT, 0, nullptr);
@@ -55,13 +67,14 @@ void watchParent() {
             while (kevent(queue, nullptr, 0, &event, 1, nullptr) < 0 && errno == EINTR) {}
             std::_Exit(0);
         }).detach();
-    } else {
-        if (queue >= 0) close(queue);
-        std::thread([parent] {
-            while (getppid() == parent) std::this_thread::sleep_for(std::chrono::seconds(1));
-            std::_Exit(0);
-        }).detach();
+        return;
     }
+    if (queue >= 0) close(queue);
+#endif
+    std::thread([parent] {
+        while (getppid() == parent) std::this_thread::sleep_for(std::chrono::seconds(1));
+        std::_Exit(0);
+    }).detach();
 }
 
 std::optional<std::string> stringField(const json &request, const char *key) {
@@ -202,18 +215,21 @@ int main(int argc, char **argv) {
     int threads = 4;
     for (int i = 1; i < argc; ++i) {
         const std::string argument = argv[i];
-        if (argument == "--model" && i + 1 < argc) modelPath = argv[++i];
+        if (argument == "--help") {
+            std::fputs("Usage: sotto-text-engine --model MODEL.gguf [--threads 1..32]\nJSON lines on stdin and stdout; diagnostics only on stderr.\n", stderr);
+            return 0;
+        } else if (argument == "--model" && i + 1 < argc) modelPath = argv[++i];
         else if (argument == "--threads" && i + 1 < argc) {
             const std::string value = argv[++i];
             const auto parsed = std::from_chars(value.data(), value.data() + value.size(), threads);
             if (parsed.ec != std::errc() || parsed.ptr != value.data() + value.size() || threads < 1 || threads > 32) {
                 emitError("The thread count must be between 1 and 32."); return 1;
             }
-        } else { emitError("Usage: murmur-text-engine --model MODEL.gguf [--threads N]"); return 1; }
+        } else { emitError("Usage: sotto-text-engine --model MODEL.gguf [--threads 1..32]"); return 1; }
     }
     std::error_code fileError;
     if (modelPath.empty() || !std::filesystem::is_regular_file(modelPath, fileError)) {
-        emitError("Download the local text model first."); return 1;
+        emitError("The proof model is missing. Configure the server's GGUF model path."); return 1;
     }
     llama_log_set(libraryLog, nullptr);
     llama_backend_init();
@@ -245,6 +261,7 @@ int main(int argc, char **argv) {
         if (line.empty()) continue;
         try {
             const auto request = json::parse(line);
+            if (request.is_object() && stringField(request, "type") == "quit") return 0;
             if (!request.is_object() || stringField(request, "type") != "correct") {
                 emitError("Expected a correction request."); continue;
             }

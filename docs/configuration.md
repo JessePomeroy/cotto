@@ -1,37 +1,27 @@
 # Configuration
 
-Since 0.7.0, Sotto stores editable app preferences in **`~/.murmur/config.json`**. Version 0.8 adds dictionary lists and the optional local text-correction toggle to this same source of truth; it is not a periodic export.
+Device preferences belong to each Mac. Processing preferences and history belong to the selected server and are shared by every connected client.
 
-- Editing a setting in Sotto updates this file automatically. Rapid edits are batched for roughly 150 ms, written off-main, and flushed on normal quit.
-- Editing and saving the file updates the running app without a restart. The watcher handles both in-place saves and editor-style atomic replacements. There is no polling timer or config read on each hold-key press.
-- An active dictation retains its shortcut/transcription settings, dictionary, text-correction toggle, and pinned input. Changes take effect for subsequent takes. History retention is also snapshotted per take.
-- General → Settings file → **Show in Finder** reveals the file. The section shows save/configuration errors; the sidebar links to it when attention is needed.
+## This Mac
 
-## Example
+The normal Dev client directory is `~/Library/Application Support/Sotto Dev`. `SOTTO_CLIENT_DATA_DIR` selects a different directory for an isolated run; `scripts/run-dev.sh` defaults it to `.local/client` and selects the local server endpoint for its configured port.
+
+| Location | Contents |
+| --- | --- |
+| `config.json` | Hold key, launch-at-login preference, microphone selection and named priority lists. |
+| `client.json` | Server endpoint, stable device ID, and display name. |
+| macOS Keychain | Bearer credential scoped to the exact endpoint and client data directory. |
+| Native app defaults / macOS | Window and appearance state, first-launch bookkeeping, privacy grants, login-item approval. |
+
+`SOTTO_SERVER_URL` overrides the saved endpoint for a run. The default is `http://127.0.0.1:8391`. Use **This Mac** to set the server URL, token, and device name. URLs cannot contain embedded credentials, queries, or fragments. Saved settings and environment overrides use the same validation before loading credentials or making requests. Whitespace and trailing slashes are removed before selecting the endpoint's Keychain entry. The HTTP client does not follow redirects with credentials.
+
+Device config example:
 
 ```json
 {
   "schemaVersion": 1,
   "holdKey": "rightOption",
-  "language": "en",
-  "idleMinutes": 5,
-  "cleanText": true,
-  "vocabulary": "",
-  "textCorrectionEnabled": true,
-  "dictionary": {
-    "lists": [
-      {
-        "id": "personal",
-        "name": "Personal",
-        "entries": [
-          { "id": "minimax", "term": "MiniMax", "aliases": [] },
-          { "id": "codex", "term": "Codex", "aliases": [] }
-        ]
-      }
-    ]
-  },
   "launchAtLogin": false,
-  "saveDictationHistory": true,
   "microphones": {
     "activeProfileID": "default",
     "profiles": [
@@ -42,44 +32,40 @@ Since 0.7.0, Sotto stores editable app preferences in **`~/.murmur/config.json`*
 }
 ```
 
-| Setting | Values |
+- `holdKey` is `rightOption`, `rightControl`, or `fn`. Right Option is the default.
+- Microphone selection is `automatic`, `systemDefault`, or `fixed`. Automatic follows the active priority list, then available fallbacks. Fixed selection includes a stable device `uid`, `name`, and `transport`; populate these through **Microphone** rather than using transient Core Audio numeric IDs.
+- The selected input remains pinned for the active take. Route preferences affect subsequent recordings.
+- App edits save asynchronously and flush on normal quit. Valid manual `config.json` edits update the running app. Invalid JSON leaves the last good state active and is not overwritten; repair and save the file to recover.
+- Device files use private directories/files and atomic writes. Unknown top-level config keys survive unrelated app edits. This is not collaborative editing of a local file.
+
+JSON cannot grant microphone, Accessibility, or login-item approval. Sotto Dev has separate privacy grants from an installed Sotto app. Device preferences are created fresh; there is no legacy preference migration.
+
+## Shared server preferences
+
+Edit these under **Server preferences**, then choose **Save shared preferences**. The server persists a revisioned snapshot in `<data-dir>/preferences.json`. Concurrent stale saves return a conflict so one device does not silently overwrite another's changes. The server freezes a snapshot when it accepts each generation; edits affect future takes.
+
+| Preference | Behavior |
 | --- | --- |
-| `holdKey` | `rightOption` (fresh-install default), `rightControl`, or `fn` |
-| `language` | `auto`, `en`, `es`, `fr`, `de`, `it`, `pt`, `nl`, `ja`, `zh`, `ko`, `hi`, `ar`, `pl`, `ru`, `uk`, `sv` |
-| `idleMinutes` | `0` after every take, `5`, `15`, or `-1` until quit; applies to both model helpers |
-| `cleanText` | Boolean; light filler cleanup, separate from generative proofreading |
-| `vocabulary` | Legacy string of comma-separated recognition hints; edited under Dictionary → Additional recognition hints |
-| `dictionary` | Named lists containing preferred `term` spellings and explicit `aliases`; all lists are active |
-| `textCorrectionEnabled` | Boolean, default `true`; use the optional local proofreading model when installed. Never triggers a download by itself |
-| `launchAtLogin` | Desired login behavior; macOS still controls registration/approval |
-| `saveDictationHistory` | Boolean; affects future takes only, never deletes history |
-| `microphones` | Named priority profiles, active profile ID, and input-selection mode |
+| `language` | Recognition language; default `en`, with `auto` and the supported language choices in the UI. |
+| `cleanText` | Light filler cleanup; default on. |
+| `vocabulary` | Additional recognition hints, bounded to 16 KiB. |
+| `dictionary` | Always-active named lists of preferred spellings and explicit aliases. |
+| `textCorrectionEnabled` | Qwen proofreading; default on. Disabled/unavailable proofreading preserves deterministic dictionary/list processing. |
+| `keepOriginalAudio` | Keep/upload microphone-format audio for future takes; default on. Normalized inference audio is always retained. |
 
-Microphone `selection.mode` is `automatic`, `systemDefault`, or `fixed`. Fixed selection includes a `device` object with `uid`, `name`, and `transport`. Priority lists use the same device objects, ordered most preferred first; disconnected devices keep their place. Use the Microphone page to populate accurate device UIDs, then edit the JSON if desired. IDs must be nonempty and unique within their respective lists; the active profile must exist. Do not substitute transient Core Audio numeric handles.
+Use the API/UI to update shared settings while the server runs; it does not watch the preferences file for external edits. The API sends `{ "revision": N, "preferences": { ... } }` and returns the next revision after validation.
 
-The file is strict JSON: no comments or trailing commas. Missing settings use defaults; explicit nulls, wrong types, unsupported values/schema versions, and malformed microphone/dictionary structures are rejected. Unknown top-level keys are preserved on app saves. Updating a microphone or dictionary preference writes its complete `microphones` or `dictionary` field, so use one editor at a time for simultaneous changes within that field.
+All dictionary lists are active together. Default entries are **MiniMax** and **Codex**; deleting them or using an empty dictionary is respected. Preferred terms and aliases use whole-word/phrase matching, Unicode boundaries, and noncascading replacements. The dictionary supports up to 32 lists and 500 terms, with up to eight explicit aliases per term. Conflicting mappings are rejected. See [text correction](text-correction.md).
 
-## Dictionary and proofreading
+There is no history-disable or idle-unload setting in this version. The server owns generation history and keeps its models warm. The original-audio toggle does not delete old audio.
 
-- A missing `dictionary` key seeds the **Personal** list with **MiniMax** and **Codex**, without aliases. An explicit `"dictionary": { "lists": [] }` keeps an empty dictionary; deleting the initial terms does not cause them to reappear.
-- Every list participates in correction. There is no selected/active-list flag: the Dictionary page's list picker only chooses which list you are editing.
-- `term` is the preferred spelling. `aliases` are user-supplied whole-word or phrase corrections, applied case-insensitively; no substring guessing, fuzzy replacement, or automatic learning occurs. Preferred spellings themselves normalize capitalization. Aliases are not added to Whisper's recognition hints.
-- Up to 32 lists and 500 terms are accepted. List names are nonempty single-line text up to 80 characters; terms and aliases are nonempty single-line text up to 128 characters. Each term can have up to eight aliases. IDs must be unique in their required scope, and a spelling cannot map to conflicting preferred terms across lists. Capitalization-only aliases are unnecessary and rejected.
-- Preferred dictionary spellings supplement the legacy `vocabulary` hint string. The deterministic rules use the complete dictionary; the model receives a bounded subset of preferred terms to fit its context.
-- `textCorrectionEnabled: false` disables only the second-model proofread. Dictionary replacements and deterministic list formatting remain active. The current take keeps its original toggle, even if JSON is changed mid-recording; an idle model unloads when correction is disabled.
+## Server process configuration
 
-The correction weights are separate from JSON at `~/.murmur/models/`. Download/removal and manual load/unload are under **Models → Text correction**. See [text correction](text-correction.md) for provenance, fallback behavior, and limitations.
+Bind address, port, token file, data directory, and model/helper paths are runner settings. They are configured on the server, separately from shared product preferences. See [server setup](../Server/README.md) for command arguments and environment variables.
 
-## Migration and failures
+- Same-machine: loopback HTTP, normally port 8391.
+- Remote: HTTPS is required except for literal Tailscale IPs in `100.64.0.0/10` or `fd7a:115c:a1e0::/48`, which can use HTTP when they belong to your server on a connected tailnet. This is a deployment precondition: Sotto checks address ranges but does not verify Tailscale routing; the IPv4 range is also used by carrier-grade NAT. Use HTTPS if that condition cannot be maintained. For a MagicDNS name, use HTTPS or enter the machine's Tailscale IP; ordinary LAN IPs and unverified hostnames cannot use HTTP. Loopback HTTP accepts `localhost`, `127.0.0.0/8`, and `::1`. Nonloopback server binding requires a token of at least 32 characters.
+- Dev runner: `.local/server` for persistent server data, `.local/client` for device settings, `.local/server.log` for output, `.local/server.pid` for process tracking.
+- Hosted runner: choose durable storage and supervise the independent process with launchd, systemd, or a container runtime.
 
-Before 0.7.0, settings used macOS `UserDefaults` in the `dev.davis.murmur` domain, normally backed by **`~/Library/Preferences/dev.davis.murmur.plist`**. When config.json is absent at startup, Sotto seeds it with the existing shortcut, language, idle policy, cleanup, vocabulary, microphone preferences, history toggle, and current login registration. Existing valid JSON always wins over legacy preferences. The old plist is left untouched as a migration backup; user-facing settings no longer write to it.
-
-Window placement and first-launch bookkeeping remain native macOS defaults. Microphone/Accessibility permissions and login-item approval remain macOS-owned; a JSON setting cannot grant permissions. A login registration failure keeps the requested preference in JSON and shows a warning on the login toggle instead of silently changing intent or retrying on unrelated edits.
-
-Invalid or partially saved JSON leaves the last good in-memory configuration active and displays an error. App changes cannot overwrite the invalid file. Fix and save the file to recover automatically. On a fresh launch without any valid JSON, Sotto uses its legacy/default fallback until the file is repaired. Deleting the file while running does not recreate it or clear preferences; restore a valid file, or restart to seed a missing file again.
-
-App writes merge only changed top-level settings into the latest valid disk contents, preserving unrelated edits. They use a private temporary file and atomic replacement, with bounded retries if a changed file is detected. This is not a collaborative editor: two editors changing the same setting simultaneously can still compete. Failed saves are surfaced, and the UI returns to its last valid snapshot rather than claiming persistence.
-
-The app directory is private (`0700`) and app-written config files use `0600`. Reads are bounded to 1 MiB, and symlink/nonregular config files are refused. External editors may choose different file modes; the enclosing directory remains private. The JSON is not separately encrypted and may contain personal dictionary terms, vocabulary, and microphone identifiers. No network synchronization is performed.
-
-The explicit packaged command `Sotto --prepare-config` creates/migrates or validates the file without opening the microphone or installing a hotkey. `--correct-text /path/to/text.txt [--config /path/to/config.json]` reads the chosen config (the normal config when omitted) without saving/migrating it. `--transcribe /path/to/audio.wav --config /path/to/config.json` reads that snapshot and applies dictionary/proofreading. Without `--config`, file transcription keeps its earlier Whisper/formatter behavior and does not read app preferences. These commands never download models or install a hotkey. File transcription saves history only with explicit `--archive-root`; text-only correction never creates audio history.
+The client does not own server lifetime, model installation, or shared files. Quitting the UI leaves the server available to other Macs.

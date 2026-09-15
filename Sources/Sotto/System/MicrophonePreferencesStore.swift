@@ -21,9 +21,6 @@ enum MicrophoneProfileError: LocalizedError, Equatable {
 /// Preferences and connected-device snapshots, with no microphone ownership.
 @MainActor
 final class MicrophonePreferencesStore: ObservableObject {
-    /// Used only when migrating pre-config.json preferences.
-    static let preferencesKey = "microphonePreferences.v1"
-
     @Published private(set) var preferences: MicrophonePreferences
     @Published private(set) var availableDevices: [AudioInputDevice] = []
     @Published private(set) var systemDefaultUID: String?
