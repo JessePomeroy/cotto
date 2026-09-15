@@ -16,7 +16,7 @@ Dictionary lists, aliases, priority, recognition hints, the cleanup system promp
 
 ## Cleanup instructions
 
-Server preferences provides a fixed-height **Cleanup instructions** editor and **Reset to default**. The shorter default separates Cleanup, Spoken corrections, Preserve, and Output with plain-text headings. These are editable text, not required fields: users can rewrite, add, or remove sections. Three compact examples guide spoken word, number, and negation corrections.
+Server preferences provides a fixed-height **Cleanup instructions** editor and **Reset to default**. The shorter default separates Cleanup, Spoken corrections, Preserve, and Output with plain-text headings. These are editable text, not required fields: users can rewrite, add, or remove sections. Compact examples distinguish spoken corrections from contrasts such as “42, not 24.” The default also forbids translation and added information.
 
 Save commits the draft for all clients; current recordings keep their original snapshot. The default preserves intentional “like,” repetition, and every answer. Custom instructions change cleanup behavior within the content-preservation guards. Reset loads the current default into the draft; existing saved prompts stay as written until explicitly changed. Disabling Qwen preserves fillers as well as other recognized words.
 

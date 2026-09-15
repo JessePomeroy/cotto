@@ -15,7 +15,9 @@ def add_prompt_arguments(parser):
 
 def load_cleanup_prompt(arguments):
     if arguments.prompt:
-        prompt = arguments.prompt.read_text()
+        # Match the canonical CLI export: its final newline is a file delimiter,
+        # not part of the system prompt sent by the server.
+        prompt = arguments.prompt.read_text().removesuffix("\n")
     else:
         result = subprocess.run([str(arguments.server.resolve()), "--print-default-proofreading-prompt"],
                                 capture_output=True, text=True, check=True, timeout=10)
