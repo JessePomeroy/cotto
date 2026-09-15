@@ -26,8 +26,7 @@ public actor ConfigurationFile {
     public static let maximumFileSize = 1_048_576
 
     public init(url: URL? = nil) {
-        self.url = (url ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Sotto Dev", isDirectory: true)
+        self.url = (url ?? SottoBuild.current.dataDirectory
             .appendingPathComponent("config.json")).standardizedFileURL
     }
 

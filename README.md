@@ -2,7 +2,7 @@
 
 Hold a key, speak, and release to insert your dictation. Sotto is a native macOS app backed by a model server running on the same Mac, another Mac, or Linux. Audio uploads while you speak; the server returns progress and one finished transcript.
 
-The app builds as **Sotto Dev**, with its own identity and visible Dev labels.
+The dev runner builds **Sotto Dev**, with separate settings and visible Dev labels. For the regular app, run `./scripts/build-app.sh` and install `build/Sotto.app` in Applications. Both connect to an independently running server.
 
 ## Get started on one Mac
 
@@ -34,8 +34,8 @@ Use your own model paths if they are already installed. The script builds the se
 Follow the [server guide](Server/README.md) for macOS, Linux, or containers. On the client Mac, build and open only the app:
 
 ```sh
-./scripts/build-dev-app.sh
-open "build/Sotto Dev.app"
+./scripts/build-app.sh
+open "build/Sotto.app"
 ```
 
 Set its URL and token under **This Mac**. Use HTTPS for remote hosts, or HTTP with the server's literal Tailscale IP on your connected tailnet. The client needs no model weights or GPU for inference.

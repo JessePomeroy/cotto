@@ -1,3 +1,4 @@
+import SottoCore
 import AppKit
 import SwiftUI
 
@@ -22,11 +23,11 @@ private struct PermissionHelpView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
-            Text("Add Sotto Dev to Accessibility")
+            Text("Add \(SottoBuild.current.displayName) to Accessibility")
                 .font(.system(size: 23, weight: .semibold))
                 .foregroundStyle(SottoPalette.ink)
 
-            Text("In System Settings → Privacy & Security → \(paneTitle), click +. Press ⌘⇧G and use this path, then click Open and turn Sotto Dev on.")
+            Text("In System Settings → Privacy & Security → \(paneTitle), click +. Press ⌘⇧G and use this path, then click Open and turn \(SottoBuild.current.displayName) on.")
                 .font(.system(size: 13))
                 .foregroundStyle(SottoPalette.muted)
                 .fixedSize(horizontal: false, vertical: true)
@@ -38,7 +39,7 @@ private struct PermissionHelpView: View {
                         .font(.system(size: 16, weight: .medium))
                 }
                     .onDrag { NSItemProvider(object: Bundle.main.bundleURL as NSURL) }
-                    .help("You can also drag Sotto Dev into the Accessibility list.")
+                    .help("You can also drag \(SottoBuild.current.displayName) into the Accessibility list.")
                 Text(Bundle.main.bundleURL.path)
                     .font(.system(size: 11, design: .monospaced))
                     .textSelection(.enabled)
@@ -53,7 +54,7 @@ private struct PermissionHelpView: View {
                 .font(.system(size: 12))
                 .foregroundStyle(SottoPalette.muted)
 
-            Text("Already listed but still blocked? Remove the Sotto Dev entry with −, add this copy again, then quit and reopen Sotto Dev.")
+            Text("Already listed but still blocked? Remove the \(SottoBuild.current.displayName) entry with −, add this copy again, then quit and reopen \(SottoBuild.current.displayName).")
                 .font(.system(size: 12))
                 .foregroundStyle(SottoPalette.muted)
                 .fixedSize(horizontal: false, vertical: true)

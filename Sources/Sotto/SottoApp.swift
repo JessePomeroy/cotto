@@ -11,8 +11,7 @@ enum SottoApp {
     static func main() {
         signal(SIGPIPE, SIG_IGN)
         let app = NSApplication.shared
-        // Development uses a separate identity and privacy grants.
-        let existing = NSRunningApplication.runningApplications(withBundleIdentifier: "dev.davis.sotto.dev")
+        let existing = NSRunningApplication.runningApplications(withBundleIdentifier: SottoBuild.current.bundleIdentifier)
             .first { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier }
         if let existing {
             existing.activate(options: [.activateAllWindows])
@@ -40,7 +39,7 @@ final class SottoAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate 
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let root = ProcessInfo.processInfo.environment["SOTTO_CLIENT_DATA_DIR"].map { URL(fileURLWithPath: $0, isDirectory: true) }
-            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/Sotto Dev", isDirectory: true)
+            ?? SottoBuild.current.dataDirectory
         let configuration = ConfigurationStore(
             file: ConfigurationFile(url: root.appendingPathComponent("config.json"))
         )
@@ -109,7 +108,7 @@ final class SottoAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate 
                 contentRect: NSRect(x: 0, y: 0, width: 940, height: 700),
                 styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView], backing: .buffered, defer: false
             )
-            window.title = "Sotto Dev"
+            window.title = SottoBuild.current.displayName
             // Let native chrome obscure scrolling form content under the title.
             window.titlebarAppearsTransparent = false
             window.titleVisibility = .visible
@@ -120,8 +119,8 @@ final class SottoAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate 
             window.minSize = NSSize(width: 820, height: 620)
             window.contentViewController = NSHostingController(rootView: SottoWindowView(controller: controller))
             window.delegate = self
-            if !window.setFrameUsingName("SottoDevMainWindow") { window.center() }
-            window.setFrameAutosaveName("SottoDevMainWindow")
+            if !window.setFrameUsingName(SottoBuild.current.windowAutosaveName) { window.center() }
+            window.setFrameAutosaveName(SottoBuild.current.windowAutosaveName)
             mainWindow = window
         }
         NSApp.setActivationPolicy(.regular)
@@ -156,7 +155,7 @@ final class SottoAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate 
     private func configureStatusItem() {
         // Keep the slot present while swapping artwork; a status transition
         // must never depend on the new image's intrinsic width.
-        statusItem = NSStatusBar.system.statusItem(withLength: 62)
+        statusItem = NSStatusBar.system.statusItem(withLength: SottoBuild.current.isDevelopment ? 62 : 30)
         if let button = statusItem.button {
             SottoBrand.updateStatusButton(button, activity: controller.activity, shortcut: controller.shortcut)
         }
@@ -184,11 +183,11 @@ final class SottoAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate 
         let main = NSMenu()
         let appItem = NSMenuItem()
         let appMenu = NSMenu()
-        let show = NSMenuItem(title: "Open Sotto Dev", action: #selector(showWindow), keyEquivalent: ",")
+        let show = NSMenuItem(title: "Open \(SottoBuild.current.displayName)", action: #selector(showWindow), keyEquivalent: ",")
         show.target = self
         appMenu.addItem(show)
         appMenu.addItem(.separator())
-        let quit = NSMenuItem(title: "Quit Sotto Dev", action: #selector(self.quit), keyEquivalent: "q")
+        let quit = NSMenuItem(title: "Quit \(SottoBuild.current.displayName)", action: #selector(self.quit), keyEquivalent: "q")
         quit.target = self
         appMenu.addItem(quit)
         appItem.submenu = appMenu

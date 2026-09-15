@@ -45,7 +45,7 @@ Microphone capture uses input-only Core Audio without changing system routing or
 
 Shared saves use revisions to reject stale concurrent edits. Settings are snapshotted when the server accepts a take; changes affect future recordings. Update shared settings through the UI/API rather than editing files while the server runs.
 
-The Dev client normally uses `~/Library/Application Support/Sotto Dev`; `SOTTO_CLIENT_DATA_DIR` overrides it, and the dev runner selects `.local/client`. `config.json` stores shortcut/microphone settings; `client.json` stores endpoint/device identity. Tokens live in Keychain, scoped to the endpoint and client directory. `SOTTO_SERVER_URL` overrides the saved endpoint for a run. Valid manual `config.json` edits are reloaded; invalid files leave the last good configuration active.
+The regular app uses `~/Library/Application Support/Sotto`; Dev uses `~/Library/Application Support/Sotto Dev`. `SOTTO_CLIENT_DATA_DIR` overrides either, and the dev runner selects `.local/client`. `config.json` stores shortcut/microphone settings; `client.json` stores endpoint/device identity. Tokens live in separate release/Dev Keychain services, scoped to the endpoint and client directory. `SOTTO_SERVER_URL` overrides the saved endpoint for a run. Valid manual `config.json` edits are reloaded; invalid files leave the last good configuration active.
 
 ## Storage
 

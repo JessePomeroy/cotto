@@ -1,3 +1,4 @@
+import SottoCore
 import SottoAPI
 import SwiftUI
 
@@ -63,7 +64,7 @@ private struct DevicePreferencesForm: View {
                     }
                     .frame(height: 90)
                 }
-                Toggle("Start Sotto Dev at login", isOn: $controller.launchAtLogin)
+                Toggle("Start \(SottoBuild.current.displayName) at login", isOn: $controller.launchAtLogin)
                 if let error = controller.loginItemError {
                     Text(error).font(.caption).foregroundStyle(SottoPalette.warning)
                 }
@@ -84,9 +85,14 @@ private struct DevicePreferencesForm: View {
 
             Section {
                 HStack(spacing: 8) {
-                    Text("Sotto Dev").font(.headline)
+                    Text("\(SottoBuild.current.displayName)").font(.headline)
                     Spacer()
-                    Text("Development build").foregroundStyle(SottoPalette.muted)
+                    if SottoBuild.current.isDevelopment {
+                        Text("Development build").foregroundStyle(SottoPalette.muted)
+                    } else {
+                        Text(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "")
+                            .foregroundStyle(SottoPalette.muted)
+                    }
                 }
                 Text("Quitting this app leaves your server running.")
                     .font(.caption)

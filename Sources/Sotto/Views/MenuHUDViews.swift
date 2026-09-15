@@ -1,3 +1,4 @@
+import SottoCore
 import SwiftUI
 
 struct SottoMenuView: View {
@@ -36,10 +37,10 @@ struct SottoMenuView: View {
             .disabled(controller.lastTranscript.isEmpty || controller.isBusy)
             .accessibilityIdentifier("menu.copy-last")
 
-            Button("Open Sotto Dev…", action: openWindow)
+            Button("Open \(SottoBuild.current.displayName)…", action: openWindow)
                 .keyboardShortcut(",", modifiers: .command)
             Divider()
-            Button("Quit Sotto Dev", action: quit)
+            Button("Quit \(SottoBuild.current.displayName)", action: quit)
                 .keyboardShortcut("q", modifiers: .command)
         }
         .buttonStyle(.borderless)
@@ -102,7 +103,7 @@ struct DictationHUD: View {
         }
         .help(controller.errorMessage ?? controller.statusMessage)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("Sotto Dev dictation")
+        .accessibilityLabel("\(SottoBuild.current.displayName) dictation")
         .accessibilityValue(controller.errorMessage ?? controller.statusMessage)
         .accessibilityIdentifier("hud.status")
     }
