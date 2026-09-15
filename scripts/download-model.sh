@@ -18,7 +18,7 @@ if [[ -f "$model_dir/$model_name" ]] && verify_model "$model_dir/$model_name"; t
     exit 0
 fi
 
-printf 'Downloading Whisper large-v3-turbo (1.62 GB). This is the only runtime download.\n'
+printf 'Downloading Whisper large-v3-turbo (1.62 GB).\n'
 curl --fail --location --retry 3 --connect-timeout 20 --continue-at - \
     --output "$model_dir/$model_name.download" "$model_url"
 printf 'Verifying SHA-256…\n'

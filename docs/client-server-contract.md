@@ -1,6 +1,6 @@
-# Sotto Dev HTTP contract
+# HTTP API
 
-Greenfield server-owned product. Version 1. Default localhost port **8391**. JSON uses ISO-8601 dates and the Swift wire definitions in `Sources/SottoAPI/API.swift`. Both macOS and Linux expose this identical API. The server is independent of all desktop app lifetimes.
+API version 1, default port **8391**. JSON uses ISO-8601 dates and the wire types in [`Sources/SottoAPI/API.swift`](../Sources/SottoAPI/API.swift). macOS and Linux expose the same API. See [server setup](../Server/README.md#remote-access) for authentication and endpoint configuration.
 
 ## Routes
 
@@ -30,9 +30,20 @@ Errors are `APIErrorResponse`; relevant codes 400 invalid input, 401 auth, 404 m
 - Native helpers remain separate persistent processes (independent ggml versions). Whisper everywhere; macOS Qwen MLX; Linux Qwen llama.cpp/GGUF. Server applies current deterministic domain logic; client inserts returned insertionText once with existing destination/caret checks.
 - ContinuationID references a completed prior generation from the same device and is sent only if the client has an exact confirmed caret anchor. Server checks age and valid delivery or test/control-only state before reusing its stored continuation. Deleted, stale, or invalid context falls back to standalone composition without discarding the new recording. No editor text/AX handles go over the wire.
 - A lost connection during capture/upload stops capture, clears client temporary buffers, and leaves the server to cancel/expire the partial generation. No offline queue or retry UI. Once upload is complete, server may finish independently; later viewing history does not paste.
-- API result bytes and metadata are server-owned. New client launches read server history; original device ID/name are saved with each generation. Device configuration uses separate Sotto Dev storage, never existing .murmur history. No migrations/importer.
+- API result bytes and metadata are server-owned. All clients read the same history, tagged with the original device ID/name.
 - Shared original-audio setting defaults on; inference audio always retained for completed generations. Changes affect future takes. Local server storage is a configurable persistent data directory; hosted deployments mount durable storage.
 
-## Development
+## Shared preferences
 
-App display name **Sotto Dev**, bundle identifier **dev.davis.sotto.dev**. The native desktop contains no model helpers and never manages the server lifetime. Default dev server data under ignored `.local/server`. The runner supports native macOS and Linux x86_64/arm64 packaging; Docker GPU access is for Linux, native Metal on Mac.
+GET/PUT use `{ "revision": N, "preferences": { ... } }`. A save must include the current revision; successful validation returns the incremented snapshot. Active generations keep their admission-time snapshot.
+
+| Field | Default / limit |
+| --- | --- |
+| `language` | `en`; `auto` and the languages declared in `ServerPreferences`. |
+| `proofreadingPrompt` | Editable default; nonempty, at most 4,096 UTF-8 bytes. |
+| `vocabulary` | Recognition hints; at most 16 KiB. |
+| `dictionary` | Up to 32 named lists, 500 terms, eight aliases per term. Conflicting mappings reject. |
+| `textCorrectionEnabled` | `true`; toggles Qwen, preserving dictionary/list processing when off. |
+| `keepOriginalAudio` | `true`; affects future uploads and retention, not existing artifacts. |
+
+For on-disk layout and client-owned settings, see [architecture](architecture.md).

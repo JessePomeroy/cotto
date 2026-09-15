@@ -4,7 +4,7 @@ import Foundation
 let output = URL(fileURLWithPath: CommandLine.arguments[1], isDirectory: true)
 try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
 
-// The approved brand-lab/concepts/sotto/icon.svg, drawn directly with Core Graphics.
+// The Sotto ribbon icon, drawn directly with Core Graphics.
 // Keep these normalized ribbon curves in sync with SottoBrand.ribbonPath(in:).
 func ribbonPath() -> CGPath {
     let path = CGMutablePath()

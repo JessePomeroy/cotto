@@ -249,7 +249,7 @@ public actor NativeInference {
             // emitting ready. Avoid hashing its 2 GB weights twice on startup.
             return nil
             #else
-            // Pinned Unsloth Qwen3-4B-Instruct-2507 Q4_K_M, docs/text-correction.md.
+            // Pinned Unsloth Qwen3-4B-Instruct-2507 Q4_K_M, Server/README.md.
             return InferenceModelPin(bytes: 2_497_281_120,
                 sha256: "3605803b982cb64aead44f6c1b2ae36e3acdb41d8e46c8a94c6533bc4c67e597")
             #endif

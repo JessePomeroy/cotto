@@ -1,7 +1,0 @@
-node_modules/
-assets/gsap.min.js
-assets/*.ttf
-snapshots/
-check.json
-renders/*
-!renders/sotto-launch.mp4

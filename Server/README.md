@@ -1,88 +1,120 @@
 # Sotto server
 
-The server is an independent HTTP process. It owns model runtimes, shared preferences and dictionary, audio artifacts, transcripts, and history. The Mac app owns microphone/hotkey controls, device preferences, and guarded text insertion. Quitting the app does not stop the server. There is no offline recording queue.
+The server is an independent HTTP process that owns models, shared preferences, recordings, and history. For same-Mac development, start with the [quick start](../README.md). This guide covers model installation and running the server separately.
 
-## Local development on macOS
+| Server | Speech | Proofreading |
+| --- | --- | --- |
+| Apple Silicon macOS | Whisper large-v3-turbo / whisper.cpp / Metal | Qwen3-4B-Instruct-2507 / Swift MLX / 4-bit |
+| Linux x86_64 or ARM64 | Whisper large-v3-turbo / whisper.cpp / CPU or CUDA | Qwen3-4B-Instruct-2507 / llama.cpp / Q4_K_M |
 
-Requirements: Apple Silicon, macOS 14+, Xcode with its Metal compiler, CMake, and Swift 6.2 or newer. The native client currently uses the macOS 26 SDK or newer. Fetch the pinned git submodules with `git submodule update --init --recursive`.
+## Models
+
+Run these commands from the repository root. Weights use about 4 GB of disk; runtime memory also includes model state and inference buffers. The server verifies pinned files before loading and keeps models warm. It does not download large weights automatically.
+
+### Whisper, on either platform
 
 ```sh
-./scripts/build-server.sh
-./scripts/build-dev-app.sh
-./scripts/run-dev.sh start --skip-build
+SOTTO_MODEL_DIR="$PWD/.local/models" ./scripts/download-model.sh
 ```
 
-`run-dev.sh` starts the server on **http://localhost:8391** and opens **build/Sotto Dev.app**. This app has the separate identity `dev.davis.sotto.dev` and visible Dev labels; grant its microphone and Accessibility permissions separately. It contains no model helpers. The installed Sotto app is left untouched.
+This installs and verifies `ggml-large-v3-turbo.bin`. The URL, revision, and checksum are pinned in `scripts/download-model.sh` and `Sources/SottoCore/SpeechModel.swift`. The server build separately downloads the pinned Silero VAD model.
 
-The runner reuses existing Whisper weights at `~/Library/Application Support/Murmur/Models/ggml-large-v3-turbo.bin` and MLX Qwen weights at `~/.murmur/models/Qwen3-4B-Instruct-2507-MLX-4bit` when present. It does not copy old sessions, preferences, or credentials. Set `SOTTO_SPEECH_MODEL` and `SOTTO_TEXT_MODEL` to override model locations. Models are loaded and verified by the server; downloading the small pinned Silero VAD is part of the build.
+### Qwen on macOS
 
-- Persistent dev data: `.local/server`, independent of the client.
-- Server output: `.local/server.log`; logs must not contain transcript/audio contents or tokens.
-- Server PID: `.local/server.pid`.
-- Check: `./scripts/run-dev.sh status`.
-- Stop: `./scripts/run-dev.sh stop`.
-- Rebuild and restart: `./scripts/run-dev.sh restart`.
+The MLX directory must contain exactly the six files listed below. Download the pinned revision:
 
-The runner waits for HTTP reachability. The app then displays model warming/readiness before recording is admitted. Recording requires the server to accept a generation. A complete upload continues processing if the client disconnects; partial uploads expire, and reconnecting never pastes an old result.
+```sh
+(
+  set -e
+  sotto_qwen_dir="$PWD/.local/models/Qwen3-4B-Instruct-2507-MLX-4bit"
+  sotto_qwen_url="https://huggingface.co/mlx-community/Qwen3-4B-Instruct-2507-4bit/resolve/50d427756c6b1b2fe0c0a10f67fbda1fc8e82c1b"
+  mkdir -p "$sotto_qwen_dir"
+  for file in model.safetensors config.json tokenizer.json tokenizer_config.json generation_config.json chat_template.jinja; do
+    curl --fail --location --retry 3 --output "$sotto_qwen_dir/$file" "$sotto_qwen_url/$file"
+  done
+)
+```
 
-## Standalone runner
+`Sources/SottoCore/TextModel.swift` defines the six-file size/hash manifest; the MLX helper verifies it before becoming ready. Use regular files, with no extra files or symlinks in the model directory.
 
-`build/server` contains the server executable, native helpers, VAD model, and required resources. Large Whisper/Qwen weights and user data remain outside the distribution. Keep the `helpers` directory intact: the macOS MLX helper needs its adjacent Metal library and resource bundles.
+### Qwen on Linux
+
+```sh
+mkdir -p .local/models
+curl --fail --location --retry 3 \
+  --output .local/models/Qwen3-4B-Instruct-2507-Q4_K_M.gguf \
+  https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/a06e946bb6b655725eafa393f4a9745d460374c9/Qwen3-4B-Instruct-2507-Q4_K_M.gguf
+```
+
+Expected size: 2,497,281,120 bytes. SHA-256: `3605803b982cb64aead44f6c1b2ae36e3acdb41d8e46c8a94c6533bc4c67e597`. The server verifies both before loading.
+
+## Build
+
+Initialize submodules with `git submodule update --init --recursive`. macOS requires Apple Silicon and full Xcode with its Metal compiler; the complete client/server build uses Xcode 26+ and Swift 6.2+. If Metal is missing, run `xcodebuild -downloadComponent MetalToolchain`.
+
+Linux requires Swift 6.2+, a C/C++ toolchain, CMake, Git, curl, pkg-config, and libcurl development headers. CUDA builds also need a compatible NVIDIA driver and CUDA toolkit. The [Dockerfile](Dockerfile) provides a pinned build environment.
+
+```sh
+./scripts/build-server.sh                  # macOS Metal/MLX; Linux CPU
+SOTTO_CUDA=ON ./scripts/build-server.sh     # Linux with CUDA
+```
+
+Output is `build/server`: executable, native helpers, VAD, notices, and resources. Keep the package together; the Mac proofreader requires the adjacent Metal library and bundles. Large model weights and user data live outside it.
+
+`SOTTO_BUILD_JOBS` controls build concurrency. For another CPU/GPU host, use `SOTTO_NATIVE=OFF` and set `SOTTO_CUDA_ARCHITECTURES` for the destination GPU. CPU support is useful for compatibility tests; validate CUDA support, memory, and dictation latency on the selected host.
+
+## Run
+
+From the repository root, with the models installed above:
 
 ```sh
 ./build/server/sotto-server \
   --host 127.0.0.1 --port 8391 \
-  --data-dir /absolute/path/to/sotto-data \
+  --data-dir "$PWD/.local/server" \
   --speech-helper "$PWD/build/server/helpers/sotto-engine" \
-  --speech-model /absolute/path/to/ggml-large-v3-turbo.bin \
+  --speech-model "$PWD/.local/models/ggml-large-v3-turbo.bin" \
   --vad-model "$PWD/build/server/resources/silero-vad.bin" \
   --proof-helper "$PWD/build/server/helpers/sotto-text-engine" \
-  --proof-model /absolute/path/to/Qwen3-4B-Instruct-2507-MLX-4bit
+  --proof-model "$PWD/.local/models/Qwen3-4B-Instruct-2507-MLX-4bit"
 ```
 
-Use the Qwen GGUF path instead for Linux. Add `--dev` to identify a development server in health responses. `--token-file /absolute/path/to/token` reads a bearer token from a file rather than process arguments. Nonloopback listeners require a token. The client accepts configured HTTP or HTTPS endpoints. Use HTTPS for public hosting; HTTP can run over localhost or a private encrypted Tailscale connection. The app's server URL and credential are device settings.
+On Linux, replace the last path with the GGUF file. Add `--dev` for a development label in health responses. If using the packaged distribution elsewhere, point helper/resource paths at that package and choose durable model/data paths.
 
-The same options accept environment variables:
+Check `curl http://localhost:8391/v1/health`; HTTP reachability alone does not mean the models are ready. The `ready` field means the server can accept a recording. Quitting a client does not stop this process. Use launchd, systemd, or container supervision for boot/restart behavior; the scripts do not install a service.
 
-| Option | Environment |
+| Argument | Environment variable |
 | --- | --- |
 | `--host`, `--port` | `SOTTO_SERVER_HOST`, `SOTTO_SERVER_PORT` |
 | `--data-dir`, `--token-file` | `SOTTO_SERVER_DATA_DIR`, `SOTTO_SERVER_TOKEN_FILE` |
 | `--speech-helper`, `--speech-model` | `SOTTO_ENGINE_PATH`, `SOTTO_SPEECH_MODEL` |
 | `--vad-model` | `SOTTO_VAD_PATH` |
 | `--proof-helper`, `--proof-model` | `SOTTO_TEXT_ENGINE_PATH`, `SOTTO_TEXT_MODEL` |
+| `--dev` | `SOTTO_DEV=1` |
 
-Use launchd on macOS or systemd/container supervision on Linux to start the runner at boot. These scripts do not install a service. Keep the data directory on persistent storage and back it up together with shared preferences. Only one server process may own a data directory at a time.
+The dev runner fixes its host to loopback and defaults to port 8391, `.local/server` for data, and `.local/server.log` for logs. Set `SOTTO_SPEECH_MODEL` and `SOTTO_TEXT_MODEL` when using the paths above. Without those overrides, macOS searches the existing locations `~/Library/Application Support/Murmur/Models/ggml-large-v3-turbo.bin` and `~/.murmur/models/Qwen3-4B-Instruct-2507-MLX-4bit`.
 
-## Linux builds
+## Remote access
 
-The portable Swift HTTP service and both C++ helpers build on Linux x86_64 and ARM64. Whisper uses whisper.cpp; proofreading uses the pinned Qwen3-4B-Instruct-2507 Q4_K_M GGUF through llama.cpp. macOS always packages the native Swift MLX proof helper. The two C++ projects build separately because they carry separate ggml versions.
+Bind to a reachable address and pass `--token-file /absolute/path/to/token`. Nonloopback listeners require a token of at least 32 characters with no internal whitespace. In the Mac app, enter the endpoint and token under **This Mac**; tokens are stored in Keychain.
 
-```sh
-# Build a CPU package for smoke checks.
-SOTTO_CUDA=OFF ./scripts/build-server.sh
+- Use an HTTPS reverse proxy for hosted servers and hostnames, including Tailscale MagicDNS names. The runner itself serves HTTP.
+- HTTP is accepted for localhost and literal Tailscale IPs in `100.64.0.0/10` or `fd7a:115c:a1e0::/48` on your connected tailnet. Sotto checks the address range, not routing; use HTTPS if that private route cannot be assured.
+- Ordinary LAN IPs require HTTPS. Endpoints cannot contain credentials, queries, or fragments. Credential-bearing redirects are not followed.
 
-# Build on a Linux host with the CUDA toolkit and a compatible NVIDIA driver.
-SOTTO_CUDA=ON ./scripts/build-server.sh
-```
-
-`SOTTO_BUILD_JOBS` sets build concurrency. `SOTTO_NATIVE=OFF` disables compilation for only the build host's CPU. For cross-host CUDA builds, set `SOTTO_CUDA_ARCHITECTURES` explicitly for the destination GPU. CPU operation is a compatibility fallback, not a claim that CPU latency meets the dictation target. CUDA architecture/driver support and end-to-end latency must be validated on the eventual GPU host.
-
-Validate a packaged GGUF helper using synthetic transcripts with `python3 scripts/test-llama-engine.py --engine build/server/helpers/sotto-text-engine --model /absolute/path/to/Qwen3-4B-Instruct-2507-Q4_K_M.gguf`. It checks protocol bounds, correction isolation, literal role markers, clean shutdown, and parent-death termination. The server's rewrite policy remains necessary: different Qwen quantizations can rewrite digits as words, which the policy rejects in favor of the original transcript.
+Keep the data directory on persistent storage and back it up. Only one runner can own it. See [storage](../docs/architecture.md#storage) and the [HTTP API](../docs/client-server-contract.md).
 
 ## Containers
 
-Build from the repository root after initializing submodules:
+Build from the repository root with initialized submodules:
 
 ```sh
 docker build -f Server/Dockerfile --target cpu -t sotto-server:cpu .
-docker build -f Server/Dockerfile --target cuda \
-  --build-arg CUDA_ARCHITECTURES=121 -t sotto-server:cuda .
+docker build -f Server/Dockerfile --target cuda -t sotto-server:cuda .
 ```
 
-The CUDA example targets a GB10; select architectures/toolkit appropriate to the host. `SWIFT_IMAGE`, `CUDA_IMAGE`, and `BUILD_JOBS` are overridable build arguments. The CUDA target requires NVIDIA Container Toolkit and `--gpus all` at runtime. Native Metal remains the path for macOS inference; a Linux container on a Mac does not gain Metal access.
+`CUDA_ARCHITECTURES`, `CUDA_IMAGE`, `SWIFT_IMAGE`, and `BUILD_JOBS` are build arguments. Choose CUDA architectures/toolkit/driver versions for your GPU. GPU containers require NVIDIA Container Toolkit and `--gpus all`; Linux containers on a Mac do not have Metal access.
 
-Run the CPU image with existing model files and a token file; for a GPU host substitute the CUDA image and add `--gpus all`:
+Mount a directory containing the Whisper `.bin` and Qwen `.gguf` files, plus a token file:
 
 ```sh
 docker run --rm --name sotto-server \
@@ -93,6 +125,14 @@ docker run --rm --name sotto-server \
   sotto-server:cpu
 ```
 
-The model directory must contain `ggml-large-v3-turbo.bin` and `Qwen3-4B-Instruct-2507-Q4_K_M.gguf`. The container runs as UID 10001; mounted token/model files must be readable by that user, and a bind-mounted `/data` must be writable. The named volume in the example preserves sessions across container replacement. The health check confirms HTTP availability, while `/v1/health` reports inference readiness separately.
+For a GPU server, use `sotto-server:cuda` and add `--gpus all`. The example exposes only host loopback; use the remote-access setup above for clients on other machines. The container runs as UID 10001, which must be able to read model/token files and write `/data`. The named volume preserves history across container replacement.
 
-See `docs/client-server-contract.md` in the repository for the HTTP upload, progress, shared history, and preference contract. No migration or importer is included.
+## Verify
+
+```sh
+swift test
+./scripts/smoke-test.sh
+SOTTO_TEXT_MODEL=/absolute/path/to/qwen ./scripts/test-corrections.sh
+```
+
+The HTTP smoke test needs an idle Dev server with proofreading enabled. It uses public sample audio, checks progress/artifacts, temporarily changes and restores retention settings, and removes its test generations. The helper test accepts the MLX directory on Mac or GGUF file on Linux and uses synthetic text. Neither opens a microphone. These checks do not establish live cursor-insertion behavior or GPU performance on a different machine.
