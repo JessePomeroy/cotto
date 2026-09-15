@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import SottoAPI
 
@@ -7,6 +8,8 @@ enum ServerClientError: LocalizedError {
     case invalidResponse
     case disconnected
     case uploadBacklog
+    case importArtifactTooLarge(WisprFlowArtifactName, Int)
+    case dictionaryArchiveTooLarge(Int)
 
     var errorDescription: String? {
         switch self {
@@ -15,6 +18,10 @@ enum ServerClientError: LocalizedError {
         case .invalidResponse: "The server returned an invalid response."
         case .disconnected: "The server connection was interrupted. Any completed result is available in shared history."
         case .uploadBacklog: "The connection cannot keep up with the microphone. This recording was stopped."
+        case .importArtifactTooLarge(let name, let bytes):
+            "\(name.rawValue) is \(ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)), above the 8 MiB source-artifact limit."
+        case .dictionaryArchiveTooLarge(let bytes):
+            "Wispr Flow dictionary is \(ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)), above the 8 MiB archive limit. No dictionary entries were archived."
         }
     }
 }
@@ -145,12 +152,76 @@ extension ServerClient {
     func updatePreferences(_ value: PreferencesSnapshot) async throws -> PreferencesSnapshot {
         try await json(path: "v1/preferences", method: "PUT", body: Self.encode(value))
     }
-    func history(before cursor: String? = nil) async throws -> GenerationPage {
-        let query = cursor.map { [URLQueryItem(name: "before", value: $0)] } ?? []
+    func history(before cursor: String? = nil, source: String? = nil) async throws -> GenerationPage {
+        var query: [URLQueryItem] = []
+        if let cursor { query.append(URLQueryItem(name: "before", value: cursor)) }
+        if let source { query.append(URLQueryItem(name: "source", value: source)) }
         let (data, response) = try await session.data(for: request(path: "v1/generations", query: query))
         try Self.validate(response, data: data)
         guard data.count <= 16 * 1_024 * 1_024 else { throw ServerClientError.invalidResponse }
         return try Self.decoder().decode(GenerationPage.self, from: data)
+    }
+
+    func knownWisprFlowSourceIDs(_ sourceIDs: [UUID]) async throws -> Set<UUID> {
+        var known = Set<UUID>()
+        // The server's 256 KiB JSON body limit is tighter than its 10,000-ID limit.
+        for start in stride(from: 0, to: sourceIDs.count, by: 5_000) {
+            let batch = Array(sourceIDs[start..<min(start + 5_000, sourceIDs.count)])
+            let input = WisprFlowKnownIDsRequest(sourceIDs: batch)
+            let result: WisprFlowKnownIDsResponse = try await json(
+                path: "v1/imports/wispr-flow/known", method: "POST", body: Self.encode(input))
+            known.formUnion(result.knownSourceIDs)
+        }
+        return known
+    }
+
+    func beginWisprFlowImport(_ value: WisprFlowImportRequest) async throws -> WisprFlowImportSession {
+        try await json(path: "v1/imports/wispr-flow", method: "POST", body: Self.encode(value))
+    }
+
+    func uploadWisprFlowArtifact(_ url: URL, filename: WisprFlowArtifactName,
+                                 contentType: String, to importID: UUID) async throws -> WisprFlowArtifactReceipt {
+        let upload = try request(path: "v1/imports/wispr-flow/\(importID)/artifacts/\(filename.rawValue)",
+                                 method: "PUT", contentType: contentType)
+        let (data, response) = try await session.upload(for: upload, fromFile: url)
+        try Self.validate(response, data: data)
+        return try Self.decoder().decode(WisprFlowArtifactReceipt.self, from: data)
+    }
+
+    func completeWisprFlowImport(_ importID: UUID) async throws -> WisprFlowImportResult {
+        try await json(path: "v1/imports/wispr-flow/\(importID)/complete", method: "POST")
+    }
+
+    func cancelWisprFlowImport(_ importID: UUID) async throws {
+        try await send(path: "v1/imports/wispr-flow/\(importID)", method: "DELETE")
+    }
+
+    func archiveWisprFlowDictionary(_ url: URL) async throws -> WisprFlowDictionaryArchiveReceipt {
+        let bytes = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+        guard (1...WisprFlowImportLimits.maximumDictionaryBytes).contains(bytes) else {
+            throw ServerClientError.dictionaryArchiveTooLarge(bytes)
+        }
+        let upload = try request(path: "v1/imports/wispr-flow/dictionary", method: "PUT", contentType: "application/json")
+        let (data, response) = try await session.upload(for: upload, fromFile: url)
+        try Self.validate(response, data: data)
+        return try Self.decoder().decode(WisprFlowDictionaryArchiveReceipt.self, from: data)
+    }
+
+    static func wisprFlowArtifactManifest(filename: WisprFlowArtifactName, url: URL) throws -> WisprFlowArtifactManifest {
+        let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+        guard (1...WisprFlowImportLimits.maximumArtifactBytes).contains(size) else {
+            throw ServerClientError.importArtifactTooLarge(filename, size)
+        }
+        let input = try FileHandle(forReadingFrom: url)
+        defer { try? input.close() }
+        var hash = SHA256()
+        var byteCount = 0
+        while let chunk = try input.read(upToCount: 1_048_576), !chunk.isEmpty {
+            hash.update(data: chunk)
+            byteCount += chunk.count
+        }
+        let sha256 = hash.finalize().map { String(format: "%02x", $0) }.joined()
+        return WisprFlowArtifactManifest(filename: filename, byteCount: byteCount, sha256: sha256)
     }
     func generation(_ id: UUID) async throws -> GenerationRecord { try await json(path: "v1/generations/\(id)") }
     func create(_ value: CreateGenerationRequest) async throws -> GenerationRecord {
@@ -176,6 +247,18 @@ extension ServerClient {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("Sotto-remote-preview", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let destination = directory.appendingPathComponent("\(id)-\(filename)")
+        try? FileManager.default.removeItem(at: destination)
+        try FileManager.default.moveItem(at: temporary, to: destination)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: destination.path)
+        return destination
+    }
+
+    func wisprFlowArtifact(_ id: UUID, filename: WisprFlowArtifactName) async throws -> URL {
+        let (temporary, response) = try await session.download(for: request(path: "v1/generations/\(id)/artifacts/\(filename.rawValue)"))
+        try Self.validate(response)
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("Sotto-remote-preview", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let destination = directory.appendingPathComponent("\(id)-\(filename.rawValue)")
         try? FileManager.default.removeItem(at: destination)
         try FileManager.default.moveItem(at: temporary, to: destination)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: destination.path)

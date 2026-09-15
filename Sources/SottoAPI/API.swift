@@ -210,6 +210,119 @@ public struct ModelHintUsage: Codable, Equatable, Sendable {
     }
 }
 
+public enum WisprFlowArtifactName: String, Codable, CaseIterable, Hashable, Sendable {
+    case sourceJSON = "source.json"
+    case sourceWAV = "source.wav"
+    case opusJSON = "opus.json"
+    case screenshotPNG = "screenshot.png"
+    /// Typed omission only: Wispr Flow's builtInAudio format is not known.
+    case builtInAudio = "built-in-audio.bin"
+}
+
+public enum WisprFlowImportLimits {
+    public static let maximumArtifactBytes = 8_388_608
+    public static let maximumDictionaryBytes = 8_388_608
+}
+
+public struct WisprFlowArtifactManifest: Codable, Equatable, Sendable {
+    public var filename: WisprFlowArtifactName
+    public var byteCount: Int
+    public var sha256: String
+    public init(filename: WisprFlowArtifactName, byteCount: Int, sha256: String) {
+        self.filename = filename; self.byteCount = byteCount; self.sha256 = sha256
+    }
+}
+
+public struct WisprFlowImportRequest: Codable, Equatable, Sendable {
+    public var sourceID: UUID
+    public var createdAt: Date
+    public var sourceStatus: String?
+    public var finalText: String
+    public var rawText: String
+    public var durationSeconds: Double?
+    public var variantNames: [String]
+    public var artifacts: [WisprFlowArtifactManifest]
+    /// Source-reported media versions whose bytes cannot be uploaded. The
+    /// source.json archive records the originating row and reason for each one.
+    public var unarchivedArtifacts: [WisprFlowArtifactManifest]?
+    public init(sourceID: UUID, createdAt: Date, sourceStatus: String? = nil, finalText: String,
+                rawText: String, durationSeconds: Double? = nil, variantNames: [String] = [],
+                artifacts: [WisprFlowArtifactManifest], unarchivedArtifacts: [WisprFlowArtifactManifest]? = nil) {
+        self.sourceID = sourceID; self.createdAt = createdAt; self.sourceStatus = sourceStatus
+        self.finalText = finalText; self.rawText = rawText; self.durationSeconds = durationSeconds
+        self.variantNames = variantNames; self.artifacts = artifacts
+        self.unarchivedArtifacts = unarchivedArtifacts
+    }
+}
+
+public struct WisprFlowImportSession: Codable, Sendable {
+    public var id: UUID
+    public init(id: UUID) { self.id = id }
+}
+
+public struct WisprFlowArtifactReceipt: Codable, Sendable {
+    public var filename: WisprFlowArtifactName
+    public var byteCount: Int
+    public init(filename: WisprFlowArtifactName, byteCount: Int) {
+        self.filename = filename; self.byteCount = byteCount
+    }
+}
+
+public enum WisprFlowImportOutcome: String, Codable, Sendable { case imported, enriched, skipped, partial }
+
+public struct WisprFlowImportResult: Codable, Sendable {
+    public var outcome: WisprFlowImportOutcome
+    public var record: GenerationRecord
+    public var unarchivedArtifactNames: [WisprFlowArtifactName]
+    public init(outcome: WisprFlowImportOutcome, record: GenerationRecord,
+                unarchivedArtifactNames: [WisprFlowArtifactName] = []) {
+        self.outcome = outcome; self.record = record
+        self.unarchivedArtifactNames = unarchivedArtifactNames
+    }
+}
+
+public struct WisprFlowKnownIDsRequest: Codable, Sendable {
+    public var sourceIDs: [UUID]
+    public init(sourceIDs: [UUID]) { self.sourceIDs = sourceIDs }
+}
+
+public struct WisprFlowKnownIDsResponse: Codable, Sendable {
+    public var knownSourceIDs: [UUID]
+    public init(knownSourceIDs: [UUID]) { self.knownSourceIDs = knownSourceIDs }
+}
+
+public struct WisprFlowDictionaryArchiveReceipt: Codable, Sendable {
+    public var byteCount: Int
+    public var sha256: String
+    public init(byteCount: Int, sha256: String) { self.byteCount = byteCount; self.sha256 = sha256 }
+}
+
+public struct ImportedSource: Codable, Equatable, Sendable {
+    public var provider: String
+    public var sourceID: UUID
+    public var sourceStatus: String?
+    public var importedAt: Date
+    public var variantNames: [String]
+    public var artifactNames: [WisprFlowArtifactName]
+    public var durationSeconds: Double?
+    /// Digest of the most recently submitted source.json. It can differ from the
+    /// archived file digest after earlier source versions are merged in.
+    public var sourceSHA256: String
+    /// Digests of the actual archived artifacts, including merged source.json.
+    public var artifactSHA256: [String: String]
+    /// Source-reported media digests whose bytes are not in the archive. Full
+    /// version, size, and reason details live in source.json.
+    public var unarchivedArtifactSHA256: [String: String]?
+    public init(sourceID: UUID, sourceStatus: String?, importedAt: Date, variantNames: [String],
+                artifactNames: [WisprFlowArtifactName], durationSeconds: Double?, sourceSHA256: String,
+                artifactSHA256: [String: String]) {
+        provider = "wispr-flow"; self.sourceID = sourceID; self.sourceStatus = sourceStatus
+        self.importedAt = importedAt; self.variantNames = variantNames; self.artifactNames = artifactNames
+        self.durationSeconds = durationSeconds; self.sourceSHA256 = sourceSHA256; self.artifactSHA256 = artifactSHA256
+        unarchivedArtifactSHA256 = [:]
+    }
+}
+
 public struct GenerationRecord: Codable, Equatable, Sendable, Identifiable {
     public var schemaVersion: Int
     public var id: UUID
@@ -238,7 +351,8 @@ public struct GenerationRecord: Codable, Equatable, Sendable, Identifiable {
     public var delivery: DeliveryReceipt?
     public var error: String?
     public var progress: Double?
-    public var audioSeconds: Double { inferenceAudio?.duration ?? 0 }
+    public var importedSource: ImportedSource?
+    public var audioSeconds: Double { inferenceAudio?.duration ?? importedSource?.durationSeconds ?? 0 }
     public init(id: UUID = UUID(), requestID: UUID, device: DeviceIdentity, mode: GenerationMode = .dictation,
                 status: GenerationStatus = .receiving, createdAt: Date = Date(), settings: PreferencesSnapshot) {
         schemaVersion = 1; self.id = id; self.requestID = requestID; self.device = device; self.mode = mode

@@ -1,4 +1,5 @@
 import Foundation
+import Crypto
 import SottoAPI
 import SottoDomain
 
@@ -26,10 +27,18 @@ public actor GenerationService {
         var bytes: Int64 = 0
         var frameCount: Int64 { bytes / Int64(format.channels * 4) }
     }
+    private struct ImportStage {
+        var request: WisprFlowImportRequest
+        var directory: URL
+        var uploaded: Set<WisprFlowArtifactName> = []
+        var touchedAt = Date()
+    }
     private let configuration: ServerConfiguration
     private let inference: NativeInference
     private var preferences: PreferencesSnapshot
     private var records: [UUID: GenerationRecord] = [:]
+    private var wisprFlowIndex: [UUID: UUID] = [:]
+    private var importStages: [UUID: ImportStage] = [:]
     private var uploads: [UUID: [AudioKind: Upload]] = [:]
     private var activeID: UUID?
     private var activeTask: Task<Void, Never>?
@@ -50,6 +59,22 @@ public actor GenerationService {
         try files.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         guard try files.attributesOfItem(atPath: directory.path)[.type] as? FileAttributeType == .typeDirectory else {
             throw ServiceError(500, "invalid_storage", "The generations directory must not be a symbolic link.")
+        }
+        let importRoots = ["imports", "imports/wispr-flow", "imports/wispr-flow/staging"]
+            .map { configuration.dataDirectory.appendingPathComponent($0, isDirectory: true) }
+        for root in importRoots {
+            if !files.fileExists(atPath: root.path) {
+                try files.createDirectory(at: root, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+            }
+            guard try files.attributesOfItem(atPath: root.path)[.type] as? FileAttributeType == .typeDirectory else {
+                throw ServiceError(500, "invalid_storage", "Import storage directories must not be symbolic links.")
+            }
+        }
+        let imports = importRoots[2]
+        // Incomplete imports are never published. A new run starts from its source
+        // manifest, so stale staging files can be discarded after a server restart.
+        for child in try files.contentsOfDirectory(at: imports, includingPropertiesForKeys: nil) {
+            if UUID(uuidString: child.lastPathComponent) != nil { try files.removeItem(at: child) }
         }
         let preferencesURL = configuration.dataDirectory.appendingPathComponent("preferences.json")
         if files.fileExists(atPath: preferencesURL.path) {
@@ -92,6 +117,12 @@ public actor GenerationService {
                 if recovered.count <= Self.maximumMetadataBytes { try recovered.write(to: metadata, options: .atomic) }
             }
             records[id] = record
+            if let source = record.importedSource, source.provider == "wispr-flow" {
+                guard wisprFlowIndex[source.sourceID] == nil else {
+                    throw ServiceError(500, "duplicate_import", "The archive contains duplicate Wispr Flow source IDs.")
+                }
+                wisprFlowIndex[source.sourceID] = id
+            }
         }
     }
 
@@ -104,6 +135,7 @@ public actor GenerationService {
                 do { try await Task.sleep(for: .seconds(2)) } catch { return }
                 await self?.heartbeat()
                 await self?.expireUploads()
+                await self?.expireImportStages()
             }
         }
     }
@@ -271,9 +303,19 @@ public actor GenerationService {
         return record
     }
 
-    public func history(limit: Int, before: String?) throws -> GenerationPage {
+    public func history(limit: Int, before: String?, source: String? = nil) throws -> GenerationPage {
         guard (1...100).contains(limit) else { throw ServiceError(400, "invalid_limit", "History page size must be between 1 and 100.") }
-        let sorted = records.values.sorted { $0.createdAt == $1.createdAt ? $0.id.uuidString > $1.id.uuidString : $0.createdAt > $1.createdAt }
+        guard source == nil || source == "wispr-flow" || source == "sotto" else {
+            throw ServiceError(400, "invalid_source", "Choose Wispr Flow or Sotto history.")
+        }
+        let selected = records.values.filter { record in
+            switch source {
+            case "wispr-flow": return record.importedSource?.provider == "wispr-flow"
+            case "sotto": return record.importedSource == nil
+            default: return true
+            }
+        }
+        let sorted = selected.sorted { $0.createdAt == $1.createdAt ? $0.id.uuidString > $1.id.uuidString : $0.createdAt > $1.createdAt }
         let start: Int
         if let before {
             guard let id = UUID(uuidString: before), let index = sorted.firstIndex(where: { $0.id == id }) else {
@@ -316,6 +358,7 @@ public actor GenerationService {
 
     public func recordDelivery(_ id: UUID, receipt: DeliveryReceipt) throws -> GenerationRecord {
         var record = try get(id)
+        guard record.importedSource == nil else { throw ServiceError(400, "imported_delivery", "Imported history cannot receive a delivery receipt.") }
         let statuses: Set<String> = ["inserted", "copied", "unconfirmed", "failed", "tested", "listUpdated", "cancelled", "none"]
         guard record.status == .completed, statuses.contains(receipt.status), (receipt.message?.utf8.count ?? 0) <= 4096 else {
             throw ServiceError(400, "invalid_delivery", "A valid delivery receipt requires a completed generation.")
@@ -335,11 +378,15 @@ public actor GenerationService {
         guard record.status.isTerminal else { throw ServiceError(409, "generation_active", "Cancel or finish a recording before deleting it.") }
         try FileManager.default.removeItem(at: directory(id))
         records[id] = nil
+        if let source = record.importedSource, source.provider == "wispr-flow" {
+            wisprFlowIndex[source.sourceID] = nil
+        }
     }
 
     public func artifact(_ id: UUID, filename: String) throws -> URL {
         let record = try get(id)
         let allowed = ["metadata.json", "transcript.txt", "inference.wav", "original.wav"]
+            + (record.importedSource?.artifactNames.map(\.rawValue) ?? [])
         guard allowed.contains(filename), filename != "inference.wav" || record.inferenceAudio != nil,
               filename != "original.wav" || record.originalAudio != nil,
               filename != "transcript.txt" || record.status == .completed else {
@@ -352,6 +399,300 @@ public actor GenerationService {
             throw ServiceError(404, "artifact_not_found", "Artifact not found.")
         }
         return url
+    }
+
+    public func knownWisprFlowIDs(_ request: WisprFlowKnownIDsRequest) throws -> WisprFlowKnownIDsResponse {
+        guard request.sourceIDs.count <= 10_000 else {
+            throw ServiceError(413, "source_id_limit", "Check at most 10,000 source IDs at once.")
+        }
+        return WisprFlowKnownIDsResponse(knownSourceIDs: request.sourceIDs.filter { wisprFlowIndex[$0] != nil })
+    }
+
+    public func beginWisprFlowImport(_ request: WisprFlowImportRequest) throws -> WisprFlowImportSession {
+        guard !stopping else { throw ServiceError(503, "server_stopping", "The server is shutting down.") }
+        expireImportStages()
+        guard importStages.count < 16 else { throw ServiceError(429, "import_limit", "Too many imports are staged.") }
+        guard request.createdAt.timeIntervalSince1970 > 0,
+              request.createdAt.timeIntervalSince1970 < 4_102_444_800 else {
+            throw ServiceError(400, "invalid_source_date", "The source date is outside the supported range.")
+        }
+        guard request.finalText.utf8.count <= 65_536, request.rawText.utf8.count <= 65_536,
+              request.sourceStatus.map({ $0.utf8.count <= 128 && !$0.contains("\0") && !$0.contains("\n") }) ?? true,
+              request.variantNames.count <= 32,
+              request.variantNames.allSatisfy({ $0.utf8.count <= 64 && !$0.contains("\0") && !$0.contains("\n") }),
+              request.durationSeconds.map({ $0.isFinite && $0 >= 0 && $0 <= 86_400 }) ?? true else {
+            throw ServiceError(400, "invalid_source_metadata", "The source metadata exceeds its limits or contains invalid values.")
+        }
+        let names = request.artifacts.map(\.filename)
+        guard (1...(WisprFlowArtifactName.allCases.count - 1)).contains(names.count),
+              Set(names).count == names.count, names.contains(.sourceJSON), !names.contains(.builtInAudio),
+              request.artifacts.allSatisfy({ (1...WisprFlowImportLimits.maximumArtifactBytes).contains($0.byteCount)
+                  && Self.validSHA256($0.sha256) }),
+              (request.unarchivedArtifacts ?? []).allSatisfy({ $0.filename != .sourceJSON
+                  && $0.byteCount > 0 && Self.validSHA256($0.sha256) }) else {
+            throw ServiceError(400, "invalid_artifact_manifest", "Supply one valid manifest per allowlisted artifact, including source.json.")
+        }
+        try requireDiskSpace()
+        let id = UUID()
+        let directory = stagingDirectory(id)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false,
+                                                attributes: [.posixPermissions: 0o700])
+        importStages[id] = ImportStage(request: request, directory: directory)
+        return WisprFlowImportSession(id: id)
+    }
+
+    public func uploadWisprFlowArtifact(_ id: UUID, filename: WisprFlowArtifactName, data: Data) throws -> WisprFlowArtifactReceipt {
+        guard var stage = importStages[id] else { throw ServiceError(404, "import_not_found", "Import session not found.") }
+        guard let manifest = stage.request.artifacts.first(where: { $0.filename == filename }) else {
+            throw ServiceError(400, "artifact_unexpected", "This artifact is not in the import manifest.")
+        }
+        guard data.count == manifest.byteCount, Self.sha256(data) == manifest.sha256 else {
+            throw ServiceError(400, "artifact_checksum", "The artifact size or checksum does not match its manifest.")
+        }
+        switch filename {
+        case .sourceJSON:
+            guard let source = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  source["schemaVersion"] as? Int == 1,
+                  source["provider"] as? String == "wispr-flow",
+                  (source["sourceID"] as? String).flatMap(UUID.init(uuidString:)) == stage.request.sourceID,
+                  source["sources"] is [Any] else {
+                throw ServiceError(400, "invalid_source_json", "The source artifact must describe this Wispr Flow session.")
+            }
+            let recorded = try Self.sourceOmissions(source)
+            _ = try Self.sourceProvenanceIsPartial(source)
+            let recordedKeys = Set(recorded.map { "\($0.filename.rawValue):\($0.byteCount):\($0.sha256)" })
+            guard (stage.request.unarchivedArtifacts ?? []).allSatisfy({
+                recordedKeys.contains("\($0.filename.rawValue):\($0.byteCount):\($0.sha256)")
+            }) else {
+                throw ServiceError(400, "invalid_source_json", "Every omitted media digest must be recorded in source.json.")
+            }
+        case .opusJSON:
+            guard (try? JSONSerialization.jsonObject(with: data, options: .fragmentsAllowed)) != nil else {
+                throw ServiceError(400, "invalid_opus_json", "Opus source data must be valid JSON.")
+            }
+        case .sourceWAV:
+            guard data.count >= 12, data.prefix(4) == Data("RIFF".utf8),
+                  data.dropFirst(8).prefix(4) == Data("WAVE".utf8) else {
+                throw ServiceError(400, "invalid_source_wav", "Source audio must be a RIFF WAVE file.")
+            }
+        case .screenshotPNG:
+            guard data.starts(with: [137, 80, 78, 71, 13, 10, 26, 10]) else {
+                throw ServiceError(400, "invalid_screenshot", "Source screenshot must be a PNG file.")
+            }
+        case .builtInAudio:
+            throw ServiceError(400, "unsupported_source_artifact", "Unknown built-in audio bytes can be recorded as omitted, not uploaded.")
+        }
+        try requireDiskSpace()
+        let target = stage.directory.appendingPathComponent(filename.rawValue)
+        try data.write(to: target, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: target.path)
+        stage.uploaded.insert(filename)
+        stage.touchedAt = Date()
+        importStages[id] = stage
+        return WisprFlowArtifactReceipt(filename: filename, byteCount: data.count)
+    }
+
+    public func completeWisprFlowImport(_ id: UUID) throws -> WisprFlowImportResult {
+        guard let stage = importStages[id] else { throw ServiceError(404, "import_not_found", "Import session not found.") }
+        let request = stage.request
+        guard Set(request.artifacts.map(\.filename)) == stage.uploaded else {
+            throw ServiceError(409, "incomplete_import", "Upload every manifest artifact before completing this import.")
+        }
+        for manifest in request.artifacts {
+            let file = stage.directory.appendingPathComponent(manifest.filename.rawValue)
+            guard (try? FileManager.default.attributesOfItem(atPath: file.path)[.type] as? FileAttributeType) == .typeRegular,
+                  let bytes = try? Data(contentsOf: file), bytes.count == manifest.byteCount,
+                  Self.sha256(bytes) == manifest.sha256 else {
+                throw ServiceError(409, "staged_artifact_changed", "A staged artifact no longer matches its manifest.")
+            }
+        }
+        let incomingHashes = Dictionary(uniqueKeysWithValues: request.artifacts.map { ($0.filename.rawValue, $0.sha256) })
+        let sourceHash = incomingHashes[WisprFlowArtifactName.sourceJSON.rawValue]!
+        let files = FileManager.default
+        if let existingID = wisprFlowIndex[request.sourceID] {
+            var record = try get(existingID)
+            guard var source = record.importedSource else {
+                throw ServiceError(500, "invalid_archive", "The existing source archive is invalid.")
+            }
+            let conflicts = request.artifacts.filter { manifest in
+                manifest.filename != .sourceJSON
+                    && source.artifactSHA256[manifest.filename.rawValue].map({ $0 != manifest.sha256 }) ?? false
+            }
+            let sameArtifacts = request.artifacts.allSatisfy { manifest in
+                manifest.filename == .sourceJSON ? source.sourceSHA256 == manifest.sha256
+                    : (source.artifactSHA256[manifest.filename.rawValue] == manifest.sha256
+                       || (source.artifactSHA256[manifest.filename.rawValue] != nil
+                           && source.unarchivedArtifactSHA256?[manifest.filename.rawValue] == manifest.sha256))
+            }
+            let sameMetadata = (request.finalText.isEmpty || record.finalText == request.finalText)
+                && (request.rawText.isEmpty || record.rawText == request.rawText)
+                && (request.sourceStatus == nil || source.sourceStatus == request.sourceStatus)
+                && (request.durationSeconds == nil || source.durationSeconds == request.durationSeconds)
+                && Set(request.variantNames).isSubset(of: Set(source.variantNames))
+            if sameArtifacts && sameMetadata {
+                let archivedSource = try Data(contentsOf: directory(existingID).appendingPathComponent("source.json"))
+                guard let document = try? JSONSerialization.jsonObject(with: archivedSource) as? [String: Any],
+                      let provenancePartial = try? Self.sourceProvenanceIsPartial(document) else {
+                    throw ServiceError(500, "invalid_archive", "The existing source archive is invalid.")
+                }
+                try files.removeItem(at: stage.directory)
+                importStages[id] = nil
+                let unarchived = (source.unarchivedArtifactSHA256 ?? [:]).keys
+                    .compactMap(WisprFlowArtifactName.init(rawValue:)).sorted { $0.rawValue < $1.rawValue }
+                return WisprFlowImportResult(outcome: unarchived.isEmpty && !provenancePartial ? .skipped : .partial,
+                                             record: record,
+                                             unarchivedArtifactNames: unarchived)
+            }
+            let earlierDirectory = directory(existingID)
+            let oldSource = try Data(contentsOf: earlierDirectory.appendingPathComponent("source.json"))
+            var nextSource: Data
+            if source.sourceSHA256 != sourceHash {
+                let incoming = try Data(contentsOf: stage.directory.appendingPathComponent("source.json"))
+                nextSource = try Self.mergedSourceJSON(old: oldSource, incoming: incoming)
+                source.sourceSHA256 = sourceHash
+            } else {
+                nextSource = oldSource
+            }
+            for manifest in conflicts {
+                let filename = manifest.filename.rawValue
+                guard let oldHash = source.artifactSHA256[filename] else { continue }
+                let earlier = try Data(contentsOf: earlierDirectory.appendingPathComponent(filename))
+                guard Self.sha256(earlier) == oldHash else {
+                    throw ServiceError(500, "invalid_archive", "An archived source artifact no longer matches its metadata.")
+                }
+                try writePrivate(earlier, to: stage.directory.appendingPathComponent(filename))
+                nextSource = try Self.sourceJSONRecordingConflict(nextSource, filename: filename,
+                    archivedSHA256: oldHash, observedSHA256: manifest.sha256, observedByteCount: manifest.byteCount)
+            }
+            for manifest in request.artifacts where manifest.filename != .sourceJSON {
+                guard source.artifactSHA256[manifest.filename.rawValue] == nil else { continue }
+                source.artifactSHA256[manifest.filename.rawValue] = manifest.sha256
+            }
+            let reconciliation = try Self.reconciledSourceJSON(nextSource, archivedHashes: source.artifactSHA256)
+            nextSource = reconciliation.data
+            source.unarchivedArtifactSHA256 = reconciliation.unarchivedHashes
+            try writePrivate(nextSource, to: stage.directory.appendingPathComponent("source.json"))
+            source.artifactSHA256[WisprFlowArtifactName.sourceJSON.rawValue] = Self.sha256(nextSource)
+            // Assemble the replacement under staging first. The live generation
+            // remains untouched until a complete metadata + artifact directory is
+            // committed by FileManager's directory replacement.
+            for filename in source.artifactNames {
+                let old = earlierDirectory.appendingPathComponent(filename.rawValue)
+                if !stage.uploaded.contains(filename),
+                   (try? files.attributesOfItem(atPath: old.path)[.type] as? FileAttributeType) != .typeRegular {
+                    throw ServiceError(500, "invalid_archive", "An archived source artifact is missing.")
+                }
+            }
+            for old in try files.contentsOfDirectory(at: earlierDirectory, includingPropertiesForKeys: nil) {
+                let target = stage.directory.appendingPathComponent(old.lastPathComponent)
+                guard !files.fileExists(atPath: target.path) else { continue }
+                guard try files.attributesOfItem(atPath: old.path)[.type] as? FileAttributeType == .typeRegular else {
+                    throw ServiceError(500, "invalid_archive", "Imported artifacts must be regular files.")
+                }
+                try files.copyItem(at: old, to: target)
+            }
+            source.sourceStatus = request.sourceStatus ?? source.sourceStatus
+            source.durationSeconds = request.durationSeconds ?? source.durationSeconds
+            source.variantNames = Array(Set(source.variantNames).union(request.variantNames)).sorted()
+            source.artifactNames = source.artifactSHA256.keys.compactMap(WisprFlowArtifactName.init(rawValue:)).sorted { $0.rawValue < $1.rawValue }
+            record.importedSource = source
+            if !request.finalText.isEmpty { record.finalText = request.finalText }
+            if !request.rawText.isEmpty { record.rawText = request.rawText }
+            record.updatedAt = Date()
+            try writePrivate(Data(record.finalText.utf8), to: stage.directory.appendingPathComponent("transcript.txt"))
+            let metadata = try SottoAPI.encoder().encode(record)
+            guard metadata.count <= Self.maximumMetadataBytes else {
+                throw ServiceError(413, "metadata_too_large", "The imported metadata exceeded its 1 MiB storage limit.")
+            }
+            try writePrivate(metadata, to: stage.directory.appendingPathComponent("metadata.json"))
+            _ = try files.replaceItemAt(earlierDirectory, withItemAt: stage.directory)
+            publish(record)
+            importStages[id] = nil
+            let unarchived = reconciliation.unarchivedHashes.keys
+                .compactMap(WisprFlowArtifactName.init(rawValue:)).sorted { $0.rawValue < $1.rawValue }
+            return WisprFlowImportResult(outcome: unarchived.isEmpty && !reconciliation.provenancePartial ? .enriched : .partial,
+                                         record: record,
+                                         unarchivedArtifactNames: unarchived)
+        }
+
+        let recordID = UUID()
+        let incomingSource = try Data(contentsOf: stage.directory.appendingPathComponent("source.json"))
+        let reconciliation = try Self.reconciledSourceJSON(incomingSource, archivedHashes: incomingHashes)
+        try writePrivate(reconciliation.data, to: stage.directory.appendingPathComponent("source.json"))
+        var storedHashes = incomingHashes
+        storedHashes[WisprFlowArtifactName.sourceJSON.rawValue] = Self.sha256(reconciliation.data)
+        var record = GenerationRecord(id: recordID, requestID: request.sourceID,
+                                      device: DeviceIdentity(id: "wispr-flow", name: "Wispr Flow"),
+                                      mode: .dictation, status: .completed, createdAt: request.createdAt, settings: preferences)
+        record.updatedAt = Date()
+        record.finalText = request.finalText
+        record.rawText = request.rawText
+        record.insertionText = ""
+        record.previewText = request.finalText
+        record.importedSource = ImportedSource(sourceID: request.sourceID, sourceStatus: request.sourceStatus,
+                                               importedAt: Date(), variantNames: request.variantNames,
+                                               artifactNames: request.artifacts.map(\.filename).sorted { $0.rawValue < $1.rawValue },
+                                               durationSeconds: request.durationSeconds, sourceSHA256: sourceHash,
+                                               artifactSHA256: storedHashes)
+        record.importedSource?.unarchivedArtifactSHA256 = reconciliation.unarchivedHashes
+        try writePrivate(Data(record.finalText.utf8), to: stage.directory.appendingPathComponent("transcript.txt"))
+        let metadata = try SottoAPI.encoder().encode(record)
+        guard metadata.count <= Self.maximumMetadataBytes else {
+            throw ServiceError(413, "metadata_too_large", "The imported metadata exceeded its 1 MiB storage limit.")
+        }
+        try writePrivate(metadata, to: stage.directory.appendingPathComponent("metadata.json"))
+        try files.moveItem(at: stage.directory, to: directory(recordID))
+        publish(record)
+        wisprFlowIndex[request.sourceID] = recordID
+        importStages[id] = nil
+        let unarchived = reconciliation.unarchivedHashes.keys
+            .compactMap(WisprFlowArtifactName.init(rawValue:)).sorted { $0.rawValue < $1.rawValue }
+        return WisprFlowImportResult(outcome: unarchived.isEmpty && !reconciliation.provenancePartial ? .imported : .partial,
+                                     record: record, unarchivedArtifactNames: unarchived)
+    }
+
+    public func cancelWisprFlowImport(_ id: UUID) throws {
+        guard let stage = importStages.removeValue(forKey: id) else { return }
+        try FileManager.default.removeItem(at: stage.directory)
+    }
+
+    private func expireImportStages() {
+        let cutoff = Date().addingTimeInterval(-900)
+        let stale = importStages.filter { $0.value.touchedAt < cutoff }.map(\.key)
+        for id in stale {
+            guard let stage = importStages.removeValue(forKey: id) else { continue }
+            try? FileManager.default.removeItem(at: stage.directory)
+        }
+    }
+
+    public func archiveWisprFlowDictionary(_ data: Data) throws -> WisprFlowDictionaryArchiveReceipt {
+        guard !data.isEmpty, data.count <= WisprFlowImportLimits.maximumDictionaryBytes,
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              object["provider"] as? String == "wispr-flow" else {
+            throw ServiceError(400, "invalid_dictionary_archive", "Dictionary source data must be valid Wispr Flow JSON within 8 MiB.")
+        }
+        try requireDiskSpace()
+        let root = configuration.dataDirectory.appendingPathComponent("imports/wispr-flow", isDirectory: true)
+        let hash = Self.sha256(data)
+        let versions = root.appendingPathComponent("dictionary-versions", isDirectory: true)
+        if !FileManager.default.fileExists(atPath: versions.path) {
+            try FileManager.default.createDirectory(at: versions, withIntermediateDirectories: false,
+                                                    attributes: [.posixPermissions: 0o700])
+        }
+        guard try FileManager.default.attributesOfItem(atPath: versions.path)[.type] as? FileAttributeType == .typeDirectory else {
+            throw ServiceError(500, "invalid_storage", "Dictionary archive directories must not be symbolic links.")
+        }
+        let version = versions.appendingPathComponent("\(hash).json")
+        if FileManager.default.fileExists(atPath: version.path) {
+            guard try FileManager.default.attributesOfItem(atPath: version.path)[.type] as? FileAttributeType == .typeRegular,
+                  Self.sha256(try Data(contentsOf: version)) == hash else {
+                throw ServiceError(500, "invalid_dictionary_archive", "An existing dictionary version is invalid.")
+            }
+        } else {
+            try writePrivate(data, to: version)
+        }
+        try writePrivate(data, to: root.appendingPathComponent("dictionary.json"))
+        return WisprFlowDictionaryArchiveReceipt(byteCount: data.count, sha256: hash)
     }
 
     private func process(_ id: UUID, previous: DictationContinuation?) async {
@@ -481,6 +822,267 @@ public actor GenerationService {
         }
         try data.write(to: directory(record.id).appendingPathComponent("metadata.json"), options: .atomic)
         publish(record)
+    }
+    private func stagingDirectory(_ id: UUID) -> URL {
+        configuration.dataDirectory.appendingPathComponent("imports/wispr-flow/staging/\(id.uuidString)", isDirectory: true)
+    }
+    private func writePrivate(_ data: Data, to url: URL) throws {
+        if FileManager.default.fileExists(atPath: url.path),
+           try FileManager.default.attributesOfItem(atPath: url.path)[.type] as? FileAttributeType != .typeRegular {
+            throw ServiceError(500, "invalid_storage", "An archive artifact must be a regular file.")
+        }
+        try data.write(to: url, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+    }
+    private static func sha256(_ data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+    private static func validSHA256(_ value: String) -> Bool {
+        value.utf8.count == 64 && value.utf8.allSatisfy { ($0 >= 48 && $0 <= 57) || ($0 >= 97 && $0 <= 102) }
+    }
+    private static func sourceOmissions(_ document: [String: Any]) throws -> [WisprFlowArtifactManifest] {
+        guard document["archiveOmissions"] == nil || document["archiveOmissions"] is [[String: Any]] else {
+            throw ServiceError(400, "invalid_source_json", "Media omission records must be an array.")
+        }
+        return try (document["archiveOmissions"] as? [[String: Any]] ?? []).map { entry in
+            guard let raw = entry["artifact"] as? String,
+                  let filename = WisprFlowArtifactName(rawValue: raw), filename != .sourceJSON,
+                  let byteCount = entry["observedByteCount"] as? Int, byteCount > 0,
+                  let hash = entry["observedSHA256"] as? String, validSHA256(hash),
+                  let status = entry["status"] as? String,
+                  status == "not-archived" || status == "archived" else {
+                throw ServiceError(400, "invalid_source_json", "Media omission records need a valid name, size, digest, and status.")
+            }
+            return WisprFlowArtifactManifest(filename: filename, byteCount: byteCount, sha256: hash)
+        }
+    }
+    private static func recordedProvenanceFieldCount(_ document: [String: Any]) throws -> Int {
+        guard let sources = document["sources"] as? [[String: Any]] else {
+            throw ServiceError(400, "invalid_source_json", "Source provenance rows must be objects.")
+        }
+        var recordedFieldCount = 0
+        for source in sources {
+            for key in ["omittedValueCount", "omittedColumnCount"] {
+                guard let rawCount = source[key] else { continue }
+                guard let count = rawCount as? Int, count >= 0, count <= Int.max - recordedFieldCount else {
+                    throw ServiceError(400, "invalid_source_json", "Source row omission counts are invalid.")
+                }
+                recordedFieldCount += count
+            }
+            if let digest = source["omittedValuesSHA256"] {
+                guard let hash = digest as? String, validSHA256(hash) else {
+                    throw ServiceError(400, "invalid_source_json", "Source row omission digests are invalid.")
+                }
+            }
+            for field in (source["values"] as? [String: Any] ?? [:]).values {
+                guard let value = field as? [String: Any],
+                      value["archiveReason"] as? String == "exceeds-source-json-limit" else { continue }
+                guard let type = value["type"] as? String, type == "text" || type == "blob",
+                      let byteCount = value["byteCount"] as? Int, byteCount > 0,
+                      let digest = value["sha256"] as? String, validSHA256(digest),
+                      value["archiveStatus"] as? String == "not-archived",
+                      value["value"] == nil, value["base64"] == nil,
+                      recordedFieldCount < Int.max else {
+                    throw ServiceError(400, "invalid_source_json", "Omitted source values need their size, digest, and reason.")
+                }
+                recordedFieldCount += 1
+            }
+        }
+        return recordedFieldCount
+    }
+    private static func sourceProvenanceIsPartial(_ document: [String: Any]) throws -> Bool {
+        let countKeys = ["provenanceOmittedFieldCount", "provenanceOmittedSourceCount",
+                         "provenanceOmittedMediaVersionCount"]
+        let digestKeys = ["provenanceOmittedSourcesSHA256", "provenanceOmittedMediaVersionsSHA256"]
+        let recordedFieldCount = try recordedProvenanceFieldCount(document)
+        guard let status = document["provenanceStatus"] as? String else {
+            guard document["provenanceStatus"] == nil, recordedFieldCount == 0,
+                  (countKeys + ["provenanceOmittedColumnCount"] + digestKeys)
+                    .allSatisfy({ document[$0] == nil }) else {
+                throw ServiceError(400, "invalid_source_json", "Source provenance status and omission counts disagree.")
+            }
+            return false
+        }
+        guard status == "partial",
+              let fields = document[countKeys[0]] as? Int, fields >= 0,
+              let sources = document[countKeys[1]] as? Int, sources >= 0,
+              let mediaVersions = document[countKeys[2]] as? Int, mediaVersions >= 0,
+              fields > 0 || sources > 0 || mediaVersions > 0,
+              fields >= recordedFieldCount,
+              document["provenanceOmittedColumnCount"].map({ ($0 as? Int).map({ $0 >= 0 }) ?? false }) ?? true,
+              digestKeys.allSatisfy({ key in
+                  document[key].map({ ($0 as? String).map(validSHA256) ?? false }) ?? true
+              }) else {
+            throw ServiceError(400, "invalid_source_json", "Partial source provenance needs valid omission counts and digests.")
+        }
+        return true
+    }
+    private static func reconciledSourceJSON(_ data: Data, archivedHashes: [String: String]) throws
+        -> (data: Data, unarchivedHashes: [String: String], provenancePartial: Bool) {
+        guard var document = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw ServiceError(400, "invalid_source_json", "The source archive is invalid.")
+        }
+        _ = try sourceOmissions(document)
+        let provenancePartial = try sourceProvenanceIsPartial(document)
+        var missing: [String: String] = [:]
+        if var omissions = document["archiveOmissions"] as? [[String: Any]] {
+            for index in omissions.indices {
+                guard let name = omissions[index]["artifact"] as? String,
+                      let digest = omissions[index]["observedSHA256"] as? String else { continue }
+                let archived = archivedHashes[name] == digest
+                omissions[index]["status"] = archived ? "archived" : "not-archived"
+                if !archived && missing[name] == nil { missing[name] = digest }
+            }
+            document["archiveOmissions"] = omissions
+        }
+        if var conflicts = document["archiveConflicts"] as? [[String: Any]] {
+            for index in conflicts.indices {
+                guard let name = conflicts[index]["artifact"] as? String,
+                      let digest = conflicts[index]["observedSHA256"] as? String else { continue }
+                let archived = archivedHashes[name] == digest
+                conflicts[index]["status"] = archived ? "archived" : "not-archived"
+                if !archived && missing[name] == nil { missing[name] = digest }
+            }
+            document["archiveConflicts"] = conflicts
+        }
+        if var sources = document["sources"] as? [[String: Any]] {
+            let media = ["audio": "source.wav", "opusChunks": "opus.json",
+                         "screenshot": "screenshot.png", "builtInAudio": "built-in-audio.bin"]
+            for sourceIndex in sources.indices {
+                guard var values = sources[sourceIndex]["values"] as? [String: Any] else { continue }
+                for (column, filename) in media {
+                    guard var field = values[column] as? [String: Any],
+                          let digest = field["sha256"] as? String else { continue }
+                    if archivedHashes[filename] == digest {
+                        field["artifact"] = filename
+                        field["archiveStatus"] = "archived"
+                        field.removeValue(forKey: "archiveReason")
+                    } else if field["archiveStatus"] as? String == "not-archived" {
+                        field.removeValue(forKey: "artifact")
+                    }
+                    values[column] = field
+                }
+                sources[sourceIndex]["values"] = values
+            }
+            document["sources"] = sources
+        }
+        let result = try JSONSerialization.data(withJSONObject: document, options: .sortedKeys)
+        guard result.count <= WisprFlowImportLimits.maximumArtifactBytes else {
+            throw ServiceError(413, "source_archive_limit", "The preserved source versions exceeded 8 MiB.")
+        }
+        return (result, missing, provenancePartial)
+    }
+    private static func sourceVersionKey(_ source: Any) throws -> String {
+        guard var normalized = source as? [String: Any] else {
+            throw ServiceError(400, "invalid_source_json", "The source contains an invalid row version.")
+        }
+        if var values = normalized["values"] as? [String: Any] {
+            for column in ["audio", "opusChunks", "screenshot", "builtInAudio"] {
+                guard var field = values[column] as? [String: Any] else { continue }
+                for key in ["artifact", "archiveStatus", "archiveReason"] {
+                    field.removeValue(forKey: key)
+                }
+                values[column] = field
+            }
+            normalized["values"] = values
+        }
+        guard JSONSerialization.isValidJSONObject(normalized) else {
+            throw ServiceError(400, "invalid_source_json", "The source contains an invalid row version.")
+        }
+        return sha256(try JSONSerialization.data(withJSONObject: normalized, options: .sortedKeys))
+    }
+    private static func mergedSourceJSON(old: Data, incoming: Data) throws -> Data {
+        guard let earlier = try? JSONSerialization.jsonObject(with: old) as? [String: Any],
+              let newer = try? JSONSerialization.jsonObject(with: incoming) as? [String: Any],
+              earlier["provider"] as? String == "wispr-flow",
+              (earlier["sourceID"] as? String).flatMap(UUID.init(uuidString:))
+                  == (newer["sourceID"] as? String).flatMap(UUID.init(uuidString:)),
+              let earlierSources = earlier["sources"] as? [Any],
+              let newerSources = newer["sources"] as? [Any] else {
+            throw ServiceError(500, "invalid_archive", "The existing source archive cannot be merged.")
+        }
+        _ = try sourceOmissions(earlier)
+        _ = try sourceOmissions(newer)
+        var combined: [Any] = []
+        var seen = Set<String>()
+        for source in earlierSources + newerSources {
+            if seen.insert(try sourceVersionKey(source)).inserted { combined.append(source) }
+        }
+        var combinedOmissions: [[String: Any]] = []
+        var seenOmissions = Set<String>()
+        for omission in (earlier["archiveOmissions"] as? [[String: Any]] ?? [])
+            + (newer["archiveOmissions"] as? [[String: Any]] ?? []) {
+            let key = "\(omission["artifact"] as? String ?? ""):\(omission["observedSHA256"] as? String ?? ""):\(omission["sourceName"] as? String ?? ""):\(omission["sourceRowID"] as? Int ?? 0)"
+            if seenOmissions.insert(key).inserted { combinedOmissions.append(omission) }
+        }
+        var merged = earlier
+        for (key, value) in newer where key != "sources" && key != "archiveOmissions" { merged[key] = value }
+        merged["sources"] = combined
+        if !combinedOmissions.isEmpty { merged["archiveOmissions"] = combinedOmissions }
+        let earlierPartial = try sourceProvenanceIsPartial(earlier)
+        let newerPartial = try sourceProvenanceIsPartial(newer)
+        if earlierPartial || newerPartial {
+            merged["provenanceStatus"] = "partial"
+            let recordedFields = try recordedProvenanceFieldCount(merged)
+            for key in ["provenanceOmittedFieldCount", "provenanceOmittedSourceCount",
+                        "provenanceOmittedMediaVersionCount", "provenanceOmittedColumnCount"] {
+                let minimum = key == "provenanceOmittedFieldCount" ? recordedFields : 0
+                let count = max(max(earlier[key] as? Int ?? 0, newer[key] as? Int ?? 0), minimum)
+                if key != "provenanceOmittedColumnCount" || count > 0 { merged[key] = count }
+            }
+            for key in ["provenanceOmittedSourcesSHA256", "provenanceOmittedMediaVersionsSHA256"] {
+                if let oldHash = earlier[key] as? String, let newHash = newer[key] as? String,
+                   oldHash != newHash { merged.removeValue(forKey: key) }
+            }
+        }
+        _ = try sourceProvenanceIsPartial(merged)
+        guard JSONSerialization.isValidJSONObject(merged) else {
+            throw ServiceError(400, "invalid_source_json", "The merged source artifact is invalid.")
+        }
+        let result = try JSONSerialization.data(withJSONObject: merged, options: .sortedKeys)
+        guard result.count <= WisprFlowImportLimits.maximumArtifactBytes else {
+            throw ServiceError(413, "source_archive_limit", "The preserved source versions exceeded 8 MiB.")
+        }
+        return result
+    }
+    private static func sourceJSONRecordingConflict(_ data: Data, filename: String,
+                                                    archivedSHA256: String, observedSHA256: String,
+                                                    observedByteCount: Int) throws -> Data {
+        guard var document = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              document["archiveConflicts"] == nil || document["archiveConflicts"] is [[String: Any]] else {
+            throw ServiceError(500, "invalid_archive", "Source conflict history is invalid.")
+        }
+        if var versions = document["sources"] as? [[String: Any]] {
+            let mediaColumns = ["audio", "opusChunks", "screenshot", "builtInAudio"]
+            for index in versions.indices {
+                guard var values = versions[index]["values"] as? [String: Any] else { continue }
+                for column in mediaColumns {
+                    guard var field = values[column] as? [String: Any],
+                          field["artifact"] as? String == filename,
+                          field["sha256"] as? String == observedSHA256 else { continue }
+                    field.removeValue(forKey: "artifact")
+                    field["archiveStatus"] = "not-archived"
+                    values[column] = field
+                }
+                versions[index]["values"] = values
+            }
+            document["sources"] = versions
+        }
+        var conflicts = document["archiveConflicts"] as? [[String: Any]] ?? []
+        let alreadyRecorded = conflicts.contains {
+            $0["artifact"] as? String == filename && $0["observedSHA256"] as? String == observedSHA256
+        }
+        if !alreadyRecorded {
+            conflicts.append(["artifact": filename, "archivedSHA256": archivedSHA256,
+                              "observedSHA256": observedSHA256, "observedByteCount": observedByteCount,
+                              "status": "not-archived"])
+        }
+        document["archiveConflicts"] = conflicts
+        let result = try JSONSerialization.data(withJSONObject: document, options: .sortedKeys)
+        guard result.count <= 8_388_608 else {
+            throw ServiceError(413, "source_archive_limit", "The preserved source versions exceeded 8 MiB.")
+        }
+        return result
     }
     private func publish(_ record: GenerationRecord) {
         records[record.id] = record
