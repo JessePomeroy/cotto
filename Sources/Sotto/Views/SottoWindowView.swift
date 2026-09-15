@@ -1,3 +1,4 @@
+import SottoCore
 import SwiftUI
 
 private enum SottoPage: String, CaseIterable, Identifiable {
@@ -75,7 +76,7 @@ struct SottoWindowView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(SottoPalette.canvas)
-            .navigationTitle("Sotto Dev · \(page.rawValue)")
+            .navigationTitle("\(SottoBuild.current.displayName) · \(page.rawValue)")
         }
         .navigationSplitViewStyle(.balanced)
         .frame(minWidth: 820, minHeight: 580)
@@ -88,13 +89,15 @@ struct SottoWindowView: View {
 
 struct DevBadge: View {
     var body: some View {
-        Text("Dev")
-            .font(.system(size: 10, weight: .semibold))
-            .foregroundStyle(SottoPalette.accentInk)
-            .padding(.horizontal, 7)
-            .padding(.vertical, 3)
-            .background(SottoPalette.tint, in: Capsule())
-            .accessibilityLabel("Development build")
+        if SottoBuild.current.isDevelopment {
+            Text("Dev")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(SottoPalette.accentInk)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 3)
+                .background(SottoPalette.tint, in: Capsule())
+                .accessibilityLabel("Development build")
+        }
     }
 }
 

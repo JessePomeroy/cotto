@@ -1,3 +1,4 @@
+import SottoCore
 import SottoAPI
 import SwiftUI
 
@@ -63,7 +64,7 @@ private struct DevicePreferencesForm: View {
                     }
                     .frame(height: 90)
                 }
-                Toggle("Start Sotto Dev at login", isOn: $controller.launchAtLogin)
+                Toggle("Start \(SottoBuild.current.displayName) at login", isOn: $controller.launchAtLogin)
                 if let error = controller.loginItemError {
                     Text(error).font(.caption).foregroundStyle(SottoPalette.warning)
                 }
@@ -84,9 +85,14 @@ private struct DevicePreferencesForm: View {
 
             Section {
                 HStack(spacing: 8) {
-                    Text("Sotto Dev").font(.headline)
+                    Text("\(SottoBuild.current.displayName)").font(.headline)
                     Spacer()
-                    Text("Development build").foregroundStyle(SottoPalette.muted)
+                    if SottoBuild.current.isDevelopment {
+                        Text("Development build").foregroundStyle(SottoPalette.muted)
+                    } else {
+                        Text(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "")
+                            .foregroundStyle(SottoPalette.muted)
+                    }
                 }
                 Text("Quitting this app leaves your server running.")
                     .font(.caption)
@@ -167,9 +173,27 @@ struct ServerPreferencesPage: View {
                     Picker("Language", selection: $draft.language) {
                         ForEach(languages, id: \.1) { name, code in Text(name).tag(code) }
                     }
-                    Toggle("Light cleanup", isOn: $draft.cleanText)
-                        .help("Remove fillers such as um and uh before proofreading.")
                     Toggle("Proofread with Qwen", isOn: $draft.textCorrectionEnabled)
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Text("Cleanup instructions")
+                            Spacer()
+                            Button("Reset to default") {
+                                draft.proofreadingPrompt = ServerPreferences.defaultProofreadingPrompt
+                            }
+                            .disabled(draft.proofreadingPrompt == ServerPreferences.defaultProofreadingPrompt)
+                            .accessibilityIdentifier("preferences.reset-cleanup-prompt")
+                        }
+                        TextEditor(text: $draft.proofreadingPrompt)
+                            .font(.body)
+                            .scrollContentBackground(.hidden)
+                            .padding(7)
+                            .frame(height: 352)
+                            .background(SottoPalette.surface, in: RoundedRectangle(cornerRadius: 6))
+                            .overlay { RoundedRectangle(cornerRadius: 6).stroke(SottoPalette.muted.opacity(0.25)) }
+                            .accessibilityLabel("Cleanup instructions")
+                            .accessibilityIdentifier("preferences.cleanup-prompt")
+                    }
                     TextField("Recognition vocabulary", text: $draft.vocabulary, axis: .vertical)
                         .lineLimit(3...5)
                         .help("Names and specialized terms to help voice recognition.")
@@ -218,7 +242,7 @@ struct ServerPreferencesPage: View {
                     HStack(alignment: .top, spacing: 10) {
                         VStack(alignment: .leading, spacing: 8) {
                             TextField("Preferred spelling", text: $entry.term)
-                            TextField("Corrections, separated by commas", text: Binding(
+                            TextField("Words or phrases to replace, separated by commas", text: Binding(
                                 get: { entry.aliases.joined(separator: ", ") },
                                 set: { value in
                                     entry.aliases = value.isEmpty ? [] : value.components(separatedBy: ",")
@@ -226,7 +250,17 @@ struct ServerPreferencesPage: View {
                                 }
                             ))
                             .font(.caption)
+                            .help("Use narrow phrases: preferred ‘auth middleware’, replace ‘off middleware’. Replacing ‘off’ alone also changes ordinary uses of that word.")
                         }
+                        Toggle(isOn: $entry.isPriority) {
+                            Image(systemName: entry.isPriority ? "star.fill" : "star")
+                        }
+                        .toggleStyle(.button)
+                        .buttonStyle(.borderless)
+                        .tint(SottoPalette.accentInk)
+                        .help("Priority words are suggested first when model space is limited.")
+                        .accessibilityLabel("Prioritize \(entry.term.isEmpty ? "word" : entry.term)")
+                        .accessibilityIdentifier("preferences.dictionary-priority.\(entry.id)")
                         Button {
                             list.entries.removeAll { $0.id == entry.id }
                         } label: { Image(systemName: "minus.circle") }

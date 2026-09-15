@@ -66,6 +66,51 @@ final class PersonalDictionaryTests: XCTestCase {
         XCTAssertEqual(dictionary.apply(to: "code x and minimax"), "Codex and MiniMax")
     }
 
+    func testPriorityHintsAreStableAcrossListsWithoutChangingReplacements() throws {
+        let dictionary = PersonalDictionary(lists: [
+            DictionaryList(id: "first", name: "First", entries: [
+                DictionaryEntry(id: "ordinary", term: "ordinary", aliases: ["usual"]),
+                DictionaryEntry(id: "auth", term: "auth", isPriority: true),
+                DictionaryEntry(id: "cafe", term: "Café"),
+            ]),
+            DictionaryList(id: "second", name: "Second", entries: [
+                DictionaryEntry(id: "qwen", term: "Qwen", isPriority: true),
+                DictionaryEntry(id: "duplicate", term: "Café", isPriority: true),
+            ]),
+        ])
+        XCTAssertNil(dictionary.validationError)
+        XCTAssertEqual(dictionary.vocabularyTerms, ["auth", "Qwen", "Café", "ordinary"])
+        XCTAssertEqual(dictionary.recognitionVocabularyTerms("AUTH, server\nCAFE\u{301}, queue, , server"),
+                       ["auth", "Qwen", "Café", "ordinary", "server", "queue"])
+        XCTAssertEqual(dictionary.recognitionVocabularyTerms("auth\tmiddleware, auth  middleware, \tserver\t"),
+                       ["auth", "Qwen", "Café", "ordinary", "auth middleware", "server"])
+        XCTAssertEqual(dictionary.apply(to: "usual AUTH queue"), "ordinary auth queue")
+        XCTAssertEqual(try JSONDecoder().decode(PersonalDictionary.self, from: JSONEncoder().encode(dictionary)), dictionary)
+    }
+
+    func testLegacyEntriesDefaultToNormalPriorityAndRejectInvalidFlags() throws {
+        let legacy = try JSONDecoder().decode(DictionaryEntry.self, from: Data(#"{"id":"auth","term":"auth"}"#.utf8))
+        XCTAssertFalse(legacy.isPriority)
+        for value in ["null", "1", #""true""#] {
+            let json = "{\"id\":\"auth\",\"term\":\"auth\",\"isPriority\":\(value)}"
+            XCTAssertThrowsError(try JSONDecoder().decode(DictionaryEntry.self, from: Data(json.utf8)))
+        }
+    }
+
+    func testScopedAuthPhraseAliasesKeepLegitimateOffAndPreferLongestMatch() {
+        let dictionary = make([
+            DictionaryEntry(id: "auth", term: "auth", isPriority: true),
+            DictionaryEntry(id: "middleware", term: "auth middleware", aliases: ["off middleware"]),
+            DictionaryEntry(id: "specific", term: "auth middleware tests", aliases: ["off middleware checks"]),
+        ])
+        XCTAssertNil(dictionary.validationError)
+        XCTAssertEqual(dictionary.apply(to: "Fix off middleware; then turn off auth and turn off the lights."),
+                       "Fix auth middleware; then turn off auth and turn off the lights.")
+        XCTAssertEqual(dictionary.apply(to: "Run OFF MIDDLEWARE CHECKS. Leave off_middleware and takeoff middleware alone."),
+                       "Run auth middleware tests. Leave off_middleware and takeoff middleware alone.")
+        XCTAssertEqual(dictionary.vocabularyTerms, ["auth", "auth middleware", "auth middleware tests"])
+    }
+
     func testReplacementsNeverCascadeAcrossAdjacentWords() {
         let dictionary = make([
             DictionaryEntry(id: "alpha", term: "Alpha", aliases: ["first"]),

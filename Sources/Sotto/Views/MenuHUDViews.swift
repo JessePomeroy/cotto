@@ -1,3 +1,4 @@
+import SottoCore
 import SwiftUI
 
 struct SottoMenuView: View {
@@ -36,10 +37,10 @@ struct SottoMenuView: View {
             .disabled(controller.lastTranscript.isEmpty || controller.isBusy)
             .accessibilityIdentifier("menu.copy-last")
 
-            Button("Open Sotto Dev…", action: openWindow)
+            Button("Open \(SottoBuild.current.displayName)…", action: openWindow)
                 .keyboardShortcut(",", modifiers: .command)
             Divider()
-            Button("Quit Sotto Dev", action: quit)
+            Button("Quit \(SottoBuild.current.displayName)", action: quit)
                 .keyboardShortcut("q", modifiers: .command)
         }
         .buttonStyle(.borderless)
@@ -54,10 +55,19 @@ struct SottoMenuView: View {
 struct DictationHUD: View {
     static let width: CGFloat = 220
     static let height: CGFloat = 44
+    static let noticeHeight: CGFloat = 30
     @ObservedObject var controller: SottoController
     var previewHover = false
 
     var body: some View {
+        VStack(spacing: 0) {
+            capsule
+            RecordingLimitNote(feedback: controller.recordingFeedback)
+                .frame(width: Self.width, height: Self.noticeHeight)
+        }
+    }
+
+    private var capsule: some View {
         HStack(spacing: 10) {
             DevBadge()
             HStack(spacing: 8) {
@@ -93,7 +103,7 @@ struct DictationHUD: View {
         }
         .help(controller.errorMessage ?? controller.statusMessage)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("Sotto Dev dictation")
+        .accessibilityLabel("\(SottoBuild.current.displayName) dictation")
         .accessibilityValue(controller.errorMessage ?? controller.statusMessage)
         .accessibilityIdentifier("hud.status")
     }
@@ -122,5 +132,27 @@ struct DictationHUD: View {
         case .success: controller.lastDeliveryStatus == .unconfirmed ? "Check text" : "Done"
         case .failed: "Failed"
         }
+    }
+}
+
+/// Observe only the notice's whole-second changes, independently of the meter.
+struct RecordingLimitNote: View {
+    let feedback: RecordingFeedback
+    @State private var notice: RecordingLimitNotice?
+
+    var body: some View {
+        Text(notice?.text ?? "Recording limit in 0:30")
+            .font(.system(size: 11, weight: .medium))
+            .monospacedDigit()
+            .lineLimit(1)
+            .foregroundStyle(SottoPalette.ink)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 4)
+            .background(.regularMaterial, in: Capsule())
+            .opacity(notice == nil ? 0 : 1)
+            .accessibilityHidden(notice == nil)
+            .accessibilityLabel(notice?.accessibilityLabel ?? "")
+            .accessibilityIdentifier("hud.recording-limit")
+            .onReceive(feedback.$limitNotice.removeDuplicates()) { notice = $0 }
     }
 }

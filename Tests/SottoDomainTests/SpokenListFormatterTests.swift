@@ -2,6 +2,41 @@ import XCTest
 @testable import SottoDomain
 
 final class SpokenListFormatterTests: XCTestCase {
+    func testAnnouncedListPreservesOutOfOrderCopularMarkersWithoutASRPunctuation() {
+        let source = "Okay, I have a list of things to do today. One is I need to book the room Three is I need to pick up the keys. Two is I need to send the invitation. Four is I need to check the meeting room."
+        let result = SpokenListFormatter.format(source)
+        XCTAssertEqual(result.text, "Okay, I have a list of things to do today.\n\n1. I need to book the room\n3. I need to pick up the keys\n2. I need to send the invitation\n4. I need to check the meeting room")
+        XCTAssertTrue(result.containsList)
+        XCTAssertEqual(result.context?.nextNumber, 5)
+        XCTAssertNil(result.formattingRejectionReason)
+    }
+
+    func testCopularListMarkersPreserveSkippedRepeatedAndDecreasingNumbers() {
+        for introduction in ["I have a list.", "Here's my numbered list.", "We have a list.", "Start a list."] {
+            let result = SpokenListFormatter.format("\(introduction) Five is book the room. Three is check that this one is available. Three is call the host.")
+            XCTAssertTrue(result.text.hasSuffix("5. book the room\n3. check that this one is available\n3. call the host"), result.text)
+            XCTAssertEqual(result.context?.nextNumber, 4)
+            XCTAssertNil(result.formattingRejectionReason)
+        }
+    }
+
+    func testCopularNumbersNeedRepeatedMarkersAndListIntent() {
+        for source in ["One is enough. Three is excessive.", "This one is ready. That one is missing.",
+                       "I have a list. This one is ready. That one is missing.",
+                       "I have a list. One is missing.", "First is not necessarily best."] {
+            let result = SpokenListFormatter.format(source)
+            XCTAssertEqual(result.text, source)
+            XCTAssertFalse(result.containsList)
+            XCTAssertNil(result.formattingRejectionReason)
+        }
+    }
+
+    func testCopularMarkersAcceptDigitsAndExplicitNumberPrefixes() {
+        let result = SpokenListFormatter.format("Start a list. Number five is book the room. 3 is pick up the keys. Item two is send the invitation.")
+        XCTAssertEqual(result.text, "5. book the room\n3. pick up the keys\n2. send the invitation")
+        XCTAssertNil(result.formattingRejectionReason)
+    }
+
     func testDecodedContextClampsNegativeNextNumber() throws {
         let data = Data(#"{"style":"numbered","nextNumber":-5}"#.utf8)
         let context = try JSONDecoder().decode(SpokenListContext.self, from: data)
@@ -158,6 +193,96 @@ final class SpokenListFormatterTests: XCTestCase {
         XCTAssertEqual(SpokenListFormatter.format("I counted one, two, three, four.").text, "I counted one, two, three, four.")
         XCTAssertEqual(SpokenListFormatter.format("Bullet point, apples, next bullet, bananas.").text, "- apples\n- bananas")
         XCTAssertEqual(SpokenListFormatter.format("Start a list. One — apples. Two - bananas.").text, "1. apples\n2. bananas")
+    }
+
+    func testStandaloneNumericAnswersAreContentWithAndWithoutContinuation() {
+        let context = SpokenListContext(style: .numbered, nextNumber: 5)
+        for (source, continued) in [("24.", "5. 24"), ("24)", "5. 24)"), ("24:", "5. 24:"), ("(24)", "5. (24)")] {
+            let plain = SpokenListFormatter.format(source)
+            XCTAssertEqual(plain.text, source)
+            XCTAssertFalse(plain.isControlOnly)
+            XCTAssertNil(plain.context)
+            XCTAssertNil(plain.formattingRejectionReason)
+
+            let item = SpokenListFormatter.format(source, context: context)
+            XCTAssertEqual(item.text, continued)
+            XCTAssertEqual(item.context?.nextNumber, 6)
+            XCTAssertTrue(item.continuesPreviousList)
+            XCTAssertFalse(item.isControlOnly)
+            XCTAssertNil(item.formattingRejectionReason)
+        }
+    }
+
+    func testNumericCorrectionKeepsBothValuesForProofreading() {
+        for source in ["Make it 42, err, 24.", "Make it 42, err, 24. That is final."] {
+            XCTAssertEqual(SpokenListFormatter.format(source).text, source)
+            let result = SpokenListFormatter.format(source, context: SpokenListContext(style: .numbered, nextNumber: 5))
+            XCTAssertTrue(result.text.hasPrefix("5. Make it 42, err, 24"))
+            XCTAssertEqual(result.context?.nextNumber, 6)
+            XCTAssertNil(result.formattingRejectionReason)
+        }
+    }
+
+    func testASRListsWithoutInterItemPunctuationPreserveStartsAndSkips() {
+        let examples = [
+            ("5, Apples 6, Bananas 7, Oranges 8, Pears", "5. Apples\n6. Bananas\n7. Oranges\n8. Pears", 9),
+            ("5, apples 7, oranges", "5. apples\n7. oranges", 8),
+            ("Continue the list. 5, apples 7, oranges", "5. apples\n7. oranges", 8),
+        ]
+        for (source, expected, nextNumber) in examples {
+            for context: SpokenListContext? in [nil, SpokenListContext(style: .numbered, nextNumber: 20)] {
+                let result = SpokenListFormatter.format(source, context: context)
+                XCTAssertEqual(result.text, expected, source)
+                XCTAssertEqual(result.context?.nextNumber, nextNumber, source)
+                XCTAssertNil(result.formattingRejectionReason, source)
+            }
+        }
+    }
+
+    func testNumericProseDoesNotAcquireMarkersFromCommasOrContinuation() {
+        let examples = [
+            "We have 5, maybe 6, apples.",
+            "I said 24, 25, and 26.",
+            "5, maybe 6, perhaps 7, people.",
+            "The range is 5, approximately 6, perhaps 7, units.",
+            "The answer is: 24. That is final.",
+            "5, 6, 7, 8.",
+            "We need 3.5 litres and $12.50 for lunch.",
+            "Meet at 4:30 on 2026-09-03.",
+            "2026. Revenue increased. 2027. We expect growth.",
+        ]
+        for source in examples {
+            let plain = SpokenListFormatter.format(source)
+            XCTAssertEqual(plain.text, source, source)
+            XCTAssertFalse(plain.containsList, source)
+            let item = SpokenListFormatter.format(source, context: SpokenListContext(style: .numbered, nextNumber: 3))
+            XCTAssertTrue(item.text.hasPrefix("3. "), source)
+            XCTAssertEqual(item.context?.nextNumber, 4, source)
+            XCTAssertFalse(item.text.contains("\n"), source)
+            XCTAssertNil(item.formattingRejectionReason, source)
+        }
+    }
+
+    func testRecordedControlSpansExcludeNumbersAndItemContent() {
+        let source = "Please keep café. Continue the list. Number twenty-four, oranges. End list."
+        let result = SpokenListFormatter.format(source)
+        XCTAssertEqual(result.text, "Please keep café.\n\n24. oranges")
+        XCTAssertNil(result.formattingRejectionReason)
+        let controls = result.consumedControls.compactMap { span -> String? in
+            guard let range = Range(NSRange(location: span.location, length: span.length), in: source) else { return nil }
+            return String(source[range])
+        }
+        XCTAssertEqual(controls, ["Continue the list.", "End list."])
+        XCTAssertEqual(result.replacingText("Updated").consumedControls, result.consumedControls)
+    }
+
+    func testBodylessNumericContentSurvivesBeforeExplicitControls() {
+        XCTAssertEqual(SpokenListFormatter.format("Start a list. 24. End list.").text, "1. 24")
+        XCTAssertEqual(SpokenListFormatter.format("Start a list. 24. Next item, agreed.").text, "1. 24\n2. agreed")
+        let result = SpokenListFormatter.format("Start a list. Next item. End list.")
+        XCTAssertEqual(result.text, "")
+        XCTAssertTrue(result.isControlOnly)
+        XCTAssertNil(result.formattingRejectionReason)
     }
 
     func testTailMetadataDistinguishesMultilineItemsFromProse() {

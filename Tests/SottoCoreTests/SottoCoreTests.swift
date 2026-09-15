@@ -4,11 +4,12 @@ import XCTest
 @testable import SottoCore
 
 final class SottoCoreTests: XCTestCase {
-    func testCleanupKeepsMeaningAndOnlyRemovesHesitationSounds() {
-        XCTAssertEqual(TranscriptCleaner.clean("  Um, we should, uh, ship it tomorrow.  "), "we should, ship it tomorrow.")
+    func testCleanupKeepsHesitationAndRepairCuesForProofreading() {
+        XCTAssertEqual(TranscriptCleaner.clean("  Um, we should, uh, ship it tomorrow.  "), "Um, we should, uh, ship it tomorrow.")
         XCTAssertEqual(TranscriptCleaner.clean("I like this, you know, a lot. Very, very much."), "I like this, you know, a lot. Very, very much.")
         XCTAssertEqual(TranscriptCleaner.clean("The umbrella is in Durham."), "The umbrella is in Durham.")
-        XCTAssertEqual(TranscriptCleaner.clean("Um, keep every word.", removeFillers: false), "Um, keep every word.")
+        XCTAssertEqual(TranscriptCleaner.clean("Um, keep every word."), "Um, keep every word.")
+        XCTAssertEqual(TranscriptCleaner.clean("Orange, erm, yellow."), "Orange, erm, yellow.")
     }
 
     func testEmptySpeechAndTokensDoNotProduceText() {

@@ -11,6 +11,27 @@ import XCTest
 
 final class NativeIntegrationTests: XCTestCase {
     @MainActor
+    func testHiddenRecordingNoticeRemovesExtraWindowAreaWithoutMovingHUDContent() {
+        let expanded = NSRect(x: 200, y: 100, width: DictationPanelLayout.contentSize.width,
+                              height: DictationPanelLayout.contentSize.height)
+        let collapsed = DictationPanelLayout.windowFrame(from: expanded, showsNotice: false)
+        XCTAssertEqual(collapsed.maxY, expanded.maxY)
+        XCTAssertEqual(collapsed.width, expanded.width)
+        XCTAssertEqual(collapsed.minY - expanded.minY, DictationHUD.noticeHeight)
+
+        let extraArea = NSPoint(x: expanded.midX, y: expanded.minY + DictationHUD.noticeHeight / 2)
+        XCTAssertTrue(expanded.contains(extraArea))
+        XCTAssertFalse(collapsed.contains(extraArea), "The hidden notice must not reserve a native mouse hit area")
+
+        let expandedContent = DictationPanelLayout.contentFrame(in: expanded.size)
+            .offsetBy(dx: expanded.minX, dy: expanded.minY)
+        let collapsedContent = DictationPanelLayout.contentFrame(in: collapsed.size)
+            .offsetBy(dx: collapsed.minX, dy: collapsed.minY)
+        XCTAssertEqual(collapsedContent, expandedContent, "Resizing must not re-center the SwiftUI capsule")
+        XCTAssertEqual(DictationPanelLayout.windowFrame(from: collapsed, showsNotice: true), expanded)
+    }
+
+    @MainActor
     func testGlacierTextRemainsLegibleOnReadingAndOpaqueFallbackSurfaces() throws {
         let app = NSApplication.shared
         let previousAppearance = app.appearance
@@ -727,6 +748,51 @@ final class NativeIntegrationTests: XCTestCase {
         feedback.reset()
         XCTAssertEqual(seconds, [1, 2, 180, 0])
         XCTAssertEqual(feedback.levels, Array(repeating: 0, count: 9))
+    }
+
+    @MainActor
+    func testRecordingLimitNoticeTracksFinalThirtySecondsAndExplicitStop() {
+        let feedback = RecordingFeedback()
+        var notices: [RecordingLimitNotice?] = []
+        let observation = feedback.$limitNotice.dropFirst().sink { notices.append($0) }
+        defer { observation.cancel() }
+
+        feedback.updateElapsed(149.99)
+        XCTAssertNil(feedback.limitNotice)
+        feedback.updateElapsed(150)
+        XCTAssertEqual(feedback.limitNotice?.text, "Recording limit in 0:30")
+        for _ in 0..<20 { feedback.updateElapsed(150.9); feedback.append(0.5) }
+        XCTAssertEqual(notices.count, 1, "Subsecond and waveform changes do not republish the warning")
+        feedback.updateElapsed(179)
+        XCTAssertEqual(feedback.limitNotice?.text, "Recording limit in 0:01")
+        feedback.updateElapsed(180)
+        feedback.finish(atLimit: true)
+        XCTAssertEqual(feedback.limitNotice, .stopped)
+        XCTAssertEqual(feedback.limitNotice?.text, "Stopped at the 3-minute limit")
+        feedback.clearLevels()
+        XCTAssertEqual(feedback.limitNotice, .stopped, "Processing retains the reason capture stopped")
+        feedback.reset()
+        XCTAssertNil(feedback.limitNotice, "A cancelled, dismissed, or new session starts without stale feedback")
+
+        feedback.updateElapsed(165)
+        feedback.finish(atLimit: false)
+        XCTAssertNil(feedback.limitNotice, "A normal release during the warning is not a cutoff")
+    }
+
+    @MainActor
+    func testRecordingLimitNoticeKeepsItsFootprintWhenHiddenAndVisible() throws {
+        let feedback = RecordingFeedback()
+        let view = NSHostingView(rootView: RecordingLimitNote(feedback: feedback)
+            .frame(width: DictationHUD.width, height: DictationHUD.noticeHeight))
+        let expected = NSSize(width: DictationHUD.width, height: DictationHUD.noticeHeight)
+        for seconds in [0, 149, 150, 179] {
+            feedback.updateElapsed(Double(seconds))
+            view.layoutSubtreeIfNeeded()
+            XCTAssertEqual(view.fittingSize, expected)
+        }
+        feedback.finish(atLimit: true)
+        view.layoutSubtreeIfNeeded()
+        XCTAssertEqual(view.fittingSize, expected)
     }
 
     @MainActor

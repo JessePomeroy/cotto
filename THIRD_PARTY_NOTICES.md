@@ -3,9 +3,9 @@
 - **whisper.cpp / ggml**, MIT license, pinned to v1.9.3 (371b5a7561823ab2bb32142d2751e35e7534727b). Source and license: [ggml-org/whisper.cpp](https://github.com/ggml-org/whisper.cpp). Linked statically into the native helper. Its bundled nlohmann/json and WAV decoder retain their upstream notices in source.
 - **Whisper large-v3-turbo**, MIT license. [Model card](https://huggingface.co/openai/whisper-large-v3-turbo), [GGML conversion](https://huggingface.co/ggerganov/whisper.cpp). Downloaded separately, not committed into this repository. The full-precision model is pinned by revision and SHA-256 in `SpeechModel.swift` and `download-model.sh`.
 - **Qwen3-4B-Instruct-2507**, Apache-2.0 license. [Official model card](https://huggingface.co/Qwen/Qwen3-4B-Instruct-2507), [current MLX 4-bit conversion](https://huggingface.co/mlx-community/Qwen3-4B-Instruct-2507-4bit/tree/50d427756c6b1b2fe0c0a10f67fbda1fc8e82c1b). The non-thinking model is downloaded separately, not committed. Revision, byte counts, and SHA-256 values for all six model/tokenizer/configuration files are pinned in `TextModel.swift`; processing metadata identifies the full manifest. Apache-2.0 license text is in `Resources/Qwen-LICENSE.txt`.
-- **Silero VAD**, MIT license. [snakers4/silero-vad](https://github.com/snakers4/silero-vad), [GGML conversion](https://huggingface.co/ggml-org/whisper-vad). The small voice-activity model is bundled with the built app; its download is pinned and verified by `download-vad.sh`.
+- **Silero VAD**, MIT license. [snakers4/silero-vad](https://github.com/snakers4/silero-vad), [GGML conversion](https://huggingface.co/ggml-org/whisper-vad). The small voice-activity model is bundled with the server package; its download is pinned and verified by `download-vad.sh`.
 - **JSON for Modern C++** v3.11.2 (Whisper helper) and v3.11.3 (vendored by MLX Swift), MIT license. [nlohmann/json](https://github.com/nlohmann/json). Upstream license/copyright notices are included in `Resources/JSON-LICENSE.txt` and `Resources/mlx-vendored-LICENSE.txt`.
-- **miniaudio / dr_wav**, MIT No Attribution option, copyright 2025 David Reid. [mackron/miniaudio](https://github.com/mackron/miniaudio). Only the WAV decoding component is used; license copied into the application resources.
+- **miniaudio / dr_wav**, MIT No Attribution option, copyright 2025 David Reid. [mackron/miniaudio](https://github.com/mackron/miniaudio). Only the WAV decoding component is used; its license is included in the server resources.
 
 ## Native Swift text helper
 
@@ -30,9 +30,9 @@ The table is the **resolved package graph**, not a claim that every target is li
 
 MLX Swift also vendors **MLX and MLX C** (MIT), **metal-cpp** (Apache-2.0), **{fmt} 12.1.0** (MIT with its upstream optional exception), **nlohmann/json 3.11.3** (MIT), and **PocketFFT** (BSD-3-Clause). Their exact license texts and MLX acknowledgments are preserved in `Resources/mlx-vendored-LICENSE.txt`.
 
-## Legacy and research artifacts
+## Linux text helper
 
-- **llama.cpp / ggml**, MIT, pinned to b10516 (`b95502ba9aa0eb73a2f4fc8878d7fbe6a847a0b9`). [Source and license](https://github.com/ggml-org/llama.cpp/tree/b95502ba9aa0eb73a2f4fc8878d7fbe6a847a0b9). Retained legacy source, not linked into the current native Swift MLX helper. Its source retains its bundled dependency notices, including nlohmann/json v3.12.0.
-- The earlier [Unsloth Q4_K_M conversion](https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF/tree/a06e946bb6b655725eafa393f4a9745d460374c9), Apache-2.0, remains an untouched separate local file. The MLX model manager does not delete or load it. Historical benchmark reports identify their own Python dependencies and model versions; those are not application runtime dependencies.
+- **llama.cpp / ggml**, MIT, pinned to b10516 (`b95502ba9aa0eb73a2f4fc8878d7fbe6a847a0b9`). [Source and license](https://github.com/ggml-org/llama.cpp/tree/b95502ba9aa0eb73a2f4fc8878d7fbe6a847a0b9). Linked into the Linux Qwen helper. Its source retains its bundled dependency notices, including nlohmann/json v3.12.0.
+- **Qwen3-4B-Instruct-2507 Q4_K_M**, Apache-2.0. The Linux server uses the pinned [Unsloth GGUF conversion](https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF/tree/a06e946bb6b655725eafa393f4a9745d460374c9). It is downloaded separately and verified by the server; see [model setup](Server/README.md#models).
 
 Sotto is an independent exploratory project. It is not affiliated with Wispr, OpenAI, or the upstream projects.

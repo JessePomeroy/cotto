@@ -1,46 +1,35 @@
-# Native engine
+# Whisper helper
 
-Sotto launches this persistent `whisper.cpp` helper when it needs the model,
-then terminates it to release the model and Metal allocations. It never opens a
-microphone or a network connection. The app owns recording and model downloads.
+`sotto-engine` is the server's persistent whisper.cpp process. It reads audio files supplied by the server; it never opens a microphone or network connection. Builds use Metal on macOS and CPU or CUDA on Linux. See [server setup](../Server/README.md) for packaging and models.
 
-Build from the project root:
+## Protocol
 
-```sh
-cmake -S . -B .build/native -DCMAKE_BUILD_TYPE=Release
-cmake --build .build/native --target sotto-engine -j 8
-scripts/download-vad.sh
-.build/native/Engine/sotto-engine --model /path/to/ggml-large-v3-turbo.bin --vad-model .build/models/silero-vad.bin
-```
-
-The process loads one model, then writes `{"type":"ready","engineVersion":"<whisper_version()>"}`. The version is retained in local history metadata. Send one JSON object
-per line on stdin. Every response is a flushed JSON line on stdout. Diagnostics
-go only to stderr; transcripts are not logged there.
+After loading Whisper and Silero VAD, the helper emits a `ready` JSON object with an `engineVersion`. Send one UTF-8 JSON object per line on stdin; replies are flushed JSON lines on stdout. Diagnostics go to stderr without transcript text.
 
 ```json
-{"type":"transcribe","id":"request-1","path":"/private/tmp/recording.wav","language":"en","prompt":"Sotto, SwiftUI, Metal"}
+{"type":"transcribe","id":"request-1","path":"/absolute/path/to/recording.wav","language":"en","vocabularyTerms":["Sotto","SwiftUI","Metal"]}
 ```
 
 - `language` defaults to `en`; `auto` enables language detection.
-- `prompt` is optional vocabulary, not an instruction for rewriting text.
-- WAV input must be mono, 16 kHz, PCM16 or float32, and 0.2–180 seconds long.
+- `vocabularyTerms` is an ordered list of recognition hints. Whole terms are fitted into the loaded model's token budget. Responses report `includedTerms`, `omittedTerms`, `tokenCount`, and `tokenBudget`.
+- WAV input must be mono 16 kHz PCM16 or float32, 0.2–180 seconds long. The HTTP server uses a 0.25-second minimum.
 - Progress: `{"type":"progress","id":"request-1","value":0.5}`.
-- Result: `{"type":"result","id":"request-1","text":"Hello.","duration":2.0,"elapsed":0.7,"language":"en"}`.
-- Error: `{"type":"error","id":"request-1","message":"…"}`; startup and malformed-request errors may not have an id.
-- Silence returns a successful result with empty text. A small, persistent
-  CPU-only Silero VAD model rejects nonspeech before Whisper runs. The detector
-  accepts speech segments of at least 120 ms at a 0.5 probability threshold.
-  Recordings with speech are passed intact so quiet word boundaries are kept.
-  Segments marked as no-speech by Whisper are also excluded.
-- Requests run sequentially. Terminate the process to cancel an active request.
-- `{"type":"quit"}`, stdin EOF, or parent-process exit releases the model. A
-  blocking macOS process event watches the parent even during inference.
+- Results contain `type: "result"`, `id`, `text`, audio `duration`, processing `elapsed`, detected `language`, and hint diagnostics.
+- Errors contain `type: "error"`, `message`, and a request `id` when available. Requests are processed sequentially.
 
-Metal, embedded Metal source, and Accelerate are enabled. All third-party code
-is statically linked, so there are no adjacent dylibs or shader files to ship.
-The WAV reader is the bundled dr_wav implementation inside `miniaudio.h`.
+Requests are bounded to 1 MiB. Vocabulary allows at most 8,192 terms, 16 KiB per term, and 384 KiB total; actual model hints usually fit much less. Silence returns a successful empty transcript.
 
-The decoder uses beam search (width 5) and preserves Whisper's punctuation. It
-does not rewrite prose with an LLM, and speech detection remains probabilistic:
-background speech can still be
-transcribed, while very quiet speech can be missed. Review text before sending.
+## Decoding and lifecycle
+
+A CPU Silero pass rejects nonspeech (threshold 0.5, minimum speech segment 120 ms). If speech is detected, Whisper receives the complete recording. Decoding uses beam search 5, temperature 0, and internal timestamp tokens; the returned transcript is plain text. Segments above Whisper's no-speech threshold are excluded. This remains probabilistic and can miss quiet speech.
+
+The server keeps the model warm. Terminating the helper cancels active work. `{"type":"quit"}`, stdin EOF, or parent death releases it. Native dependencies and Metal source are embedded in the speech executable.
+
+## Verify
+
+```sh
+./scripts/build-server.sh
+python3 scripts/test-engine.py --help
+```
+
+The test harness exercises protocol bounds, public sample recordings, vocabulary, passage retention, and process lifetime. For the full API path, use `scripts/smoke-test.sh` against an idle Dev server.

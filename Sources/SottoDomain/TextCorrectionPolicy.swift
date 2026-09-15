@@ -18,9 +18,22 @@ public enum TextCorrectionPolicy {
     }
 
     public static func rejectionReason(original: String, candidate: String, preferredTerms: [String] = []) -> String? {
+        evaluate(original: original, candidate: candidate, preferredTerms: preferredTerms).rejectionReason
+    }
+
+    public static func evaluate(original: String, candidate: String, preferredTerms: [String] = []) -> TextCorrectionEvaluation {
+        var repairs: [VerifiedTextRepair] = []
+        let reason = assess(original: original, candidate: candidate, preferredTerms: preferredTerms, repairs: &repairs)
+        return TextCorrectionEvaluation(rejectionReason: reason, verifiedRepairs: repairs)
+    }
+
+    private static func assess(original: String, candidate: String, preferredTerms: [String], repairs: inout [VerifiedTextRepair]) -> String? {
+        guard original.count <= maximumInputCharacters,
+              original.utf16.count <= maximumInputCharacters * 4 else { return "The source was too long to validate." }
         let output = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !output.isEmpty else { return "The text model returned no text." }
-        guard output.count <= maximumInputCharacters * 2 else { return "The rewrite was too long." }
+        guard output.count <= maximumInputCharacters * 2,
+              output.utf16.count <= maximumInputCharacters * 8 else { return "The rewrite was too long." }
         guard !output.contains("<|"), !output.contains("<think>"), !output.contains("</think>") else {
             return "The text model returned control tokens."
         }
@@ -29,38 +42,47 @@ public enum TextCorrectionPolicy {
                 return "The text model added commentary."
             }
         }
+        guard CorrectionAlignment.isWithinValidationBudget(original: original, candidate: output) else {
+            return "The rewrite was too complex to validate."
+        }
         // Lists are structured before proofreading; their explicit numbering,
         // bullets, and item count must survive unchanged for continuation.
         guard listMarkers(original) == listMarkers(output) else {
             return "The rewrite changed the list structure."
         }
-        guard numbers(original) == numbers(output) else { return "The rewrite changed a number." }
+        // Only Qwen proposes edits. The alignment validates a bounded abandoned
+        // phrase beside an explicit repair cue; unrelated source stays protected.
+        let repairCheck = CorrectionAlignment.verifyRepairs(original: original, candidate: output)
+        repairs = repairCheck.repairs
+        let protectedSource = repairCheck.protectedSource
+        guard numbers(protectedSource) == numbers(output) else { return "The rewrite changed a number." }
         for term in preferredTerms {
             let pattern = #"(?i)(?<![\p{L}\p{N}\p{M}\p{Pc}\u200C\u200D])"# + NSRegularExpression.escapedPattern(for: term) + #"(?![\p{L}\p{N}\p{M}\p{Pc}\u200C\u200D])"#
-            let count = matches(pattern, in: original).count
+            let count = matches(pattern, in: protectedSource).count
             if count > 0, matches(pattern, in: output).count != count {
                 return "The rewrite changed a dictionary term."
             }
         }
-        let before = words(original)
+        let before = words(protectedSource)
         let after = words(output)
         guard numberWords(before) == numberWords(after) else { return "The rewrite changed a quantity." }
         guard !before.isEmpty else { return output == original ? nil : "The rewrite added content." }
         let allowed = Set(preferredTerms.flatMap { words($0) })
-        let comparedBefore = joinRecognizedTerms(before, candidates: allowed.intersection(after))
+        let comparedBefore = CorrectionAlignment.recognizedTerms(in: protectedSource, candidates: allowed.intersection(after)).map(\.word)
         let ratio = Double(after.count) / Double(comparedBefore.count)
         guard ratio >= 0.75, ratio <= 1.35 else { return "The rewrite changed too much text." }
         let shared = orderedOverlap(comparedBefore, after, preferred: allowed)
         guard Double(shared) / Double(max(comparedBefore.count, after.count)) >= 0.72 else {
             return "The rewrite changed too much wording."
         }
-        // Negation changes can invert meaning despite high token overlap.
-        guard negations(before) == negations(after) else { return "The rewrite changed a negation." }
-        let originalItems = listItems(original)
+        if let reason = CorrectionAlignment.preservationReason(original: protectedSource, candidate: output, preferredTerms: allowed) {
+            return reason
+        }
+        let originalItems = listItems(protectedSource)
         let rewrittenItems = listItems(output)
         for (beforeItem, afterItem) in zip(originalItems, rewrittenItems) {
             let b = words(afterItem)
-            let a = joinRecognizedTerms(words(beforeItem), candidates: allowed.intersection(b))
+            let a = CorrectionAlignment.recognizedTerms(in: beforeItem, candidates: allowed.intersection(b)).map(\.word)
             guard Double(orderedOverlap(a, b, preferred: allowed)) / Double(max(1, max(a.count, b.count))) >= 0.72 else {
                 return "The rewrite changed a list item."
             }
@@ -76,8 +98,7 @@ public enum TextCorrectionPolicy {
     }
 
     private static func words(_ text: String) -> [String] {
-        matches(#"[\p{L}\p{N}]+(?:['’][\p{L}]+)?"#, in: text.lowercased())
-            .map { $0.replacingOccurrences(of: "’", with: "'") }
+        CorrectionAlignment.tokens(text).map(\.word)
     }
 
     private static func numbers(_ text: String) -> [String] {
@@ -88,10 +109,6 @@ public enum TextCorrectionPolicy {
     private static func listMarkers(_ text: String) -> [String] {
         matches(#"(?m)^\s*(?:[0-9]+[.)]|[-*•])(?=\s)"#, in: text)
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-    }
-
-    private static func negations(_ words: [String]) -> [String] {
-        words.filter { ["no", "not", "never", "neither", "nor", "without"].contains($0) || $0.hasSuffix("n't") }
     }
 
     private static func numberWords(_ words: [String]) -> [String] {
@@ -116,31 +133,6 @@ public enum TextCorrectionPolicy {
             }
         }
         return row.last ?? 0
-    }
-
-    // ASR often splits a name: “mini max” / “code ex”. Permit the model to join
-    // recognizable fragments into a provided spelling without treating that as
-    // deleted content. This only evaluates a proposal; it never edits a transcript.
-    private static func joinRecognizedTerms(_ tokens: [String], candidates: Set<String>) -> [String] {
-        let candidates = candidates.filter { $0.count >= 4 }.sorted()
-        var result: [String] = []
-        var index = 0
-        while index < tokens.count {
-            var joined = false
-            for width in [3, 2] where index + width <= tokens.count {
-                let fragments = tokens[index..<(index + width)]
-                guard fragments.allSatisfy({ $0.count >= 2 }) else { continue }
-                let phrase = fragments.joined()
-                if let term = candidates.first(where: { editDistance(phrase, $0) <= 1 }) {
-                    result.append(term)
-                    index += width
-                    joined = true
-                    break
-                }
-            }
-            if !joined { result.append(tokens[index]); index += 1 }
-        }
-        return result
     }
 
     private static func editDistance(_ a: String, _ b: String) -> Int {
@@ -177,11 +169,14 @@ public struct TextProcessingRecord: Codable, Equatable, Sendable {
     public let engineVersion: String?
     public let processingSeconds: Double?
     public let wallSeconds: Double?
+    public let proposedText: String?
+    public let verifiedRepairs: [VerifiedTextRepair]?
 
     public init(dictionaryTerms: [String], dictionaryChangedText: Bool, inputText: String, outputText: String,
                 enabled: Bool, status: Status, reason: String? = nil, modelID: String? = nil,
                 modelSHA256: String? = nil, engineVersion: String? = nil,
-                processingSeconds: Double? = nil, wallSeconds: Double? = nil) {
+                processingSeconds: Double? = nil, wallSeconds: Double? = nil,
+                proposedText: String? = nil, verifiedRepairs: [VerifiedTextRepair]? = nil) {
         self.dictionaryTerms = dictionaryTerms
         self.dictionaryChangedText = dictionaryChangedText
         self.inputText = inputText
@@ -194,5 +189,22 @@ public struct TextProcessingRecord: Codable, Equatable, Sendable {
         self.engineVersion = engineVersion
         self.processingSeconds = processingSeconds
         self.wallSeconds = wallSeconds
+        self.proposedText = proposedText.map(Self.boundedProposal)
+        self.verifiedRepairs = verifiedRepairs.map { Array($0.prefix(8)) }
+    }
+
+    private static func boundedProposal(_ text: String) -> String {
+        // A single grapheme can contain arbitrarily many combining or joined
+        // scalars. Bound code units first so rejected dictionary expansions
+        // cannot make archived metadata exceed its read limit on restart.
+        var bounded = ""
+        var codeUnits = 0
+        for scalar in text.unicodeScalars {
+            let width = scalar.value > 0xFFFF ? 2 : 1
+            guard codeUnits + width <= TextCorrectionPolicy.maximumInputCharacters * 8 else { break }
+            bounded.unicodeScalars.append(scalar)
+            codeUnits += width
+        }
+        return String(bounded.prefix(TextCorrectionPolicy.maximumInputCharacters * 2))
     }
 }

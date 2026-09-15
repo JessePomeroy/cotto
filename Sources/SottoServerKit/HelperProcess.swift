@@ -18,6 +18,10 @@ actor HelperProcess {
         var language: String?
         var value: Double?
         var engineVersion: String?
+        var includedTerms: [String]?
+        var omittedTerms: [String]?
+        var tokenCount: Int?
+        var tokenBudget: Int?
     }
 
     struct Snapshot: Sendable {

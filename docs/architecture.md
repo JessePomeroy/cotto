@@ -1,72 +1,69 @@
 # Architecture
 
-Sotto has a native macOS client and an independent HTTP server for macOS or Linux. The server owns processing and durable product state. Running both on the same Mac uses the same API as connecting to another machine; the client never starts or stops the server.
+Sotto's macOS client handles microphone capture, shortcuts, and cursor insertion. An independent HTTP server owns inference, shared settings, and history. Both processes use the same API whether they run on one machine or across the network.
 
-```mermaid
-flowchart LR
-    Key[Hold key] --> Accept[Server accepts generation]
-    Accept --> Capture[Mac microphone capture]
-    Capture --> Upload[HTTP PCM chunks]
-    Upload --> Store[Server audio storage]
-    Release[Release key] --> Finish[Finish acknowledged upload]
-    Store --> Finish
-    Finish --> Whisper[Whisper recognition]
-    Whisper --> Rules[Cleanup, dictionary, lists]
-    Rules --> Qwen[Optional Qwen proofread and guards]
-    Qwen --> History[Server result and history]
-    History --> Events[NDJSON progress and final result]
-    Events --> Delivery[Mac checks destination and inserts once]
-```
-
-## Ownership
+## Code map
 
 | Component | Responsibility |
 | --- | --- |
-| `Sotto` | SwiftUI/AppKit interface, server connection, device identity, microphone/hotkey controls, temporary upload buffering, ephemeral cursor anchors, guarded delivery. |
-| `SottoCore` | Mac device preferences, microphone selection/metering, and native support types. |
-| `SottoAPI` | Shared Codable wire types and protocol limits. |
-| `SottoDomain` | Portable deterministic cleanup, dictionary rules, list structure, rewrite checks, and composition. |
-| `SottoServerKit` | Hummingbird routes, authentication, generation admission/state, storage, shared preference revisions, model/helper lifecycle. |
-| `sotto-server` | Independent runner with explicit bind address, data directory, model/helper paths, and optional token file. |
-| `sotto-engine` | Persistent whisper.cpp/Silero helper, with Metal on Mac and optional CUDA on Linux. |
-| `sotto-text-engine` | Persistent Qwen helper: Swift MLX on Mac, llama.cpp/GGUF on Linux. |
+| `Sources/Sotto` | SwiftUI/AppKit app, device settings, HTTP client, capture, and guarded delivery. |
+| `Sources/SottoCore` | Mac configuration, audio metering, microphone selection, and model manifests. |
+| `Sources/SottoAPI` | Shared wire types and limits. |
+| `Sources/SottoDomain` | Dictionary, list formatting, rewrite validation, and composition. |
+| `Sources/SottoServerKit` | HTTP routes, authentication, generation lifecycle, storage, and helper management. |
+| `Sources/SottoServer` | Server command-line entry point. |
+| `Engine` | Persistent whisper.cpp speech helper; Metal on Mac, CPU/CUDA on Linux. |
+| `TextEngine` | Persistent Qwen helper; Swift MLX on Mac, llama.cpp on Linux. |
 
-Native helpers communicate with the server over bounded private JSON-lines pipes. The two C++ engines build separately because they use different ggml versions. The native app contains no model helpers. There is no Python runtime dependency.
+The server talks to helpers over bounded JSON-lines pipes. Models warm at startup and stay loaded. The client contains no model helpers; it never starts or stops the server. The application has no Python runtime dependency.
 
-## Session lifecycle
+## A recording
 
-1. The Mac checks permissions/input availability and asks the server to create a generation with its device ID/name. The server snapshots shared preferences and accepts one active recording/processing job at a time. Offline, warming, storage-full, and busy states prevent microphone capture.
-2. The client captures through input-only AUHAL on a serial queue. It pins the selected microphone for the take and produces normalized mono 16 kHz float32 PCM. If retention is enabled, it also uploads interleaved float32 PCM at the original microphone rate/channel count.
-3. Audio arrives through bounded HTTP requests with independent per-stream sequence numbers. The client observes acknowledgements and bounded backpressure. The server checks formats, frame alignment, samples, duration, and disk space. A repeated identical chunk is idempotent; missing or conflicting chunks fail.
-4. Releasing the key closes audio admission before teardown. The client drains capture and upload work, then submits exact final frame counts. The server verifies both intervals and seals complete WAV files before inference. Takes must be 0.25–180 seconds.
-5. The server transcribes the whole take, applies deterministic processing and optional proofreading, then saves the result. An NDJSON response carries full generation snapshots, progress, and two-second heartbeats. It is progress streaming, not incremental transcription or token insertion.
-6. The originating live client rechecks its destination and makes one delivery attempt. It reports the actual insertion/copy/test outcome to the server separately from processing completion.
+1. The client asks the server to create a generation with its device identity. The server freezes shared settings and admits one active job at a time. Offline, busy, or unavailable speech recognition prevents capture.
+2. The client pins its microphone and uploads acknowledged, sequenced PCM chunks while recording. Inference audio is mono 16 kHz float32; optional original audio keeps the microphone rate/channels as float32.
+3. Release stops capture, drains uploads, and sends final frame counts. The server checks the complete intervals and seals WAV files. Recordings must be 0.25–180 seconds.
+4. The server runs Whisper, mechanical cleanup, dictionary rules, and list formatting. Optional Qwen output passes through dictionary rules and deterministic rewrite checks. Rejection or proofreading failure retains the pre-proofreading text.
+5. NDJSON events carry progress and the saved final result. The client verifies focus/caret safety, makes one delivery attempt, and reports the outcome separately from inference completion.
 
-A failed connection during capture/upload stops the take and discards client temporary data. The server expires abandoned partial uploads. There is no offline queue or manual retry workflow. A completely uploaded generation can finish after a client quits or disconnects; later history reads never initiate delivery. A server restart marks unfinished generations failed and preserves already-completed history.
+Interrupted partial uploads expire; a complete upload can finish after the client disconnects. Reconnecting or opening history never pastes an old result. Restarting the server marks unfinished generations failed and retains completed history. There is no offline queue or automatic retry.
 
-Models warm at server startup and remain loaded for reuse. There is no idle-unload preference. Cancellation stops active helper work and fences stale responses; the server warms again as needed. A missing or failed proofreader preserves usable deterministic text, while unavailable speech recognition prevents recording admission.
+## Text delivery
 
-## Processing and delivery safety
+Only the new `insertionText` can be inserted; `previewText` may include earlier list items. Continuation requires a previous generation from the same device and a confirmed client-side cursor anchor. The server checks age and delivery state before reusing context. Invalid context falls back to a standalone take.
 
-The server pipeline is **Whisper → cleanup → dictionary → deterministic lists → optional Qwen → dictionary → rewrite checks → composer**. Model output cannot create list continuation state. Rejected proofreading retains the already-formatted source; the generation records the outcome and reason.
+The Mac rechecks destination, selection, protected fields, modifiers, and clipboard state before delivery. Unsafe destinations use clipboard or preview fallback. Only confirmed insertion advances cursor-based continuation. Editor text and Accessibility handles stay on the Mac.
 
-The composer distinguishes the new `insertionText` from an accumulated `previewText`. Only the former is eligible for insertion. List continuation uses a previous completed generation ID from the same device plus an exact client-side confirmed cursor anchor; server checks include delivery state, mode, and age. Accessibility handles and surrounding editor text never cross the API.
+Microphone capture uses input-only Core Audio without changing system routing or playback volume. Route changes apply to the next take. Release, cancellation, sleep/lock, or device loss ends capture.
 
-Destination capture must observe the field/caret by release. Before delivery, the Mac checks focus, selection, protected fields, held modifiers, and clipboard state. A caret-confirmed write advances continuation; copied or unconfirmed output does not claim insertion success. A changed or unsafe destination falls back to clipboard or manual preview as appropriate. Reconnection and browsing history cannot trigger a delayed paste.
+## Settings
 
-## Native capture and presentation
+| Scope | Where to edit | What it owns |
+| --- | --- | --- |
+| This Mac | **This Mac** and **Microphone** | Endpoint/token, device name, shortcut, launch at login, microphone priority/selection. |
+| Shared server | **Server preferences** | Language, cleanup prompt, vocabulary, dictionary, proofreading toggle, original-audio retention. |
+| Server process | Command arguments or environment | Bind address, port, data directory, token file, helper/model paths. See [server setup](../Server/README.md). |
 
-- A passive global hotkey tap supports Right Option, Right Control, and Fn/Globe. The microphone is never opened while idle. Release, explicit cancellation, sleep/lock, device loss, and render errors end capture safely.
-- Core Audio input routing never changes the system default device, output device, hardware sample rate, or playback volume. Preferred microphone reconnects affect the next take, not the active one.
-- Meter updates are separate from coarse dashboard state. Native window, menu, and floating indicator show **Dev** and expose server readiness/progress.
-- Device configuration, window state, Keychain credentials, and privacy permissions use the independent `dev.davis.sotto.dev` app identity.
+Shared saves use revisions to reject stale concurrent edits. Settings are snapshotted when the server accepts a take; changes affect future recordings. Update shared settings through the UI/API rather than editing files while the server runs.
 
-## Storage and deployment boundary
+The regular app uses `~/Library/Application Support/Sotto`; Dev uses `~/Library/Application Support/Sotto Dev`. `SOTTO_CLIENT_DATA_DIR` overrides either, and the dev runner selects `.local/client`. `config.json` stores shortcut/microphone settings; `client.json` stores endpoint/device identity. Tokens live in separate release/Dev Keychain services, scoped to the endpoint and client directory. `SOTTO_SERVER_URL` overrides the saved endpoint for a run. Valid manual `config.json` edits are reloaded; invalid files leave the last good configuration active.
 
-The server data directory contains shared preferences and per-generation metadata, transcript text, and audio. Clients read the same history over HTTP, with origin-device tags. Only one runner may own a data directory; durable storage and process supervision belong to the server deployment.
+## Storage
 
-A loopback endpoint works for same-Mac use. Remote endpoints require HTTPS with bearer authentication, with an HTTP exception for configured literal Tailscale IP addresses on a connected tailnet. Sotto validates the address range but does not attest the route; use HTTPS when that deployment precondition cannot be maintained. Hostnames, including MagicDNS names, require HTTPS; [endpoint validation](configuration.md) runs before credential lookup and again when constructing a client. Tailscale is an access option, not an application dependency. macOS uses native Metal/MLX; Linux offers x86_64/ARM64 builds with CPU or optional NVIDIA CUDA. GPU support and latency need validation on the eventual host.
+The server's `--data-dir` (normally `.local/server` in development) contains:
 
-Sotto's service health/process boundary can be observed by fleet tooling, but notification routing and a central fleet information service are separate products. Sotto owns its own sessions, settings, and inference state.
+```text
+preferences.json
+generations/<UUID>/
+  metadata.json
+  transcript.txt
+  inference.wav
+  original.wav
+```
 
-See the [HTTP contract](client-server-contract.md), [shared history format](local-history.md), and [server runner guide](../Server/README.md).
+Metadata includes device identity, settings snapshot, raw/final text, insertion/preview text, model and processing details, and any delivery receipt. `transcript.txt` contains the current take's final text. Inference audio is always retained for completed takes; original audio is optional and defaults on. The retention toggle does not remove existing files, and there is no automatic history expiry.
+
+All clients read shared, paginated history. Deleting an inactive generation deletes its server artifacts. Failed takes can retain metadata and sealed audio; partial upload files are internal and cannot be downloaded. Client audio copies are temporary.
+
+Only one server may own a data directory. Back up preferences and generation directories together. Sotto does not add filesystem encryption; protect this directory as you would the recordings it contains. Authentication and remote transport are described in the [server guide](../Server/README.md#remote-access).
+
+See the [HTTP contract](client-server-contract.md) for request details and [text correction](text-correction.md) for behavior and limitations.

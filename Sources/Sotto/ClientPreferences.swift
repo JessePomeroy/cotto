@@ -2,6 +2,7 @@ import AppKit
 import Combine
 import Foundation
 import Security
+import SottoCore
 
 /// Only this Mac's identity and connection live here. Generation state and
 /// processing preferences belong to the server.
@@ -97,7 +98,7 @@ final class ClientPreferencesStore: ObservableObject {
 
     private static func keychainQuery(account: String) -> [String: Any] {
         [kSecClass as String: kSecClassGenericPassword,
-         kSecAttrService as String: "dev.davis.sotto.dev.server",
+         kSecAttrService as String: SottoBuild.current.credentialService,
          kSecAttrAccount as String: account]
     }
 

@@ -360,24 +360,33 @@ public actor GenerationService {
             let settings = record.settings.preferences
             record.status = .transcribing
             try save(record)
-            let vocabulary = ([settings.vocabulary] + settings.dictionary.vocabularyTerms).filter { !$0.isEmpty }.joined(separator: ", ")
+            let vocabulary = settings.dictionary.recognitionVocabularyTerms(settings.vocabulary)
             let speech = try await inference.transcribe(directory(id).appendingPathComponent("inference.wav"),
-                language: settings.language, prompt: Self.boundedPrompt(vocabulary),
+                language: settings.language, vocabularyTerms: vocabulary,
                 onProgress: { [weak self] value in Task { await self?.progress(id, value) } })
             try Task.checkCancellation()
             guard try get(id).status == .transcribing else { return }
             record.rawText = speech.text
             record.detectedLanguage = speech.language
+            record.recognitionHints = speech.hints
             record.speech = ModelProvenance(modelID: "whisper-large-v3-turbo", modelSHA256: speech.modelSHA256, backend: Self.speechBackend,
                                            engineVersion: speech.engineVersion, processingSeconds: speech.processingSeconds)
-            let cleaned = TranscriptCleaner.clean(speech.text, removeFillers: settings.cleanText)
+            let cleaned = TranscriptCleaner.clean(speech.text)
             let transcript = settings.dictionary.apply(to: cleaned, maximumOutputUTF8Bytes: Self.maximumDictionaryOutputBytes)
             let structured = SpokenListFormatter.format(transcript, context: previous?.list)
+            record.formattingRejectionReason = structured.formattingRejectionReason
+            record.consumedListControls = structured.consumedControls
             if settings.textCorrectionEnabled, !structured.text.isEmpty { record.status = .proofreading; record.progress = nil; try save(record) }
             let processing = try await proofread(structured.text, settings: settings, dictionaryChanged: cleaned != transcript, language: speech.language)
             try Task.checkCancellation()
             guard !(try get(id)).status.isTerminal else { return }
             record.textProcessing = processing
+            if [.applied, .unchanged, .rejected].contains(processing.status) {
+                let allTerms = settings.dictionary.vocabularyTerms
+                let included = TextCorrectionPolicy.modelHints(allTerms)
+                record.proofreadingHints = ModelHintUsage(includedTerms: included,
+                    omittedTerms: allTerms.filter { !Set(included).contains($0) })
+            }
             if settings.textCorrectionEnabled {
                 record.proofreading = ModelProvenance(modelID: "Qwen3-4B-Instruct-2507", modelSHA256: processing.modelSHA256,
                     backend: Self.proofBackend, engineVersion: processing.engineVersion, processingSeconds: processing.processingSeconds)
@@ -409,24 +418,31 @@ public actor GenerationService {
         let start = Date()
         let terms = settings.dictionary.vocabularyTerms
         func make(_ status: TextProcessingRecord.Status, output: String? = nil, reason: String? = nil,
+                  proposedText: String? = nil, verifiedRepairs: [VerifiedTextRepair]? = nil,
                   seconds: Double? = nil, version: String? = nil, sha256: String? = nil) -> TextProcessingRecord {
             TextProcessingRecord(dictionaryTerms: terms, dictionaryChangedText: dictionaryChanged,
                 inputText: text, outputText: output ?? text, enabled: settings.textCorrectionEnabled, status: status, reason: reason,
                 modelID: settings.textCorrectionEnabled ? "Qwen3-4B-Instruct-2507" : nil, modelSHA256: sha256, engineVersion: version,
-                processingSeconds: seconds, wallSeconds: Date().timeIntervalSince(start))
+                processingSeconds: seconds, wallSeconds: Date().timeIntervalSince(start),
+                proposedText: proposedText, verifiedRepairs: verifiedRepairs)
         }
         guard settings.textCorrectionEnabled else { return make(.disabled) }
         guard !text.isEmpty else { return make(.skipped, reason: "No text to correct.") }
         guard text.count <= TextCorrectionPolicy.maximumInputCharacters else { return make(.skipped, reason: "The transcript exceeded the correction length limit.") }
         do {
-            let proof = try await inference.correct(text, terms: TextCorrectionPolicy.modelHints(terms), language: language)
+            let proof = try await inference.correct(text, terms: TextCorrectionPolicy.modelHints(terms), language: language,
+                                                    systemPrompt: settings.proofreadingPrompt)
             try Task.checkCancellation()
             let candidate = settings.dictionary.apply(to: proof.text.trimmingCharacters(in: .whitespacesAndNewlines),
                                                       maximumOutputUTF8Bytes: Self.maximumDictionaryOutputBytes)
-            if let reason = TextCorrectionPolicy.rejectionReason(original: text, candidate: candidate, preferredTerms: terms) {
-                return make(.rejected, reason: reason, seconds: proof.processingSeconds, version: proof.engineVersion, sha256: proof.modelSHA256)
+            let evaluation = TextCorrectionPolicy.evaluate(original: text, candidate: candidate, preferredTerms: terms)
+            if let reason = evaluation.rejectionReason {
+                return make(.rejected, reason: reason, proposedText: candidate, verifiedRepairs: evaluation.verifiedRepairs,
+                            seconds: proof.processingSeconds, version: proof.engineVersion, sha256: proof.modelSHA256)
             }
-            return make(candidate == text ? .unchanged : .applied, output: candidate, seconds: proof.processingSeconds, version: proof.engineVersion, sha256: proof.modelSHA256)
+            return make(candidate == text ? .unchanged : .applied, output: candidate,
+                        proposedText: candidate, verifiedRepairs: evaluation.verifiedRepairs,
+                        seconds: proof.processingSeconds, version: proof.engineVersion, sha256: proof.modelSHA256)
         } catch {
             try Task.checkCancellation()
             return make(.failed, reason: error.localizedDescription)
@@ -476,13 +492,6 @@ public actor GenerationService {
     }
 
     private func directory(_ id: UUID) -> URL { configuration.dataDirectory.appendingPathComponent("generations/\(id.uuidString)", isDirectory: true) }
-    private static func boundedPrompt(_ text: String) -> String {
-        var bytes = 0
-        return String(text.prefix { character in
-            bytes += String(character).utf8.count
-            return bytes <= 8_192
-        })
-    }
     private func removeSubscriber(_ id: UUID, _ subscriber: UUID) { subscribers[id]?[subscriber] = nil }
     private func validLabel(_ text: String, limit: Int) -> Bool {
         !text.isEmpty && text.count <= limit && text == text.trimmingCharacters(in: .whitespacesAndNewlines)

@@ -1,4 +1,5 @@
 import Foundation
+import SottoAPI
 #if canImport(CryptoKit)
 import CryptoKit
 #else
@@ -59,6 +60,7 @@ public struct SpeechInferenceResult: Sendable {
     public let language: String
     public let engineVersion: String?
     public let modelSHA256: String?
+    public let hints: ModelHintUsage?
 }
 
 public struct ProofInferenceResult: Sendable {
@@ -140,16 +142,27 @@ public actor NativeInference {
         }
     }
 
-    public func transcribe(_ audioURL: URL, language: String, prompt: String,
+    public func transcribe(_ audioURL: URL, language: String, vocabularyTerms: [String],
                            onProgress: (@Sendable (Double) -> Void)? = nil) async throws -> SpeechInferenceResult {
         guard FileManager.default.isReadableFile(atPath: audioURL.path),
               !language.isEmpty, language.utf8.count <= 32, !language.contains("\0"),
-              prompt.utf8.count <= 8_192, !prompt.contains("\0") else {
+              vocabularyTerms.count <= 8_192,
+              vocabularyTerms.allSatisfy({
+                  !$0.isEmpty && $0.utf8.count <= ServerPreferences.maximumVocabularyTermBytes
+                      && $0 == $0.trimmingCharacters(in: .whitespacesAndNewlines)
+                      && $0.rangeOfCharacter(from: .controlCharacters) == nil
+              }),
+              vocabularyTerms.reduce(0, { $0 + $1.utf8.count }) <= 384 * 1024 else {
             throw InferenceError.invalidRequest("Audio, language, or Whisper prompt is invalid.")
         }
+        guard Set(vocabularyTerms).count == vocabularyTerms.count else {
+            throw InferenceError.invalidRequest("Whisper vocabulary terms must be unique.")
+        }
         let digest = try await verifier.verify(configuration.speechModel, pin: speechPin)
-        let request = SpeechRequest(id: UUID().uuidString, path: audioURL.path, language: language, prompt: prompt)
-        let response = try await speech.request(JSONEncoder().encode(request), id: request.id,
+        let request = SpeechRequest(id: UUID().uuidString, path: audioURL.path, language: language, vocabularyTerms: vocabularyTerms)
+        let data = try JSONEncoder().encode(request)
+        guard data.count < 1_048_576 else { throw InferenceError.invalidRequest("The encoded vocabulary exceeds 1 MB.") }
+        let response = try await speech.request(data, id: request.id,
                                                 timeout: configuration.speechTimeout, onProgress: onProgress)
         guard let text = response.text, text.utf8.count <= 256 * 1024, !text.contains("\0"),
               let duration = response.duration, duration.isFinite, duration >= 0,
@@ -158,20 +171,38 @@ public actor NativeInference {
             await speech.shutdown()
             throw InferenceError.invalidResponse("Whisper returned an invalid transcript.")
         }
+        let hints: ModelHintUsage?
+        if let included = response.includedTerms, let omitted = response.omittedTerms,
+           let tokenCount = response.tokenCount, let tokenBudget = response.tokenBudget,
+           tokenCount >= 0, tokenBudget > 0, tokenCount <= tokenBudget,
+           included.count + omitted.count == vocabularyTerms.count,
+           Set(included).isDisjoint(with: omitted),
+           Set(included + omitted) == Set(vocabularyTerms),
+           included == vocabularyTerms.filter(Set(included).contains),
+           omitted == vocabularyTerms.filter(Set(omitted).contains) {
+            hints = ModelHintUsage(includedTerms: included, omittedTerms: omitted, tokenCount: tokenCount, tokenBudget: tokenBudget)
+        } else if response.includedTerms == nil && response.omittedTerms == nil && response.tokenCount == nil && response.tokenBudget == nil {
+            hints = nil // Older helper responses have no vocabulary diagnostics.
+        } else {
+            await speech.shutdown()
+            throw InferenceError.invalidResponse("Whisper returned invalid vocabulary diagnostics.")
+        }
         let state = await speech.snapshot()
         return SpeechInferenceResult(text: text, audioSeconds: duration, processingSeconds: elapsed,
-                                     language: language, engineVersion: state.engineVersion, modelSHA256: digest)
+                                     language: language, engineVersion: state.engineVersion, modelSHA256: digest, hints: hints)
     }
 
-    public func correct(_ text: String, terms: [String], language: String) async throws -> ProofInferenceResult {
+    public func correct(_ text: String, terms: [String], language: String, systemPrompt: String) async throws -> ProofInferenceResult {
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               text.utf8.count <= 24 * 1024, !text.contains("\0"),
               terms.count <= 256, terms.allSatisfy({ !$0.isEmpty && $0.utf8.count <= 256 && !$0.contains("\0") }),
               terms.reduce(0, { $0 + $1.utf8.count }) <= 16_384,
-              !language.isEmpty, language.utf8.count <= 32, !language.contains("\0") else {
+              !language.isEmpty, language.utf8.count <= 32, !language.contains("\0"),
+              !systemPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              systemPrompt.utf8.count <= ServerPreferences.maximumProofreadingPromptBytes, !systemPrompt.contains("\0") else {
             throw InferenceError.invalidRequest("The transcript or dictionary exceeds the Qwen correction limit.")
         }
-        let request = ProofRequest(id: UUID().uuidString, text: text, terms: terms, language: language)
+        let request = ProofRequest(id: UUID().uuidString, text: text, terms: terms, language: language, systemPrompt: systemPrompt)
         let data = try JSONEncoder().encode(request)
         guard data.count <= 64 * 1024 else {
             throw InferenceError.invalidRequest("The encoded correction request exceeds 64 KB.")
@@ -218,7 +249,7 @@ public actor NativeInference {
             // emitting ready. Avoid hashing its 2 GB weights twice on startup.
             return nil
             #else
-            // Pinned Unsloth Qwen3-4B-Instruct-2507 Q4_K_M, docs/text-correction.md.
+            // Pinned Unsloth Qwen3-4B-Instruct-2507 Q4_K_M, Server/README.md.
             return InferenceModelPin(bytes: 2_497_281_120,
                 sha256: "3605803b982cb64aead44f6c1b2ae36e3acdb41d8e46c8a94c6533bc4c67e597")
             #endif
@@ -377,7 +408,7 @@ private struct SpeechRequest: Encodable {
     let id: String
     let path: String
     let language: String
-    let prompt: String
+    let vocabularyTerms: [String]
 }
 
 private struct ProofRequest: Encodable {
@@ -386,4 +417,5 @@ private struct ProofRequest: Encodable {
     let text: String
     let terms: [String]
     let language: String
+    let systemPrompt: String
 }
