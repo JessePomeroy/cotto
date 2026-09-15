@@ -52,22 +52,134 @@ struct SottoMenuView: View {
     }
 }
 
+@MainActor
+final class DictationHUDPresentation: ObservableObject {
+    // A fresh identity restarts the entrance even when a new take interrupts
+    // the previous result. Hiding cancels any pending entrance task.
+    @Published var id: UUID?
+}
+
+extension DictationDeliveryStatus {
+    var hudSymbol: String {
+        switch self {
+        case .none: "mic.slash"
+        case .inserted: "checkmark"
+        case .copied: "doc.on.clipboard"
+        case .tested: "waveform"
+        case .listUpdated: "list.number"
+        case .unconfirmed: "questionmark"
+        case .failed: "exclamationmark"
+        }
+    }
+
+    var hudLabel: String {
+        switch self {
+        case .none: "No speech detected"
+        case .inserted: "Pasted at your cursor"
+        case .copied: "Copied to clipboard"
+        case .tested: "Microphone test complete"
+        case .listUpdated: "List updated"
+        case .unconfirmed: "Check insertion"
+        case .failed: "Dictation failed"
+        }
+    }
+
+    var needsAttention: Bool { self == .failed || self == .unconfirmed }
+}
+
 struct DictationHUD: View {
     static let width: CGFloat = SottoBuild.current.isDevelopment ? 200 : 160
     static let height: CGFloat = 44
     static let noticeHeight: CGFloat = 30
+    static let morphDuration = 0.18
     @ObservedObject var controller: SottoController
-    var previewHover = false
+    @ObservedObject var presentation: DictationHUDPresentation
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var entered = false
+    @State private var expanded = false
 
     var body: some View {
         VStack(spacing: 0) {
             capsule
+                .frame(width: Self.width, height: Self.height)
             RecordingLimitNote(feedback: controller.recordingFeedback)
                 .frame(width: Self.width, height: Self.noticeHeight)
         }
+        .task(id: presentation.id) { await enter() }
+        .onChange(of: controller.activity) { _, activity in
+            guard presentation.id != nil, !activity.isCapturing else { return }
+            withAnimation(morphAnimation) { expanded = false }
+        }
+    }
+
+    private var morphAnimation: Animation? {
+        reduceMotion ? nil : .spring(duration: Self.morphDuration, bounce: 0.08)
+    }
+
+    private func enter() async {
+        var reset = Transaction(animation: nil)
+        reset.disablesAnimations = true
+        withTransaction(reset) {
+            entered = false
+            expanded = false
+        }
+        guard presentation.id != nil else { return }
+        if reduceMotion {
+            entered = true
+            expanded = controller.activity.isCapturing
+            return
+        }
+        await Task.yield()
+        guard !Task.isCancelled, presentation.id != nil else { return }
+        withAnimation(.easeOut(duration: 0.06)) { entered = true }
+        // This only stages the visual; microphone startup never waits for it.
+        do { try await Task.sleep(for: .milliseconds(60)) } catch { return }
+        guard !Task.isCancelled, presentation.id != nil else { return }
+        withAnimation(morphAnimation) { expanded = controller.activity.isCapturing }
     }
 
     private var capsule: some View {
+        ZStack {
+            expandedContent
+                .frame(width: Self.width, height: Self.height)
+                .opacity(expanded ? 1 : 0)
+                .allowsHitTesting(expanded)
+                .accessibilityHidden(!expanded)
+            Button(action: activateCircle) {
+                compactIcon
+                    .frame(width: Self.height, height: Self.height)
+                    .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .opacity(expanded ? 0 : 1)
+            .allowsHitTesting(!expanded)
+            .accessibilityHidden(expanded)
+            .accessibilityLabel(controller.isBusy ? "Cancel dictation" : hudLabel)
+            .accessibilityHint(controller.isBusy ? "Cancel this dictation" : result.needsAttention ? "Open Sotto for details" : "Dismiss status")
+            .accessibilityIdentifier("hud.circle")
+        }
+        .frame(width: expanded ? Self.width : Self.height, height: Self.height)
+        .clipped()
+        .modifier(SottoFloatingSurface(cornerRadius: Self.height / 2))
+        .overlay(alignment: .topTrailing) {
+            if !expanded && SottoBuild.current.isDevelopment {
+                DevBadge().offset(x: 10, y: -6).allowsHitTesting(false)
+            }
+        }
+        .scaleEffect(entered ? 1 : 0.25)
+        .opacity(entered ? 1 : 0)
+        .onExitCommand {
+            if controller.canCancelWithEscape { controller.cancelDictation() }
+            else if !controller.isBusy { controller.dismissFeedback() }
+        }
+        .help(controller.errorMessage ?? hudLabel)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("\(SottoBuild.current.displayName) dictation")
+        .accessibilityValue(controller.errorMessage ?? hudLabel)
+        .accessibilityIdentifier("hud.status")
+    }
+
+    private var expandedContent: some View {
         HStack(spacing: 10) {
             DevBadge()
             HStack(spacing: 8) {
@@ -75,61 +187,59 @@ struct DictationHUD: View {
                     RecordingWaveform(feedback: controller.recordingFeedback, height: 23)
                     RecordingElapsedTime(feedback: controller.recordingFeedback)
                 } else {
-                    statusIcon.frame(width: 18, height: 22)
-                    Text(hudLabel).lineLimit(1)
+                    SottoMark(size: 18)
+                    Text("Starting").lineLimit(1)
                 }
             }
             .font(.system(size: 11, weight: .medium))
             .foregroundStyle(SottoPalette.muted)
-            Button {
-                if controller.isBusy { controller.cancelDictation() }
-                else { controller.dismissFeedback() }
-            } label: {
+            Button { controller.cancelDictation() } label: {
                 Image(systemName: "xmark").font(.system(size: 10, weight: .semibold))
                     .frame(width: 22, height: 28)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .help(controller.isBusy ? "Cancel dictation" : "Dismiss status")
-            .accessibilityLabel(controller.isBusy ? "Cancel dictation" : "Dismiss status")
+            .help("Cancel dictation")
+            .accessibilityLabel("Cancel dictation")
             .accessibilityIdentifier("hud.cancel")
         }
         .padding(.horizontal, 12)
-        .frame(width: Self.width, height: Self.height)
-        .modifier(SottoFloatingSurface(cornerRadius: Self.height / 2))
-        .onExitCommand {
-            if controller.canCancelWithEscape { controller.cancelDictation() }
-        }
-        .help(controller.errorMessage ?? controller.statusMessage)
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("\(SottoBuild.current.displayName) dictation")
-        .accessibilityValue(controller.errorMessage ?? controller.statusMessage)
-        .accessibilityIdentifier("hud.status")
     }
 
-    @ViewBuilder private var statusIcon: some View {
+    @ViewBuilder private var compactIcon: some View {
         switch controller.activity {
-        case .starting, .transcribing, .delivering:
+        case .idle, .starting, .recording:
+            SottoMark(size: 21)
+        case .transcribing, .delivering:
             ProgressView().controlSize(.small)
-        case .success:
-            Image(systemName: controller.lastDeliveryStatus == .unconfirmed ? "questionmark.circle" : "checkmark")
-                .foregroundStyle(SottoPalette.accentInk)
-        case .failed:
-            Image(systemName: "exclamationmark.circle").foregroundStyle(SottoPalette.warning)
-        case .idle, .recording:
-            SottoMark(size: 18)
+        case .success, .failed:
+            Image(systemName: result.hudSymbol)
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(result.needsAttention ? SottoPalette.warning : SottoPalette.accentInk)
+                .contentTransition(reduceMotion ? .identity : .symbolEffect(.replace))
         }
+    }
+
+    private var result: DictationDeliveryStatus {
+        controller.activity == .failed ? .failed : controller.lastDeliveryStatus
     }
 
     private var hudLabel: String {
         switch controller.activity {
         case .idle: "Ready"
-        case .starting: "Starting"
+        case .starting: "Starting microphone"
         case .recording: "Listening"
         case .transcribing: "Processing"
         case .delivering: "Inserting"
-        case .success: controller.lastDeliveryStatus == .unconfirmed ? "Check text" : "Done"
-        case .failed: "Failed"
+        case .success, .failed: result.hudLabel
+        }
+    }
+
+    private func activateCircle() {
+        if controller.isBusy { controller.cancelDictation() }
+        else {
+            if result.needsAttention { controller.onShowWindow?() }
+            controller.dismissFeedback()
         }
     }
 }

@@ -32,6 +32,39 @@ final class NativeIntegrationTests: XCTestCase {
     }
 
     @MainActor
+    func testCompactHUDReleasesSideHitAreasWithoutMovingItsCenterOrNotice() {
+        let expanded = NSRect(x: 200, y: 100, width: DictationPanelLayout.contentSize.width,
+                              height: DictationHUD.height + 36)
+        let compact = DictationPanelLayout.windowFrame(from: expanded, showsNotice: false, compact: true)
+        XCTAssertEqual(compact.midX, expanded.midX)
+        XCTAssertEqual(compact.maxY, expanded.maxY)
+        XCTAssertFalse(compact.contains(NSPoint(x: expanded.minX + 1, y: expanded.midY)))
+        let expandedContent = DictationPanelLayout.contentFrame(in: expanded.size)
+            .offsetBy(dx: expanded.minX, dy: expanded.minY)
+        let compactContent = DictationPanelLayout.contentFrame(in: compact.size)
+            .offsetBy(dx: compact.minX, dy: compact.minY)
+        XCTAssertEqual(compactContent, expandedContent)
+        let notice = DictationPanelLayout.windowFrame(from: compact, showsNotice: true, compact: true)
+        XCTAssertEqual(notice.width, expanded.width, "The recording-limit note must keep its full text width")
+        XCTAssertEqual(notice.midX, expanded.midX)
+        XCTAssertEqual(notice.maxY, expanded.maxY)
+        XCTAssertEqual(DictationPanelLayout.windowFrame(from: compact, showsNotice: false), expanded)
+    }
+
+    @MainActor
+    func testHUDDistinguishesClipboardFallbackAndUncertainDelivery() {
+        XCTAssertNotEqual(DictationDeliveryStatus.inserted.hudSymbol, DictationDeliveryStatus.copied.hudSymbol)
+        for status in [DictationDeliveryStatus.failed, .unconfirmed, .none] {
+            XCTAssertNotEqual(status.hudSymbol, DictationDeliveryStatus.inserted.hudSymbol)
+        }
+        XCTAssertTrue(DictationDeliveryStatus.unconfirmed.needsAttention)
+        XCTAssertTrue(DictationDeliveryStatus.failed.needsAttention)
+        for status in [DictationDeliveryStatus.none, .inserted, .copied, .tested, .listUpdated, .unconfirmed, .failed] {
+            XCTAssertNotNil(NSImage(systemSymbolName: status.hudSymbol, accessibilityDescription: status.hudLabel))
+        }
+    }
+
+    @MainActor
     func testGlacierTextRemainsLegibleOnReadingAndOpaqueFallbackSurfaces() throws {
         let app = NSApplication.shared
         let previousAppearance = app.appearance

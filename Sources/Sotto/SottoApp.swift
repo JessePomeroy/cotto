@@ -59,7 +59,7 @@ final class SottoAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate 
         controller.onShowWindow = { [weak self] in self?.showWindow() }
         controller.onHUDVisibility = { [weak self] visible in
             if visible { self?.hud.present() }
-            else { self?.hud.orderOut(nil) }
+            else { self?.hud.dismiss() }
         }
         configureApplicationMenu()
         configureStatusItem()
@@ -212,23 +212,30 @@ enum DictationPanelLayout {
         NSSize(width: DictationHUD.width + 36, height: DictationHUD.height + DictationHUD.noticeHeight + 36)
     }
 
-    static func windowFrame(from frame: NSRect, showsNotice: Bool) -> NSRect {
+    static func windowFrame(from frame: NSRect, showsNotice: Bool, compact: Bool = false) -> NSRect {
         let height = contentSize.height - (showsNotice ? 0 : DictationHUD.noticeHeight)
-        return NSRect(x: frame.minX, y: frame.maxY - height, width: frame.width, height: height)
+        let width = compact && !showsNotice ? DictationHUD.height + 36 : contentSize.width
+        return NSRect(x: frame.midX - width / 2, y: frame.maxY - height, width: width, height: height)
     }
 
     static func contentFrame(in windowSize: NSSize) -> NSRect {
-        NSRect(x: 0, y: windowSize.height - contentSize.height, width: contentSize.width, height: contentSize.height)
+        NSRect(x: (windowSize.width - contentSize.width) / 2, y: windowSize.height - contentSize.height,
+               width: contentSize.width, height: contentSize.height)
     }
 }
 
 private final class DictationPanel: NSPanel {
     private let hostedHUD: NSView
+    private let presentation = DictationHUDPresentation()
     private var noticeSubscription: AnyCancellable?
+    private var activitySubscription: AnyCancellable?
+    private var compactTask: Task<Void, Never>?
+    private var activity: DictationActivity = .idle
     private var showsNotice = false
+    private var compact = false
 
     init(controller: SottoController) {
-        let hostingView = NSHostingView(rootView: DictationHUD(controller: controller).padding(18))
+        let hostingView = NSHostingView(rootView: DictationHUD(controller: controller, presentation: presentation).padding(18))
         hostingView.sizingOptions = []
         hostedHUD = hostingView
         let initialFrame = DictationPanelLayout.windowFrame(
@@ -256,6 +263,10 @@ private final class DictationPanel: NSPanel {
             .map { $0 != nil }
             .removeDuplicates()
             .sink { [weak self] visible in self?.setNoticeVisible(visible) }
+        activitySubscription = controller.$activity.removeDuplicates().sink { [weak self] activity in
+            self?.activity = activity
+            self?.updateCompactState()
+        }
     }
 
     override var canBecomeKey: Bool { false }
@@ -266,11 +277,45 @@ private final class DictationPanel: NSPanel {
         showsNotice = visible
         // Only extend the native hit area while the notice is visible. Keep
         // the hosted content anchored to the top so the capsule never moves.
-        setFrame(DictationPanelLayout.windowFrame(from: frame, showsNotice: visible), display: false)
+        updateFrame()
+    }
+
+    private func updateFrame() {
+        setFrame(DictationPanelLayout.windowFrame(from: frame, showsNotice: showsNotice, compact: compact), display: false)
         hostedHUD.frame = DictationPanelLayout.contentFrame(in: frame.size)
     }
 
+    private func updateCompactState() {
+        compactTask?.cancel()
+        if activity.isCapturing {
+            compact = false
+            updateFrame()
+        } else {
+            compactTask = Task { [weak self] in
+                // Let the visual finish contracting before trimming the native
+                // window, so its invisible sides no longer intercept clicks.
+                if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+                    do { try await Task.sleep(for: .seconds(DictationHUD.morphDuration + 0.04)) }
+                    catch { return }
+                }
+                guard let self, !Task.isCancelled, presentation.id != nil else { return }
+                compact = true
+                updateFrame()
+            }
+        }
+    }
+
+    func dismiss() {
+        compactTask?.cancel()
+        presentation.id = nil
+        orderOut(nil)
+    }
+
     func present() {
+        compact = false
+        updateFrame()
+        presentation.id = UUID()
+        updateCompactState()
         let mouse = NSEvent.mouseLocation
         let screen = NSScreen.screens.first(where: { $0.frame.contains(mouse) }) ?? NSScreen.main
         if let screen {
