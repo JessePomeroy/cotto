@@ -33,6 +33,7 @@ struct WisprFlowSourceSession: Sendable {
     let durationSeconds: Double?
     let availableVariants: [String]
     let artifacts: [WisprFlowSourceArtifact]
+    let unarchivedArtifacts: [WisprFlowArtifactManifest]
 }
 
 enum WisprFlowSourceReaderError: LocalizedError {
@@ -40,11 +41,11 @@ enum WisprFlowSourceReaderError: LocalizedError {
     case unreadableSource(URL)
     case missingHistory(URL)
     case missingSourceID(URL)
-    case invalidSourceID(String)
     case invalidTimestamp(UUID)
     case missingSession(UUID)
     case sqlite(String)
     case cannotCreateArtifact(URL)
+    case dictionaryTooLarge(Int)
 
     var errorDescription: String? {
         switch self {
@@ -52,11 +53,12 @@ enum WisprFlowSourceReaderError: LocalizedError {
         case .unreadableSource(let url): "Cannot read \(url.lastPathComponent)."
         case .missingHistory(let url): "\(url.lastPathComponent) has no History table."
         case .missingSourceID(let url): "\(url.lastPathComponent) has no transcriptEntityId column."
-        case .invalidSourceID(let value): "A Wispr Flow session has an invalid ID: \(value)."
         case .invalidTimestamp(let id): "Wispr Flow session \(id) has no usable timestamp."
         case .missingSession(let id): "Wispr Flow session \(id) was not found in the snapshot."
         case .sqlite(let message): "Wispr Flow database error: \(message)"
         case .cannotCreateArtifact(let url): "Cannot create import artifact \(url.lastPathComponent)."
+        case .dictionaryTooLarge(let bytes):
+            "Wispr Flow dictionary is \(ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)); the archive limit is 8 MiB. No dictionary entries were archived."
         }
     }
 }
@@ -120,6 +122,7 @@ final class WisprFlowSourceReader: @unchecked Sendable {
     private let temporaryDirectory: URL
     private let lock = NSLock()
     private var databases: [Database]
+    private var closed = false
     private let locators: [UUID: [RowLocator]]
 
     static func discoverSourceURLs() -> [URL] {
@@ -149,6 +152,7 @@ final class WisprFlowSourceReader: @unchecked Sendable {
         var opened: [Database] = []
         var rows: [UUID: [RowLocator]] = [:]
         var warnings: [String] = []
+        var skippedMalformedIDs = 0
         do {
             for (index, source) in selected.enumerated() {
                 guard source.pathExtension == "sqlite", !source.lastPathComponent.contains(".tmp"),
@@ -178,7 +182,9 @@ final class WisprFlowSourceReader: @unchecked Sendable {
                     throw error
                 }
                 opened.append(database)
-                for row in try Self.scan(database: database, index: index) {
+                let scanned = try Self.scan(database: database, index: index)
+                skippedMalformedIDs += scanned.skippedMalformedIDs
+                for row in scanned.rows {
                     rows[row.0, default: []].append(row.1)
                 }
             }
@@ -205,6 +211,9 @@ final class WisprFlowSourceReader: @unchecked Sendable {
                 }
             }
             if dated.count < ids.count { warnings.append("Some sessions have no usable timestamp and may fail to import.") }
+            if skippedMalformedIDs > 0 {
+                warnings.append("Skipped \(skippedMalformedIDs) History row\(skippedMalformedIDs == 1 ? "" : "s") with missing or malformed session IDs.")
+            }
             let dictionaryCount = try Self.dictionaryIDs(in: opened).count
             preview = WisprFlowImportPreview(
                 sessionCount: ids.count, transcriptCount: transcriptCount,
@@ -224,7 +233,15 @@ final class WisprFlowSourceReader: @unchecked Sendable {
         }
     }
 
-    deinit {
+    deinit { close() }
+
+    /// Closing snapshots can take time. The controller calls this on a utility
+    /// task before releasing its last reader reference.
+    func close() {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !closed else { return }
+        closed = true
         databases.removeAll()
         try? FileManager.default.removeItem(at: temporaryDirectory)
     }
@@ -232,6 +249,7 @@ final class WisprFlowSourceReader: @unchecked Sendable {
     func session(for sourceID: UUID) throws -> WisprFlowSourceSession {
         lock.lock()
         defer { lock.unlock() }
+        guard !closed else { throw WisprFlowSourceReaderError.sqlite("The import snapshot was released.") }
         guard let rows = locators[sourceID], !rows.isEmpty else {
             throw WisprFlowSourceReaderError.missingSession(sourceID)
         }
@@ -257,6 +275,9 @@ final class WisprFlowSourceReader: @unchecked Sendable {
         var selectedMedia: [String: (databaseIndex: Int, rowID: Int64)] = [:]
         for (column, filename) in Self.mediaFilenames {
             for row in rows where (row.mediaBytes[column] ?? 0) > 0 {
+                // A later backup may contain a smaller valid version. Keep
+                // looking rather than letting one oversized blob block text.
+                guard (row.mediaBytes[column] ?? 0) <= WisprFlowImportLimits.maximumArtifactBytes else { continue }
                 let output = artifactDirectory.appendingPathComponent(filename)
                 do {
                     try Self.extract(column: column, rowID: row.rowID,
@@ -293,14 +314,80 @@ final class WisprFlowSourceReader: @unchecked Sendable {
             sources.append([
                 "name": database.sourceURL.lastPathComponent,
                 "role": database.role,
+                "rowID": row.rowID,
                 "values": values,
             ])
+        }
+        var selectedHashes: [String: String] = [:]
+        for source in sources {
+            guard let values = source["values"] as? [String: [String: Any]] else { continue }
+            for (column, filename) in Self.mediaFilenames {
+                if values[column]?["artifact"] as? String == filename,
+                   let hash = values[column]?["sha256"] as? String {
+                    selectedHashes[column] = hash
+                }
+            }
+        }
+        var omissions: [[String: Any]] = []
+        var unarchived: [WisprFlowArtifactManifest] = []
+        var seenMissing = Set<String>()
+        for index in sources.indices {
+            guard var values = sources[index]["values"] as? [String: [String: Any]] else { continue }
+            for (column, filename) in Self.mediaFilenames {
+                guard var field = values[column], let byteCount = field["byteCount"] as? Int,
+                      byteCount > 0, let hash = field["sha256"] as? String else { continue }
+                if selectedHashes[column] == hash {
+                    field["artifact"] = filename
+                    field["archiveStatus"] = "archived"
+                } else {
+                    let reason = byteCount > WisprFlowImportLimits.maximumArtifactBytes ? "exceeds-upload-limit"
+                        : selectedHashes[column] == nil ? "invalid-or-unavailable" : "different-source-version"
+                    field["archiveStatus"] = "not-archived"
+                    field["archiveReason"] = reason
+                    omissions.append([
+                        "artifact": filename, "sourceIndex": index,
+                        "sourceName": sources[index]["name"] as? String ?? "unknown",
+                        "sourceRowID": sources[index]["rowID"] as? Int64 ?? 0,
+                        "observedByteCount": byteCount, "observedSHA256": hash,
+                        "reason": reason, "status": "not-archived",
+                    ])
+                    let key = "\(filename):\(hash)"
+                    if seenMissing.insert(key).inserted,
+                       let name = WisprFlowArtifactName(rawValue: filename) {
+                        unarchived.append(WisprFlowArtifactManifest(
+                            filename: name, byteCount: byteCount, sha256: hash))
+                    }
+                }
+                values[column] = field
+            }
+            if var builtIn = values["builtInAudio"],
+               let byteCount = builtIn["byteCount"] as? Int, byteCount > 0,
+               let hash = builtIn["sha256"] as? String {
+                builtIn["archiveStatus"] = "not-archived"
+                builtIn["archiveReason"] = "unsupported-source-column"
+                omissions.append([
+                    "artifact": WisprFlowArtifactName.builtInAudio.rawValue,
+                    "sourceColumn": "builtInAudio", "sourceIndex": index,
+                    "sourceName": sources[index]["name"] as? String ?? "unknown",
+                    "sourceRowID": sources[index]["rowID"] as? Int64 ?? 0,
+                    "observedByteCount": byteCount, "observedSHA256": hash,
+                    "reason": "unsupported-source-column", "status": "not-archived",
+                ])
+                let key = "builtInAudio:\(hash)"
+                if seenMissing.insert(key).inserted {
+                    unarchived.append(WisprFlowArtifactManifest(
+                        filename: .builtInAudio, byteCount: byteCount, sha256: hash))
+                }
+                values["builtInAudio"] = builtIn
+            }
+            sources[index]["values"] = values
         }
         let sourceDocument: [String: Any] = [
             "schemaVersion": 1,
             "provider": "wispr-flow",
             "sourceID": sourceID.uuidString,
             "sources": sources,
+            "archiveOmissions": omissions,
         ]
         let sourceURL = artifactDirectory.appendingPathComponent("source.json")
         try Self.writeJSON(sourceDocument, to: sourceURL)
@@ -311,7 +398,7 @@ final class WisprFlowSourceReader: @unchecked Sendable {
             rawText: rawText, sourceStatus: sourceStatus,
             durationSeconds: durationSeconds,
             availableVariants: Self.textVariantNames.filter { variants.contains($0) },
-            artifacts: artifacts
+            artifacts: artifacts, unarchivedArtifacts: unarchived
         )
         } catch {
             try? FileManager.default.removeItem(at: artifactDirectory)
@@ -322,6 +409,7 @@ final class WisprFlowSourceReader: @unchecked Sendable {
     func dictionaryArtifactURL() throws -> URL? {
         lock.lock()
         defer { lock.unlock() }
+        guard !closed else { throw WisprFlowSourceReaderError.sqlite("The import snapshot was released.") }
         guard preview.dictionaryCount > 0 else { return nil }
         let url = temporaryDirectory.appendingPathComponent("dictionary.json")
         if FileManager.default.fileExists(atPath: url.path) { return url }
@@ -342,8 +430,14 @@ final class WisprFlowSourceReader: @unchecked Sendable {
             sources.append(["name": database.sourceURL.lastPathComponent,
                             "role": database.role, "rows": rows])
         }
-        try Self.writeJSON(["schemaVersion": 1, "provider": "wispr-flow",
-                            "table": "Dictionary", "sources": sources], to: url)
+        let document: [String: Any] = ["schemaVersion": 1, "provider": "wispr-flow",
+                                       "table": "Dictionary", "sources": sources]
+        let data = try JSONSerialization.data(withJSONObject: document, options: [.sortedKeys])
+        guard data.count <= WisprFlowImportLimits.maximumDictionaryBytes else {
+            throw WisprFlowSourceReaderError.dictionaryTooLarge(data.count)
+        }
+        try data.write(to: url, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
         return url
     }
 
@@ -460,7 +554,8 @@ final class WisprFlowSourceReader: @unchecked Sendable {
         return names
     }
 
-    private static func scan(database: Database, index: Int) throws -> [(UUID, RowLocator)] {
+    private static func scan(database: Database, index: Int) throws
+        -> (rows: [(UUID, RowLocator)], skippedMalformedIDs: Int) {
         func field(_ name: String) -> String {
             database.columns.contains(name) ? "\"\(name)\"" : "NULL"
         }
@@ -478,10 +573,12 @@ final class WisprFlowSourceReader: @unchecked Sendable {
         let statement = try prepare(sql, in: database.connection)
         defer { sqlite3_finalize(statement) }
         var rows: [(UUID, RowLocator)] = []
+        var skippedMalformedIDs = 0
         while try nextRow(statement, in: database.connection) {
             let idText = text(statement, column: 1) ?? ""
             guard let id = UUID(uuidString: idText) else {
-                throw WisprFlowSourceReaderError.invalidSourceID(idText)
+                skippedMalformedIDs += 1
+                continue
             }
             let candidates = (3...6).compactMap { text(statement, column: Int32($0)) }
             let display = candidates.first { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } ?? ""
@@ -500,7 +597,7 @@ final class WisprFlowSourceReader: @unchecked Sendable {
                 mediaBytes: media
             )))
         }
-        return rows
+        return (rows, skippedMalformedIDs)
     }
 
     private static func dictionaryIDs(in databases: [Database]) throws -> Set<String> {

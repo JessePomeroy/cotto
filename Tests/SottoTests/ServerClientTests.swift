@@ -15,6 +15,38 @@ final class ServerClientTests: XCTestCase {
         XCTAssertFalse(request.url?.absoluteString.contains("private-token") == true)
     }
 
+    func testKnownWisprFlowIDsBatchesLargeHistoryWithinServerLimits() async throws {
+        let fixture = HTTPFixture()
+        defer { fixture.session.invalidateAndCancel() }
+        let sourceIDs = (0..<10_501).map { _ in UUID() }
+        let expected = Set([sourceIDs[0], sourceIDs[4_999], sourceIDs[5_000],
+                            sourceIDs[9_999], sourceIDs[10_000], sourceIDs[10_500]])
+        let capturedBodies = RequestBodyCollector()
+        fixture.respond = { request in
+            let body = try requestBody(request)
+            capturedBodies.append(body)
+            let input = try SottoAPI.decoder().decode(WisprFlowKnownIDsRequest.self, from: body)
+            guard input.sourceIDs.count <= 10_000, body.count <= 262_144 else {
+                return (413, try SottoAPI.encoder().encode(APIErrorResponse(
+                    code: "source_id_limit", message: "Source ID lookup exceeds server limits")))
+            }
+            return (200, try SottoAPI.encoder().encode(WisprFlowKnownIDsResponse(
+                knownSourceIDs: input.sourceIDs.filter { expected.contains($0) })))
+        }
+
+        let client = try ServerClient(endpoint: fixture.endpoint, token: "", session: fixture.session)
+        let known = try await client.knownWisprFlowSourceIDs(sourceIDs)
+        XCTAssertEqual(known, expected)
+        let bodies = capturedBodies.values
+        XCTAssertEqual(bodies.count, 3)
+        let batches = try bodies.map {
+            try SottoAPI.decoder().decode(WisprFlowKnownIDsRequest.self, from: $0)
+        }
+        XCTAssertEqual(batches.map { $0.sourceIDs.count }, [5_000, 5_000, 501])
+        XCTAssertEqual(batches.flatMap(\.sourceIDs), sourceIDs)
+        XCTAssertTrue(bodies.allSatisfy { $0.count <= 262_144 })
+    }
+
     func testLiveUploadPreservesIndependentSequencesAndExactFrameTotals() async throws {
         let fixture = HTTPFixture()
         defer { fixture.session.invalidateAndCancel() }
@@ -96,6 +128,29 @@ final class ServerClientTests: XCTestCase {
         } catch ServerClientError.uploadBacklog {
         } catch { XCTFail("Unexpected failure: \(error)") }
     }
+}
+
+private func requestBody(_ request: URLRequest) throws -> Data {
+    if let body = request.httpBody { return body }
+    guard let stream = request.httpBodyStream else { return Data() }
+    stream.open()
+    defer { stream.close() }
+    var body = Data()
+    var buffer = [UInt8](repeating: 0, count: 8_192)
+    while true {
+        let count = stream.read(&buffer, maxLength: buffer.count)
+        if count < 0 { throw stream.streamError ?? URLError(.cannotParseResponse) }
+        if count == 0 { break }
+        body.append(buffer, count: count)
+    }
+    return body
+}
+
+private final class RequestBodyCollector: @unchecked Sendable {
+    private let lock = NSLock()
+    private var bodies: [Data] = []
+    var values: [Data] { lock.withLock { bodies } }
+    func append(_ body: Data) { lock.withLock { bodies.append(body) } }
 }
 
 private final class HTTPFixture: @unchecked Sendable {

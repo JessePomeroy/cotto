@@ -297,6 +297,7 @@ struct HistoryPage: View {
         case .sourceWAV: "Wispr Flow audio"
         case .opusJSON: "Opus packets"
         case .screenshotPNG: "Screenshot"
+        case .builtInAudio: "Built-in audio (unarchived)"
         }
     }
 
@@ -381,12 +382,12 @@ private struct WisprFlowImportSheet: View {
                 countRow("With transcripts", count: preview.transcriptCount)
                 countRow("Without text", count: preview.sessionCount - preview.transcriptCount)
                 countRow("Metadata only", count: preview.metadataOnlyCount)
-                countRow("With recovered audio", count: preview.wavCount)
+                countRow("WAV found", count: preview.wavCount)
                 countRow("Opus packet sets", count: preview.opusCount)
                 countRow("Screenshots", count: preview.screenshotCount)
                 countRow("Dictionary entries to archive", count: preview.dictionaryCount)
                 if let knownCount {
-                    countRow("Already in Soto", count: knownCount)
+                    countRow("Already in Sotto", count: knownCount)
                 }
                 if let destinationError {
                     Text(destinationError).font(.caption).foregroundStyle(SottoPalette.warning)

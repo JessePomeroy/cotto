@@ -31,6 +31,48 @@ enum WisprFlowImportState {
     case failed(String)
 }
 
+/// The snapshot worker is independent of the main actor. This gate lets quit
+/// wait for it and close a reader that has not yet reached the controller.
+private final class WisprFlowPreparationGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private let work = DispatchGroup()
+    private var cancelled = false
+    private var reader: WisprFlowSourceReader?
+
+    init() { work.enter() }
+    func finish() { work.leave() }
+
+    func register(_ value: WisprFlowSourceReader) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !cancelled else { return false }
+        reader = value
+        return true
+    }
+
+    func transfer(_ value: WisprFlowSourceReader) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !cancelled, reader === value else { return false }
+        reader = nil
+        return true
+    }
+
+    func cancel(waitForWorker: Bool = false) {
+        lock.lock()
+        cancelled = true
+        let value = reader
+        reader = nil
+        lock.unlock()
+        if waitForWorker {
+            value?.close()
+            work.wait()
+        } else if let value {
+            Task.detached(priority: .utility) { value.close() }
+        }
+    }
+}
+
 /// The desktop never owns a durable generation or a model process. A take has
 /// one accepted server generation, one bounded upload, and at most one delivery.
 @MainActor
@@ -78,6 +120,7 @@ final class SottoController: ObservableObject {
     private var historyCursor: String?
     private var wisprFlowReader: WisprFlowSourceReader?
     private var wisprFlowPrepareTask: Task<Void, Never>?
+    private var wisprFlowPrepareGate: WisprFlowPreparationGate?
     private var wisprFlowPrepareRevision = 0
     private var wisprFlowImportTask: Task<Void, Never>?
     private var wisprFlowDestinationEndpoint: String?
@@ -293,21 +336,41 @@ final class SottoController: ObservableObject {
         wisprFlowPrepareRevision += 1
         let revision = wisprFlowPrepareRevision
         wisprFlowPrepareTask?.cancel()
-        wisprFlowReader = nil
+        wisprFlowPrepareGate?.cancel()
+        let gate = WisprFlowPreparationGate()
+        wisprFlowPrepareGate = gate
+        retireWisprFlowReader()
         wisprFlowImportState = .preparing
         wisprFlowDestinationEndpoint = preferences.endpoint
+        // Schedule the worker before the main-actor continuation. Quit may
+        // synchronously wait on the gate before that continuation starts.
+        let snapshotTask = Task.detached(priority: .utility) {
+            defer { gate.finish() }
+            let reader = try WisprFlowSourceReader()
+            guard gate.register(reader) else {
+                reader.close()
+                throw CancellationError()
+            }
+            return reader
+        }
         wisprFlowPrepareTask = Task { [weak self] in
-            guard let self else { return }
+            guard let self else { gate.cancel(); return }
             defer {
                 if revision == wisprFlowPrepareRevision { wisprFlowPrepareTask = nil }
             }
             do {
-                let reader = try await Task.detached(priority: .utility) {
-                    try WisprFlowSourceReader()
-                }.value
+                let reader = try await snapshotTask.value
+                var transferred = false
+                defer {
+                    if !transferred {
+                        Task.detached(priority: .utility) { reader.close() }
+                    }
+                }
                 try Task.checkCancellation()
                 guard revision == wisprFlowPrepareRevision else { return }
+                guard gate.transfer(reader) else { return }
                 wisprFlowReader = reader
+                transferred = true
                 let knownCount: Int?
                 let destinationError: String?
                 do {
@@ -328,6 +391,7 @@ final class SottoController: ObservableObject {
                                                destinationError: destinationError)
             } catch is CancellationError {
             } catch {
+                guard revision == wisprFlowPrepareRevision, !Task.isCancelled else { return }
                 wisprFlowImportState = .failed(error.localizedDescription)
             }
         }
@@ -361,7 +425,8 @@ final class SottoController: ObservableObject {
         guard wisprFlowImportTask == nil else { return }
         wisprFlowPrepareRevision += 1
         wisprFlowPrepareTask?.cancel()
-        wisprFlowReader = nil
+        wisprFlowPrepareGate?.cancel()
+        retireWisprFlowReader()
         wisprFlowDestinationEndpoint = nil
         wisprFlowImportState = .idle
     }
@@ -371,6 +436,7 @@ final class SottoController: ObservableObject {
         var counts = initialCounts
         var cancelled = false
         var stoppedEarly = false
+        var completionAttempted = false
         for sourceID in reader.sourceIDs {
             if Task.isCancelled { cancelled = true; break }
             var materializedSession: WisprFlowSourceSession?
@@ -389,7 +455,9 @@ final class SottoController: ObservableObject {
                 let input = WisprFlowImportRequest(sourceID: session.sourceID, createdAt: session.createdAt,
                                                    sourceStatus: session.sourceStatus, finalText: session.displayText,
                                                    rawText: session.rawText, durationSeconds: session.durationSeconds,
-                                                   variantNames: session.availableVariants, artifacts: manifests)
+                                                   variantNames: session.availableVariants, artifacts: manifests,
+                                                   unarchivedArtifacts: session.unarchivedArtifacts.isEmpty
+                                                       ? nil : session.unarchivedArtifacts)
                 let transfer = try await connection.beginWisprFlowImport(input)
                 activeTransferID = transfer.id
                 for (artifact, manifest) in zip(session.artifacts, manifests) {
@@ -400,6 +468,8 @@ final class SottoController: ObservableObject {
                         throw ServerClientError.invalidResponse
                     }
                 }
+                // A cancelled/lost response can hide a durable server commit.
+                completionAttempted = true
                 let result = try await connection.completeWisprFlowImport(transfer.id)
                 activeTransferID = nil
                 switch result.outcome {
@@ -409,8 +479,13 @@ final class SottoController: ObservableObject {
                 case .partial:
                     counts.partial += 1
                     if counts.unarchivedWarning == nil {
-                        let names = result.unarchivedArtifactNames.map(\.rawValue).joined(separator: ", ")
-                        counts.unarchivedWarning = "Session \(sourceID.uuidString) has unarchived media: \(names)"
+                        let sourceReported = session.unarchivedArtifacts.map { omitted in
+                            "\(omitted.filename.rawValue) (\(ByteCountFormatter.string(fromByteCount: Int64(omitted.byteCount), countStyle: .file)), SHA-256 \(omitted.sha256))"
+                        }
+                        let names = sourceReported.isEmpty
+                            ? result.unarchivedArtifactNames.map(\.rawValue).joined(separator: ", ")
+                            : sourceReported.joined(separator: ", ")
+                        counts.unarchivedWarning = "Session \(sourceID.uuidString) has unarchived media: \(names). Source version details are in source.json."
                     }
                 }
             } catch is CancellationError {
@@ -431,16 +506,14 @@ final class SottoController: ObservableObject {
                 }
             }
             if let activeTransferID {
-                let cleanup = Task.detached(priority: .utility) {
+                Task.detached(priority: .utility) {
                     try? await connection.cancelWisprFlowImport(activeTransferID)
                 }
-                _ = await cleanup.value
             }
             if let materializedSession {
-                let cleanup = Task.detached(priority: .utility) {
+                Task.detached(priority: .utility) {
                     reader.discardArtifacts(for: materializedSession)
                 }
-                await cleanup.value
             }
             if cancelled { break }
             counts.processed += 1
@@ -452,6 +525,7 @@ final class SottoController: ObservableObject {
                 let dictionary = try await Task.detached(priority: .utility) {
                     try reader.dictionaryArtifactURL()
                 }.value
+                try Task.checkCancellation()
                 guard let dictionary else { throw ServerClientError.invalidResponse }
                 _ = try await connection.archiveWisprFlowDictionary(dictionary)
                 counts.dictionaryArchived = true
@@ -464,13 +538,19 @@ final class SottoController: ObservableObject {
         }
         cancelled = cancelled || Task.isCancelled
         wisprFlowImportTask = nil
-        wisprFlowReader = nil
+        retireWisprFlowReader()
         wisprFlowDestinationEndpoint = nil
         wisprFlowImportState = .finished(preview, counts, cancelled: cancelled)
-        if counts.imported + counts.enriched + counts.skipped + counts.partial > 0 {
+        if completionAttempted || counts.imported + counts.enriched + counts.skipped + counts.partial > 0 {
             if historySourceFilter == "wispr-flow" { refreshHistory() }
             else { setHistorySourceFilter("wispr-flow") }
         }
+    }
+
+    private func retireWisprFlowReader() {
+        guard let reader = wisprFlowReader else { return }
+        wisprFlowReader = nil
+        Task.detached(priority: .utility) { reader.close() }
     }
 
     func updateSharedPreferences(_ value: ServerPreferences, expectedRevision: Int? = nil) {
@@ -601,6 +681,10 @@ final class SottoController: ObservableObject {
         guard !isShuttingDown else { return }
         isShuttingDown = true
         wisprFlowPrepareTask?.cancel(); wisprFlowImportTask?.cancel()
+        wisprFlowPrepareGate?.cancel(waitForWorker: true)
+        wisprFlowPrepareGate = nil
+        wisprFlowReader?.close()
+        wisprFlowReader = nil
         stopShortcutCheck()
         // Quitting the client cancels an incomplete recording. A sealed server
         // generation remains independently owned and may complete in history.

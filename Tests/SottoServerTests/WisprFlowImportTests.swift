@@ -1,4 +1,4 @@
-import CryptoKit
+import Crypto
 import Foundation
 import SottoAPI
 @testable import SottoServerKit
@@ -121,6 +121,168 @@ final class WisprFlowImportTests: XCTestCase {
         }
         let known = try await service.knownWisprFlowIDs(.init(sourceIDs: [sourceID]))
         XCTAssertTrue(known.knownSourceIDs.isEmpty)
+        await service.shutdown()
+    }
+
+    func testOversizedMediaOmissionArchivesTextAsPartialAndStaysPartialOnRerun() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let sourceID = UUID(uuidString: "55555555-5555-4555-8555-555555555555")!
+        let omitted = WisprFlowArtifactManifest(filename: .sourceWAV,
+            byteCount: WisprFlowImportLimits.maximumArtifactBytes + 1,
+            sha256: String(repeating: "a", count: 64))
+        let document: [String: Any] = [
+            "schemaVersion": 1, "provider": "wispr-flow", "sourceID": sourceID.uuidString,
+            "sources": [["name": "flow.sqlite", "role": "current", "rowID": 1,
+                         "values": ["audio": ["type": "blob", "byteCount": omitted.byteCount,
+                                              "sha256": omitted.sha256, "archiveStatus": "not-archived",
+                                              "archiveReason": "exceeds-upload-limit"]]]],
+            "archiveOmissions": [["artifact": "source.wav", "sourceName": "flow.sqlite",
+                                  "sourceRowID": 1, "observedByteCount": omitted.byteCount,
+                                  "observedSHA256": omitted.sha256,
+                                  "reason": "exceeds-upload-limit", "status": "not-archived"]],
+        ]
+        let source = try JSONSerialization.data(withJSONObject: document, options: [.sortedKeys])
+        let service = try GenerationService(configuration: fixture.configuration)
+        var request = Self.request(sourceID: sourceID, text: "Recovered words",
+                                   artifacts: [(.sourceJSON, source)])
+        request.unarchivedArtifacts = [omitted]
+        let first = try await service.beginWisprFlowImport(request)
+        _ = try await service.uploadWisprFlowArtifact(first.id, filename: .sourceJSON, data: source)
+        let imported = try await service.completeWisprFlowImport(first.id)
+        XCTAssertEqual(imported.outcome, .partial)
+        XCTAssertEqual(imported.unarchivedArtifactNames, [.sourceWAV])
+        XCTAssertEqual(imported.record.finalText, "Recovered words")
+        XCTAssertEqual(imported.record.importedSource?.artifactNames, [.sourceJSON])
+        XCTAssertEqual(imported.record.importedSource?.unarchivedArtifactSHA256?["source.wav"], omitted.sha256)
+        let archived = try await service.artifact(imported.record.id, filename: "source.json")
+        let archivedDocument = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: archived)) as? [String: Any])
+        let omissions = try XCTUnwrap(archivedDocument["archiveOmissions"] as? [[String: Any]])
+        XCTAssertEqual(omissions.first?["observedByteCount"] as? Int, omitted.byteCount)
+        XCTAssertEqual(omissions.first?["observedSHA256"] as? String, omitted.sha256)
+        XCTAssertEqual(omissions.first?["status"] as? String, "not-archived")
+
+        let again = try await service.beginWisprFlowImport(request)
+        _ = try await service.uploadWisprFlowArtifact(again.id, filename: .sourceJSON, data: source)
+        let rerun = try await service.completeWisprFlowImport(again.id)
+        XCTAssertEqual(rerun.outcome, .partial)
+        XCTAssertEqual(rerun.record.id, imported.record.id)
+        XCTAssertEqual(rerun.unarchivedArtifactNames, [.sourceWAV])
+        await service.shutdown()
+    }
+
+    func testDictionaryOverFormerLimitArchivesAllRowsWithoutChangingActiveDictionary() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let service = try GenerationService(configuration: fixture.configuration)
+        let preferencesBefore = await service.getPreferences()
+        let rows: [[String: Any]] = (0..<1_000).map { index in
+            ["id": ["type": "text", "value": "entry-\(index)"],
+             "phrase": ["type": "text", "value": String(repeating: "a", count: 400)]]
+        }
+        let document: [String: Any] = ["schemaVersion": 1, "provider": "wispr-flow",
+                                       "table": "Dictionary",
+                                       "sources": [["name": "flow.sqlite", "role": "current", "rows": rows]]]
+        let data = try JSONSerialization.data(withJSONObject: document, options: [.sortedKeys])
+        XCTAssertGreaterThan(data.count, 262_144)
+        XCTAssertLessThan(data.count, WisprFlowImportLimits.maximumDictionaryBytes)
+        let receipt = try await service.archiveWisprFlowDictionary(data)
+        XCTAssertEqual(receipt.byteCount, data.count)
+        let destination = fixture.configuration.dataDirectory.appendingPathComponent("imports/wispr-flow/dictionary.json")
+        let archived = try Data(contentsOf: destination)
+        XCTAssertEqual(archived, data)
+        let archivedDocument = try XCTUnwrap(JSONSerialization.jsonObject(with: archived) as? [String: Any])
+        let archivedSources = try XCTUnwrap(archivedDocument["sources"] as? [[String: Any]])
+        XCTAssertEqual((archivedSources.first?["rows"] as? [[String: Any]])?.count, 1_000)
+        let preferencesAfter = await service.getPreferences()
+        XCTAssertEqual(preferencesAfter, preferencesBefore)
+        await service.shutdown()
+    }
+
+    func testLaterMediaBackfillClearsEarlierOmissionAndKeepsOneRecord() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let sourceID = UUID(uuidString: "66666666-6666-4666-8666-666666666666")!
+        let wav = Self.smallWAV
+        let digest = Self.sha256(wav)
+        let omission = WisprFlowArtifactManifest(filename: .sourceWAV, byteCount: wav.count, sha256: digest)
+        let document: [String: Any] = [
+            "schemaVersion": 1, "provider": "wispr-flow", "sourceID": sourceID.uuidString,
+            "sources": [["name": "flow.sqlite", "role": "current", "rowID": 1,
+                         "values": ["audio": ["type": "blob", "byteCount": wav.count,
+                                              "sha256": digest, "archiveStatus": "not-archived",
+                                              "archiveReason": "invalid-or-unavailable"]]]],
+            "archiveOmissions": [["artifact": "source.wav", "sourceName": "flow.sqlite",
+                                  "sourceRowID": 1, "observedByteCount": wav.count,
+                                  "observedSHA256": digest,
+                                  "reason": "invalid-or-unavailable", "status": "not-archived"]],
+        ]
+        let source = try JSONSerialization.data(withJSONObject: document, options: [.sortedKeys])
+        let service = try GenerationService(configuration: fixture.configuration)
+        var firstRequest = Self.request(sourceID: sourceID, text: "Words", artifacts: [(.sourceJSON, source)])
+        firstRequest.unarchivedArtifacts = [omission]
+        let first = try await service.beginWisprFlowImport(firstRequest)
+        _ = try await service.uploadWisprFlowArtifact(first.id, filename: .sourceJSON, data: source)
+        let partial = try await service.completeWisprFlowImport(first.id)
+        XCTAssertEqual(partial.outcome, .partial)
+
+        let secondRequest = Self.request(sourceID: sourceID, text: "Words",
+                                         artifacts: [(.sourceJSON, source), (.sourceWAV, wav)])
+        let second = try await service.beginWisprFlowImport(secondRequest)
+        _ = try await service.uploadWisprFlowArtifact(second.id, filename: .sourceJSON, data: source)
+        _ = try await service.uploadWisprFlowArtifact(second.id, filename: .sourceWAV, data: wav)
+        let completed = try await service.completeWisprFlowImport(second.id)
+        XCTAssertEqual(completed.outcome, .enriched)
+        XCTAssertEqual(completed.record.id, partial.record.id)
+        XCTAssertTrue((completed.record.importedSource?.unarchivedArtifactSHA256 ?? [:]).isEmpty)
+        XCTAssertEqual(completed.record.importedSource?.artifactSHA256["source.wav"], digest)
+        let archivedWAV = try await service.artifact(completed.record.id, filename: "source.wav")
+        XCTAssertEqual(try Data(contentsOf: archivedWAV), wav)
+        let archivedSource = try await service.artifact(completed.record.id, filename: "source.json")
+        let archivedDocument = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: archivedSource)) as? [String: Any])
+        let omissions = try XCTUnwrap(archivedDocument["archiveOmissions"] as? [[String: Any]])
+        XCTAssertEqual(omissions.first?["status"] as? String, "archived")
+        await service.shutdown()
+    }
+
+    func testUnknownBuiltInAudioMakesImportPartialWithoutAcceptingUnknownBytes() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let sourceID = UUID(uuidString: "77777777-7777-4777-8777-777777777777")!
+        let omitted = WisprFlowArtifactManifest(filename: .builtInAudio, byteCount: 128,
+                                                sha256: String(repeating: "b", count: 64))
+        let document: [String: Any] = [
+            "schemaVersion": 1, "provider": "wispr-flow", "sourceID": sourceID.uuidString,
+            "sources": [["name": "flow.sqlite", "rowID": 1,
+                         "values": ["builtInAudio": ["type": "blob", "byteCount": 128,
+                                                     "sha256": omitted.sha256,
+                                                     "archiveStatus": "not-archived",
+                                                     "archiveReason": "unsupported-source-column"]]]],
+            "archiveOmissions": [["artifact": omitted.filename.rawValue,
+                                  "sourceColumn": "builtInAudio", "sourceName": "flow.sqlite",
+                                  "sourceRowID": 1, "observedByteCount": 128,
+                                  "observedSHA256": omitted.sha256,
+                                  "reason": "unsupported-source-column", "status": "not-archived"]],
+        ]
+        let source = try JSONSerialization.data(withJSONObject: document, options: [.sortedKeys])
+        let service = try GenerationService(configuration: fixture.configuration)
+        var request = Self.request(sourceID: sourceID, text: "Recovered words", artifacts: [(.sourceJSON, source)])
+        request.unarchivedArtifacts = [omitted]
+        let transfer = try await service.beginWisprFlowImport(request)
+        _ = try await service.uploadWisprFlowArtifact(transfer.id, filename: .sourceJSON, data: source)
+        let result = try await service.completeWisprFlowImport(transfer.id)
+        XCTAssertEqual(result.outcome, .partial)
+        XCTAssertEqual(result.unarchivedArtifactNames, [.builtInAudio])
+        XCTAssertEqual(result.record.importedSource?.unarchivedArtifactSHA256?[omitted.filename.rawValue], omitted.sha256)
+        XCTAssertFalse(result.record.importedSource?.artifactNames.contains(.builtInAudio) ?? true)
+        var invalidRequest = request
+        invalidRequest.artifacts.append(omitted)
+        do {
+            _ = try await service.beginWisprFlowImport(invalidRequest)
+            XCTFail("Unknown built-in audio must not be accepted as an upload artifact.")
+        } catch let error as ServiceError {
+            XCTAssertEqual(error.status, 400)
+        }
         await service.shutdown()
     }
 

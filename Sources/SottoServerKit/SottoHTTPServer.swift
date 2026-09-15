@@ -34,7 +34,7 @@ public enum SottoHTTPServer {
             return try json(await service.knownWisprFlowIDs(input))
         }
         router.put("/v1/imports/wispr-flow/dictionary") { request, _ in
-            let buffer = try await request.body.collect(upTo: 262_144)
+            let buffer = try await request.body.collect(upTo: WisprFlowImportLimits.maximumDictionaryBytes)
             return try json(await service.archiveWisprFlowDictionary(Data(buffer.readableBytesView)))
         }
         router.post("/v1/imports/wispr-flow") { request, _ in

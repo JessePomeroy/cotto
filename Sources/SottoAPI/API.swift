@@ -215,6 +215,13 @@ public enum WisprFlowArtifactName: String, Codable, CaseIterable, Hashable, Send
     case sourceWAV = "source.wav"
     case opusJSON = "opus.json"
     case screenshotPNG = "screenshot.png"
+    /// Typed omission only: Wispr Flow's builtInAudio format is not known.
+    case builtInAudio = "built-in-audio.bin"
+}
+
+public enum WisprFlowImportLimits {
+    public static let maximumArtifactBytes = 8_388_608
+    public static let maximumDictionaryBytes = 8_388_608
 }
 
 public struct WisprFlowArtifactManifest: Codable, Equatable, Sendable {
@@ -235,12 +242,16 @@ public struct WisprFlowImportRequest: Codable, Equatable, Sendable {
     public var durationSeconds: Double?
     public var variantNames: [String]
     public var artifacts: [WisprFlowArtifactManifest]
+    /// Source-reported media versions whose bytes cannot be uploaded. The
+    /// source.json archive records the originating row and reason for each one.
+    public var unarchivedArtifacts: [WisprFlowArtifactManifest]?
     public init(sourceID: UUID, createdAt: Date, sourceStatus: String? = nil, finalText: String,
                 rawText: String, durationSeconds: Double? = nil, variantNames: [String] = [],
-                artifacts: [WisprFlowArtifactManifest]) {
+                artifacts: [WisprFlowArtifactManifest], unarchivedArtifacts: [WisprFlowArtifactManifest]? = nil) {
         self.sourceID = sourceID; self.createdAt = createdAt; self.sourceStatus = sourceStatus
         self.finalText = finalText; self.rawText = rawText; self.durationSeconds = durationSeconds
         self.variantNames = variantNames; self.artifacts = artifacts
+        self.unarchivedArtifacts = unarchivedArtifacts
     }
 }
 
@@ -299,8 +310,8 @@ public struct ImportedSource: Codable, Equatable, Sendable {
     public var sourceSHA256: String
     /// Digests of the actual archived artifacts, including merged source.json.
     public var artifactSHA256: [String: String]
-    /// Digests seen in later source files whose media bytes conflicted with an
-    /// already archived attachment. Those bytes are not claimed as archived.
+    /// Source-reported media digests whose bytes are not in the archive. Full
+    /// version, size, and reason details live in source.json.
     public var unarchivedArtifactSHA256: [String: String]?
     public init(sourceID: UUID, sourceStatus: String?, importedAt: Date, variantNames: [String],
                 artifactNames: [WisprFlowArtifactName], durationSeconds: Double?, sourceSHA256: String,

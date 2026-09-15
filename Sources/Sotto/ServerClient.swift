@@ -8,6 +8,8 @@ enum ServerClientError: LocalizedError {
     case invalidResponse
     case disconnected
     case uploadBacklog
+    case importArtifactTooLarge(WisprFlowArtifactName, Int)
+    case dictionaryArchiveTooLarge(Int)
 
     var errorDescription: String? {
         switch self {
@@ -16,6 +18,10 @@ enum ServerClientError: LocalizedError {
         case .invalidResponse: "The server returned an invalid response."
         case .disconnected: "The server connection was interrupted. Any completed result is available in shared history."
         case .uploadBacklog: "The connection cannot keep up with the microphone. This recording was stopped."
+        case .importArtifactTooLarge(let name, let bytes):
+            "\(name.rawValue) is \(ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)), above the 8 MiB source-artifact limit."
+        case .dictionaryArchiveTooLarge(let bytes):
+            "Wispr Flow dictionary is \(ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)), above the 8 MiB archive limit. No dictionary entries were archived."
         }
     }
 }
@@ -157,9 +163,16 @@ extension ServerClient {
     }
 
     func knownWisprFlowSourceIDs(_ sourceIDs: [UUID]) async throws -> Set<UUID> {
-        let input = WisprFlowKnownIDsRequest(sourceIDs: sourceIDs)
-        let result: WisprFlowKnownIDsResponse = try await json(path: "v1/imports/wispr-flow/known", method: "POST", body: Self.encode(input))
-        return Set(result.knownSourceIDs)
+        var known = Set<UUID>()
+        // The server's 256 KiB JSON body limit is tighter than its 10,000-ID limit.
+        for start in stride(from: 0, to: sourceIDs.count, by: 5_000) {
+            let batch = Array(sourceIDs[start..<min(start + 5_000, sourceIDs.count)])
+            let input = WisprFlowKnownIDsRequest(sourceIDs: batch)
+            let result: WisprFlowKnownIDsResponse = try await json(
+                path: "v1/imports/wispr-flow/known", method: "POST", body: Self.encode(input))
+            known.formUnion(result.knownSourceIDs)
+        }
+        return known
     }
 
     func beginWisprFlowImport(_ value: WisprFlowImportRequest) async throws -> WisprFlowImportSession {
@@ -184,6 +197,10 @@ extension ServerClient {
     }
 
     func archiveWisprFlowDictionary(_ url: URL) async throws -> WisprFlowDictionaryArchiveReceipt {
+        let bytes = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+        guard (1...WisprFlowImportLimits.maximumDictionaryBytes).contains(bytes) else {
+            throw ServerClientError.dictionaryArchiveTooLarge(bytes)
+        }
         let upload = try request(path: "v1/imports/wispr-flow/dictionary", method: "PUT", contentType: "application/json")
         let (data, response) = try await session.upload(for: upload, fromFile: url)
         try Self.validate(response, data: data)
@@ -191,6 +208,10 @@ extension ServerClient {
     }
 
     static func wisprFlowArtifactManifest(filename: WisprFlowArtifactName, url: URL) throws -> WisprFlowArtifactManifest {
+        let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+        guard (1...WisprFlowImportLimits.maximumArtifactBytes).contains(size) else {
+            throw ServerClientError.importArtifactTooLarge(filename, size)
+        }
         let input = try FileHandle(forReadingFrom: url)
         defer { try? input.close() }
         var hash = SHA256()

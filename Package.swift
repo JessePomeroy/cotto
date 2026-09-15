@@ -11,7 +11,7 @@ var targets: [Target] = [
     .target(name: "SottoServerKit", dependencies: ["SottoAPI", "SottoDomain", .product(name: "Hummingbird", package: "hummingbird"), .product(name: "Crypto", package: "swift-crypto")]),
     .executableTarget(name: "SottoServer", dependencies: ["SottoServerKit"]),
     .testTarget(name: "SottoDomainTests", dependencies: ["SottoDomain"]),
-    .testTarget(name: "SottoServerTests", dependencies: ["SottoServerKit", .product(name: "HummingbirdTesting", package: "hummingbird")]),
+    .testTarget(name: "SottoServerTests", dependencies: ["SottoServerKit", .product(name: "HummingbirdTesting", package: "hummingbird"), .product(name: "Crypto", package: "swift-crypto")]),
 ]
 
 #if os(macOS)
