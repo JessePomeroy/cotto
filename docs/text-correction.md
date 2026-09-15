@@ -79,6 +79,8 @@ python3 scripts/test-llama-engine.py \
   --server build/server/sotto-server
 ```
 
+Use `--server` for the built-in default: the loader removes the CLI export's delimiter newline. An explicit `--prompt` file is an exact custom prompt, including trailing newlines; those bytes can affect model behavior. Do not use a redirected CLI export as an exact custom prompt without removing its delimiter.
+
 There is no legacy desktop transcription/correction CLI or model importer. File-based integration uses the [server HTTP contract](client-server-contract.md).
 
 Audio rechecking for negations Whisper omitted is a [separate follow-up](follow-ups/missing-negation-recognition.md). The current guards compare recognized text; they do not guarantee detection of words missing from ASR.
