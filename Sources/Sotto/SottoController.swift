@@ -567,8 +567,13 @@ final class SottoController: ObservableObject {
         await Task.detached(priority: .utility) { reader.close() }.value
         wisprFlowActiveReaders.removeValue(forKey: revision)
         if completionAttempted || counts.imported + counts.enriched + counts.skipped + counts.partial > 0 {
-            if historySourceFilter == "wispr-flow" { refreshHistory() }
-            else { setHistorySourceFilter("wispr-flow") }
+            if revision == wisprFlowImportRevision, historySourceFilter != "wispr-flow" {
+                setHistorySourceFilter("wispr-flow")
+            } else {
+                // A cancelled run can still have committed on the server.
+                // Refresh the user's current view without changing its filter.
+                refreshHistory()
+            }
         }
         guard revision == wisprFlowImportRevision else { return }
         wisprFlowImportTask = nil

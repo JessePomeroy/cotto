@@ -217,7 +217,7 @@ final class WisprFlowSourceReader: @unchecked Sendable {
             if skippedMalformedIDs > 0 {
                 warnings.append("Skipped \(skippedMalformedIDs) History row\(skippedMalformedIDs == 1 ? "" : "s") with missing or malformed session IDs.")
             }
-            let dictionaryCount = try Self.dictionaryIDs(in: opened).count
+            let dictionaryCount = try Self.dictionaryCount(in: opened)
             preview = WisprFlowImportPreview(
                 sessionCount: ids.count, transcriptCount: transcriptCount,
                 metadataOnlyCount: metadataOnlyCount, wavCount: wavCount,
@@ -671,7 +671,9 @@ final class WisprFlowSourceReader: @unchecked Sendable {
             database.columns.contains(name) ? "\"\(name)\"" : "NULL"
         }
         func length(_ name: String) -> String {
-            database.columns.contains(name) ? "length(\"\(name)\")" : "0"
+            database.columns.contains(name)
+                ? "CASE WHEN typeof(\"\(name)\") IN ('blob', 'text') THEN length(CAST(\"\(name)\" AS BLOB)) ELSE 0 END"
+                : "0"
         }
         let sql = """
             SELECT rowid, \(field("transcriptEntityId")), \(field("timestamp")),
@@ -711,17 +713,24 @@ final class WisprFlowSourceReader: @unchecked Sendable {
         return (rows, skippedMalformedIDs)
     }
 
-    private static func dictionaryIDs(in databases: [Database]) throws -> Set<String> {
+    private static func dictionaryCount(in databases: [Database]) throws -> Int {
         var ids = Set<String>()
+        var rowsWithoutUsableID = 0
         for database in databases where !database.dictionaryColumns.isEmpty {
-            let idExpression = database.dictionaryColumns.contains("id") ? "CAST(\"id\" AS TEXT)" : "CAST(rowid AS TEXT)"
+            let idExpression = database.dictionaryColumns.contains("id") ? "CAST(\"id\" AS TEXT)" : "NULL"
             let statement = try prepare("SELECT \(idExpression) FROM \"Dictionary\"", in: database.connection)
             defer { sqlite3_finalize(statement) }
             while try nextRow(statement, in: database.connection) {
-                if let id = text(statement, column: 0) { ids.insert(id) }
+                if let id = text(statement, column: 0), !id.isEmpty {
+                    ids.insert(id)
+                } else {
+                    // These rows still have data to archive, but cannot be
+                    // deduplicated reliably across snapshots.
+                    rowsWithoutUsableID += 1
+                }
             }
         }
-        return ids
+        return ids.count + rowsWithoutUsableID
     }
 
     private static func sourceValues(
@@ -739,9 +748,9 @@ final class WisprFlowSourceReader: @unchecked Sendable {
         for index in 0..<sqlite3_column_count(statement) {
             let name = String(cString: sqlite3_column_name(statement, index))
             if name == "audio" || name == "opusChunks" || name == "screenshot" || name == "builtInAudio" {
-                let type = sqliteType(sqlite3_column_type(statement, index))
-                if type == "null" { values[name] = ["type": "null"] }
-                else {
+                switch sqlite3_column_type(statement, index) {
+                case SQLITE_TEXT, SQLITE_BLOB:
+                    let type = sqliteType(sqlite3_column_type(statement, index))
                     var reference: [String: Any] = ["type": type, "byteCount": Int(sqlite3_column_bytes(statement, index))]
                     reference["sha256"] = try hashBlob(column: name, rowID: row.rowID,
                                                        from: database.connection)
@@ -750,6 +759,10 @@ final class WisprFlowSourceReader: @unchecked Sendable {
                         reference["artifact"] = filename
                     }
                     values[name] = reference
+                default:
+                    // SQLite's dynamic typing permits a numeric value even in
+                    // a media-named column. It is source data, not blob bytes.
+                    values[name] = typedValue(statement, column: index)
                 }
             } else {
                 let type = sqliteType(sqlite3_column_type(statement, index))
@@ -914,12 +927,16 @@ final class WisprFlowSourceReader: @unchecked Sendable {
                 withJSONObject: values, options: [.sortedKeys]
             )).map { String(format: "%02x", $0) }.joined()
             canonical["columnNames"] = columnNames
-            canonical["omittedValueCount"] = values.count - mediaColumns.intersection(Set(values.keys)).count
+            let omittedValueCount = values.count - mediaColumns.intersection(Set(values.keys)).count
+            canonical["omittedValueCount"] = omittedValueCount
             canonical["values"] = values.filter { mediaColumns.contains($0.key) }
             omittedFields += values.filter {
                 !mediaColumns.contains($0.key)
                     && $0.value["archiveReason"] as? String != "exceeds-source-json-limit"
             }.count
+            // The server counts this row summary as omittedValueCount, even
+            // when some fields were already summarized earlier in this pass.
+            omittedFields = max(omittedFields, omittedValueCount)
             sources[0] = canonical
             data = try encode()
         }
@@ -939,6 +956,9 @@ final class WisprFlowSourceReader: @unchecked Sendable {
         // This final form preserves the canonical row locator and an aggregate
         // digest, so the transcript import itself never depends on its size.
         if data.count > sourceJSONTargetBytes, let canonical = sources.first {
+            let remainingColumns = (canonical["columnNames"] as? [String])?.count ?? 0
+            omittedColumns += remainingColumns
+            omittedFields += remainingColumns
             var minimal: [String: Any] = [
                 "name": canonical["name"] as? String ?? "unknown",
                 "role": canonical["role"] as? String ?? "selected",
@@ -950,7 +970,6 @@ final class WisprFlowSourceReader: @unchecked Sendable {
                 minimal["omittedValuesSHA256"] = hash
             }
             sources = [minimal]
-            omittedFields += 1
             data = try encode()
         }
         guard data.count <= WisprFlowImportLimits.maximumArtifactBytes else {

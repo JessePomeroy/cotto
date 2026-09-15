@@ -173,6 +173,52 @@ final class WisprFlowSourceReaderTests: XCTestCase {
         XCTAssertEqual(session.displayText, "Current pasted text")
     }
 
+    func testCanonicalSourceSummaryCountCoversAllOmittedValuesAndColumns() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("sotto-flow-wide-history-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = directory.appendingPathComponent("flow.sqlite")
+        var database: OpaquePointer?
+        guard sqlite3_open(source.path, &database) == SQLITE_OK, let database else {
+            throw NSError(domain: "WisprFlowFixture", code: 18)
+        }
+        let columns = (0..<600).map { index in
+            "\"wide-\(index)-\(String(repeating: "x", count: 12_500))\" TEXT"
+        }.joined(separator: ",")
+        let sql = """
+            CREATE TABLE History (
+                transcriptEntityId TEXT, timestamp TEXT, pastedText TEXT, \(columns)
+            );
+            INSERT INTO History (transcriptEntityId, timestamp, pastedText)
+            VALUES ('\(Fixture.sharedID.uuidString)', '2026-01-03 12:00:00.000 +00:00', 'Recovered transcript');
+            """
+        let result = sqlite3_exec(database, sql, nil, nil, nil)
+        let message = String(cString: sqlite3_errmsg(database))
+        sqlite3_close(database)
+        guard result == SQLITE_OK else {
+            throw NSError(domain: "WisprFlowFixture", code: 19,
+                          userInfo: [NSLocalizedDescriptionKey: message])
+        }
+
+        let reader = try WisprFlowSourceReader(sourceURLs: [source])
+        let session = try reader.session(for: Fixture.sharedID)
+        XCTAssertEqual(session.displayText, "Recovered transcript")
+        let archive = try XCTUnwrap(session.artifacts.first(where: { $0.filename == .sourceJSON }))
+        let bytes = try Data(contentsOf: archive.url)
+        XCTAssertLessThanOrEqual(bytes.count, WisprFlowImportLimits.maximumArtifactBytes)
+        let document = try XCTUnwrap(JSONSerialization.jsonObject(with: bytes) as? [String: Any])
+        XCTAssertEqual(document["provenanceStatus"] as? String, "partial")
+        let versions = try XCTUnwrap(document["sources"] as? [[String: Any]])
+        let canonical = try XCTUnwrap(versions.first)
+        let omittedValues = try XCTUnwrap(canonical["omittedValueCount"] as? Int)
+        let omittedColumns = canonical["omittedColumnCount"] as? Int ?? 0
+        let fieldCount = try XCTUnwrap(document["provenanceOmittedFieldCount"] as? Int)
+        XCTAssertGreaterThan(omittedValues, 600)
+        XCTAssertGreaterThanOrEqual(fieldCount, omittedValues + omittedColumns)
+        XCTAssertEqual((canonical["omittedValuesSHA256"] as? String)?.count, 64)
+    }
+
     private static func digest(_ data: Data) -> String {
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
@@ -226,6 +272,25 @@ final class WisprFlowSourceReaderTests: XCTestCase {
         }
     }
 
+    func testDictionaryRowsWithoutUsableIDsRemainInPreviewAndArchive() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        try fixture.addDictionaryRowsWithUnusableIDs()
+        let reader = try WisprFlowSourceReader(sourceURLs: fixture.urls)
+        XCTAssertEqual(reader.preview.dictionaryCount, 3)
+
+        let archive = try Data(contentsOf: XCTUnwrap(reader.dictionaryArtifactURL()))
+        let document = try XCTUnwrap(JSONSerialization.jsonObject(with: archive) as? [String: Any])
+        let sources = try XCTUnwrap(document["sources"] as? [[String: Any]])
+        XCTAssertEqual(sources.count, 2)
+        let currentRows = try XCTUnwrap(sources[0]["rows"] as? [[String: [String: Any]]])
+        let backupRows = try XCTUnwrap(sources[1]["rows"] as? [[String: [String: Any]]])
+        XCTAssertEqual(Set(currentRows.compactMap { $0["phrase"]?["value"] as? String }),
+                       Set(["Null ID", "Invalid UTF-8 ID", "Current shared"]))
+        XCTAssertEqual(backupRows.count, 1)
+        XCTAssertEqual(backupRows.first?["phrase"]?["value"] as? String, "Backup shared")
+    }
+
     func testMalformedSourceIDsAreSkippedAndCountedWithoutBlockingValidHistory() throws {
         let fixture = try Fixture()
         defer { fixture.remove() }
@@ -253,6 +318,86 @@ final class WisprFlowSourceReaderTests: XCTestCase {
         XCTAssertEqual(omissions.first?["sourceColumn"] as? String, "builtInAudio")
         XCTAssertEqual(omissions.first?["reason"] as? String, "unsupported-source-column")
         XCTAssertEqual(omissions.first?["observedSHA256"] as? String, omitted.sha256)
+    }
+
+    func testNumericValuesInMediaNamedColumnsPreserveTypedSourceAndDoNotBlockText() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("sotto-flow-numeric-media-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = directory.appendingPathComponent("numeric.sqlite")
+        let sourceID = UUID(uuidString: "88888888-8888-4888-8888-888888888888")!
+        var database: OpaquePointer?
+        guard sqlite3_open(source.path, &database) == SQLITE_OK, let database else {
+            throw NSError(domain: "WisprFlowFixture", code: 20)
+        }
+        let sql = """
+            CREATE TABLE History (
+                transcriptEntityId TEXT PRIMARY KEY, timestamp TEXT, pastedText TEXT,
+                audio, opusChunks, screenshot, builtInAudio
+            );
+            INSERT INTO History VALUES (
+                '\(sourceID.uuidString)', '2026-01-03 12:00:00.000 +00:00', 'Recovered text',
+                42, 3.5, -7, 2.25
+            );
+            """
+        let result = sqlite3_exec(database, sql, nil, nil, nil)
+        let sqliteMessage = String(cString: sqlite3_errmsg(database))
+        sqlite3_close(database)
+        guard result == SQLITE_OK else {
+            throw NSError(domain: "WisprFlowFixture", code: 21,
+                          userInfo: [NSLocalizedDescriptionKey: sqliteMessage])
+        }
+        try FileManager.default.setAttributes([.posixPermissions: 0o444], ofItemAtPath: source.path)
+        let before = try Data(contentsOf: source)
+        let reader = try WisprFlowSourceReader(sourceURLs: [source])
+        XCTAssertEqual(reader.preview.sessionCount, 1)
+        XCTAssertEqual(reader.preview.wavCount, 0)
+        XCTAssertEqual(reader.preview.opusCount, 0)
+        XCTAssertEqual(reader.preview.screenshotCount, 0)
+        let session = try reader.session(for: sourceID)
+        XCTAssertEqual(session.displayText, "Recovered text")
+        XCTAssertEqual(session.artifacts.map(\.filename), [.sourceJSON])
+        XCTAssertTrue(session.unarchivedArtifacts.isEmpty)
+        let document = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: XCTUnwrap(session.artifacts.first).url)) as? [String: Any])
+        let sources = try XCTUnwrap(document["sources"] as? [[String: Any]])
+        let values = try XCTUnwrap(sources.first?["values"] as? [String: [String: Any]])
+        XCTAssertEqual(values["audio"]?["type"] as? String, "integer")
+        XCTAssertEqual(values["audio"]?["value"] as? Int, 42)
+        XCTAssertEqual(values["opusChunks"]?["type"] as? String, "real")
+        XCTAssertEqual(values["opusChunks"]?["value"] as? Double, 3.5)
+        XCTAssertEqual(values["screenshot"]?["type"] as? String, "integer")
+        XCTAssertEqual(values["screenshot"]?["value"] as? Int, -7)
+        XCTAssertEqual(values["builtInAudio"]?["type"] as? String, "real")
+        XCTAssertEqual(values["builtInAudio"]?["value"] as? Double, 2.25)
+        XCTAssertEqual(try Data(contentsOf: source), before)
+    }
+
+    func testMultibyteOpusTextUsesByteExactLimitAndKeepsSmallerBackup() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let byteCount = try fixture.addOversizedUTF8OpusText()
+        XCTAssertGreaterThan(byteCount, WisprFlowImportLimits.maximumArtifactBytes)
+        let reader = try WisprFlowSourceReader(sourceURLs: fixture.urls)
+        let session = try reader.session(for: Fixture.sharedID)
+        XCTAssertEqual(session.displayText, "Current pasted text")
+        let opus = try XCTUnwrap(session.artifacts.first(where: { $0.filename == .opusJSON }))
+        XCTAssertEqual(try Data(contentsOf: opus.url), Data(#"{"chunks":[]}"#.utf8))
+        let missing = try XCTUnwrap(session.unarchivedArtifacts.first(where: { $0.filename == .opusJSON }))
+        XCTAssertEqual(missing.byteCount, byteCount)
+        let source = try XCTUnwrap(session.artifacts.first(where: { $0.filename == .sourceJSON }))
+        let document = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: source.url)) as? [String: Any])
+        let omissions = try XCTUnwrap(document["archiveOmissions"] as? [[String: Any]])
+        let current = try XCTUnwrap(omissions.first(where: { $0["sourceName"] as? String == "live.sqlite"
+            && $0["artifact"] as? String == "opus.json" }))
+        XCTAssertEqual(current["observedByteCount"] as? Int, byteCount)
+        XCTAssertEqual(current["observedSHA256"] as? String, missing.sha256)
+        XCTAssertEqual(current["reason"] as? String, "exceeds-upload-limit")
+
+        let currentOnly = try WisprFlowSourceReader(sourceURLs: [fixture.urls[0]])
+        let textOnly = try currentOnly.session(for: Fixture.sharedID)
+        XCTAssertEqual(textOnly.artifacts.map(\.filename), [.sourceJSON])
+        XCTAssertEqual(textOnly.unarchivedArtifacts.map(\.filename), [.opusJSON])
+        XCTAssertEqual(textOnly.displayText, "Current pasted text")
     }
 
     private struct Fixture {
@@ -307,6 +452,31 @@ final class WisprFlowSourceReaderTests: XCTestCase {
                     throw NSError(domain: "WisprFlowFixture", code: 7)
                 }
             }
+        }
+
+        func addOversizedUTF8OpusText() throws -> Int {
+            let value = String(repeating: "é", count: WisprFlowImportLimits.maximumArtifactBytes / 2 + 1)
+            let byteCount = value.utf8.count
+            try withWritableLiveDatabase { database in
+                var statement: OpaquePointer?
+                guard sqlite3_prepare_v2(database,
+                    "UPDATE History SET opusChunks = ? WHERE transcriptEntityId = ?",
+                    -1, &statement, nil) == SQLITE_OK, let statement else {
+                    throw NSError(domain: "WisprFlowFixture", code: 22)
+                }
+                defer { sqlite3_finalize(statement) }
+                try value.withCString { valuePointer in
+                    try Self.sharedID.uuidString.withCString { idPointer in
+                        sqlite3_bind_text(statement, 1, valuePointer, Int32(byteCount), nil)
+                        sqlite3_bind_text(statement, 2, idPointer, -1, nil)
+                        guard sqlite3_step(statement) == SQLITE_DONE else {
+                            throw NSError(domain: "WisprFlowFixture", code: 23,
+                                userInfo: [NSLocalizedDescriptionKey: String(cString: sqlite3_errmsg(database))])
+                        }
+                    }
+                }
+            }
+            return byteCount
         }
 
         func addProvenanceFields(blobBytes: Int, textBytes: Int) throws {
@@ -394,6 +564,29 @@ final class WisprFlowSourceReaderTests: XCTestCase {
             }
         }
 
+        func addDictionaryRowsWithUnusableIDs() throws {
+            try withWritableDatabase(at: 0) { database in
+                let sql = """
+                    CREATE TABLE Dictionary (id BLOB, phrase TEXT);
+                    INSERT INTO Dictionary VALUES (NULL, 'Null ID');
+                    INSERT INTO Dictionary VALUES (x'ff', 'Invalid UTF-8 ID');
+                    INSERT INTO Dictionary VALUES ('shared', 'Current shared');
+                    """
+                guard sqlite3_exec(database, sql, nil, nil, nil) == SQLITE_OK else {
+                    throw NSError(domain: "WisprFlowFixture", code: 18)
+                }
+            }
+            try withWritableDatabase(at: 1) { database in
+                let sql = """
+                    CREATE TABLE Dictionary (id BLOB, phrase TEXT);
+                    INSERT INTO Dictionary VALUES ('shared', 'Backup shared');
+                    """
+                guard sqlite3_exec(database, sql, nil, nil, nil) == SQLITE_OK else {
+                    throw NSError(domain: "WisprFlowFixture", code: 19)
+                }
+            }
+        }
+
         func addMalformedSourceIDs() throws {
             try withWritableLiveDatabase { database in
                 let sql = """
@@ -421,11 +614,15 @@ final class WisprFlowSourceReaderTests: XCTestCase {
         }
 
         private func withWritableLiveDatabase(_ operation: (OpaquePointer) throws -> Void) throws {
-            let live = urls[0]
-            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: live.path)
-            defer { try? FileManager.default.setAttributes([.posixPermissions: 0o444], ofItemAtPath: live.path) }
+            try withWritableDatabase(at: 0, operation)
+        }
+
+        private func withWritableDatabase(at index: Int, _ operation: (OpaquePointer) throws -> Void) throws {
+            let source = urls[index]
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: source.path)
+            defer { try? FileManager.default.setAttributes([.posixPermissions: 0o444], ofItemAtPath: source.path) }
             var database: OpaquePointer?
-            guard sqlite3_open(live.path, &database) == SQLITE_OK, let database else {
+            guard sqlite3_open(source.path, &database) == SQLITE_OK, let database else {
                 throw NSError(domain: "WisprFlowFixture", code: 12)
             }
             defer { sqlite3_close(database) }
