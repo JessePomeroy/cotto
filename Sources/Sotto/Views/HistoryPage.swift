@@ -8,6 +8,7 @@ struct HistoryPage: View {
     @State private var deviceID = "all"
     @State private var confirmingDelete = false
     @State private var copiedID: UUID?
+    @State private var showingWisprFlowImport = false
 
     private var devices: [DeviceIdentity] {
         var seen = Set<String>()
@@ -30,6 +31,15 @@ struct HistoryPage: View {
                 }
                 .labelsHidden()
                 .frame(width: 180)
+                Picker("Source", selection: Binding(get: { controller.historySourceFilter },
+                                                     set: controller.setHistorySourceFilter)) {
+                    Text("All sources").tag("all")
+                    Text("Sotto").tag("sotto")
+                    Text("Wispr Flow").tag("wispr-flow")
+                }
+                .labelsHidden()
+                .frame(width: 130)
+                .accessibilityIdentifier("history.source-filter")
                 Button {
                     controller.errorMessage = nil
                     controller.refreshHistory()
@@ -50,10 +60,16 @@ struct HistoryPage: View {
             .layoutPriority(1)
 
             HStack {
-                Text("\(filtered.count) dictations\(controller.hasMoreHistory ? " loaded" : "")")
+                Text("\(filtered.count) sessions\(controller.hasMoreHistory ? " loaded" : "")")
                     .font(.caption)
                     .foregroundStyle(SottoPalette.muted)
                 Spacer()
+                Button("Import Wispr Flow history") {
+                    showingWisprFlowImport = true
+                    controller.prepareWisprFlowImport()
+                }
+                .disabled(controller.isBusy)
+                .accessibilityIdentifier("history.import-wispr-flow")
                 if controller.isLoadingHistory { ProgressView().controlSize(.mini) }
                 Button("Load older") {
                     controller.errorMessage = nil
@@ -66,6 +82,14 @@ struct HistoryPage: View {
         }
         .padding(26)
         .onAppear { controller.refreshHistory() }
+        .onChange(of: controller.historySourceFilter) { _, _ in
+            deviceID = "all"
+            selectedID = nil
+        }
+        .sheet(isPresented: $showingWisprFlowImport) {
+            WisprFlowImportSheet(controller: controller)
+                .onDisappear { controller.closeWisprFlowImportSheet() }
+        }
         .confirmationDialog("Delete this dictation from the server?", isPresented: $confirmingDelete) {
             if let selected {
                 Button("Delete dictation", role: .destructive) {
@@ -75,7 +99,7 @@ struct HistoryPage: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Its audio and transcript will be removed from every device’s history.")
+            Text("Its archived text and files will be removed from every device’s history.")
         }
     }
 
@@ -92,18 +116,19 @@ struct HistoryPage: View {
                                 .foregroundStyle(SottoPalette.warning)
                         }
                     }
-                    Text(generation.finalText.isEmpty ? statusLabel(generation.status) : generation.finalText)
+                    Text(summary(generation))
                         .font(.callout)
                         .lineLimit(2)
                         .frame(maxWidth: .infinity, minHeight: 34, alignment: .topLeading)
-                    Label(generation.device.name, systemImage: "laptopcomputer")
+                    Label(sourceLabel(generation),
+                          systemImage: generation.importedSource == nil ? "laptopcomputer" : "square.and.arrow.down")
                         .font(.caption2)
                         .foregroundStyle(SottoPalette.muted)
                         .lineLimit(1)
                 }
                 .padding(.vertical, 8)
                 .tag(generation.id)
-                .accessibilityLabel("\(generation.device.name), \(generation.finalText.isEmpty ? statusLabel(generation.status) : generation.finalText)")
+                .accessibilityLabel("\(sourceLabel(generation)), \(summary(generation))")
             }
         }
         .listStyle(.inset)
@@ -136,8 +161,12 @@ struct HistoryPage: View {
                         .accessibilityLabel("Delete dictation")
                 }
                 HStack(spacing: 12) {
-                    Label(selected.device.name, systemImage: "laptopcomputer")
-                    Text(statusLabel(selected.status))
+                    Label(sourceLabel(selected),
+                          systemImage: selected.importedSource == nil ? "laptopcomputer" : "square.and.arrow.down")
+                    if selected.importedSource == nil { Text(statusLabel(selected.status)) }
+                    if let sourceStatus = selected.importedSource?.sourceStatus, !sourceStatus.isEmpty {
+                        Text("Flow status: \(sourceStatus)")
+                    }
                     if selected.audioSeconds > 0 { Text(sottoDuration(selected.audioSeconds)).monospacedDigit() }
                 }
                 .font(.caption)
@@ -154,7 +183,7 @@ struct HistoryPage: View {
                             .textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading)
                         if !selected.rawText.isEmpty && selected.rawText != selected.finalText {
-                            DisclosureGroup("Original transcript") {
+                            DisclosureGroup(selected.importedSource == nil ? "Original transcript" : "Wispr Flow ASR") {
                                 Text(selected.rawText)
                                     .font(.callout)
                                     .foregroundStyle(SottoPalette.muted)
@@ -162,6 +191,11 @@ struct HistoryPage: View {
                                     .frame(maxWidth: .infinity, alignment: .leading)
                                     .padding(.top, 8)
                             }
+                        }
+                        if let source = selected.importedSource, !source.variantNames.isEmpty {
+                            Text("Stored text versions: \(source.variantNames.joined(separator: ", "))")
+                                .font(.caption)
+                                .foregroundStyle(SottoPalette.muted)
                         }
                         if let reason = selected.formattingRejectionReason {
                             Text(reason).font(.caption).foregroundStyle(SottoPalette.warning)
@@ -200,6 +234,22 @@ struct HistoryPage: View {
                             controller.openGenerationAudio(selected, kind: .original)
                         }
                     }
+                    if let source = selected.importedSource {
+                        if source.artifactNames.contains(.sourceWAV) {
+                            Button("Open Wispr Flow audio") {
+                                controller.openWisprFlowArtifact(selected, filename: .sourceWAV)
+                            }
+                        }
+                        if !source.artifactNames.isEmpty {
+                            Menu("Source files") {
+                                ForEach(source.artifactNames, id: \.rawValue) { filename in
+                                    Button(sourceFileLabel(filename)) {
+                                        controller.openWisprFlowArtifact(selected, filename: filename)
+                                    }
+                                }
+                            }
+                        }
+                    }
                     Spacer()
                 }
                 .frame(height: 28)
@@ -232,6 +282,24 @@ struct HistoryPage: View {
         }
     }
 
+    private func sourceLabel(_ generation: GenerationRecord) -> String {
+        generation.importedSource == nil ? generation.device.name : "Imported from Wispr Flow"
+    }
+
+    private func summary(_ generation: GenerationRecord) -> String {
+        if !generation.finalText.isEmpty { return generation.finalText }
+        return generation.importedSource == nil ? statusLabel(generation.status) : "No transcript recovered"
+    }
+
+    private func sourceFileLabel(_ filename: WisprFlowArtifactName) -> String {
+        switch filename {
+        case .sourceJSON: "Full source data"
+        case .sourceWAV: "Wispr Flow audio"
+        case .opusJSON: "Opus packets"
+        case .screenshotPNG: "Screenshot"
+        }
+    }
+
     private func hintDetails(_ title: String, hints: ModelHintUsage) -> some View {
         DisclosureGroup("\(title): \(hints.omittedTerms.count) terms did not fit") {
             VStack(alignment: .leading, spacing: 8) {
@@ -242,6 +310,178 @@ struct HistoryPage: View {
             .foregroundStyle(SottoPalette.muted)
             .textSelection(.enabled)
             .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+}
+
+private struct WisprFlowImportSheet: View {
+    @ObservedObject var controller: SottoController
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text("Import Wispr Flow history")
+                .font(.title2.weight(.semibold))
+
+            Group {
+                switch controller.wisprFlowImportState {
+                case .idle, .preparing:
+                    VStack(alignment: .leading, spacing: 12) {
+                        ProgressView().controlSize(.small)
+                        Text("Reading local Wispr Flow history…")
+                            .foregroundStyle(SottoPalette.muted)
+                    }
+                case .preview(let preview, let knownCount, let destinationError):
+                    previewContent(preview, knownCount: knownCount, destinationError: destinationError)
+                case .running(let preview, let counts):
+                    progressContent(preview, counts: counts)
+                case .finished(let preview, let counts, let cancelled):
+                    resultContent(preview, counts: counts, cancelled: cancelled)
+                case .failed(let message):
+                    Text(message)
+                        .foregroundStyle(SottoPalette.warning)
+                        .textSelection(.enabled)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+
+            Divider()
+            HStack {
+                Text("Destination: \(controller.preferences.endpoint)")
+                    .font(.caption)
+                    .foregroundStyle(SottoPalette.muted)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer()
+                actions
+            }
+        }
+        .padding(24)
+        .frame(width: 520, height: 380)
+        .interactiveDismissDisabled(isImporting)
+        .accessibilityIdentifier("wispr-flow-import.sheet")
+    }
+
+    private var isImporting: Bool {
+        if case .running = controller.wisprFlowImportState { return true }
+        return false
+    }
+
+    private func previewContent(_ preview: WisprFlowImportPreview, knownCount: Int?,
+                                destinationError: String?) -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("\(preview.sessionCount) sessions found")
+                    .font(.headline)
+                if let earliest = preview.earliestDate, let latest = preview.latestDate {
+                    Text("\(earliest.formatted(date: .abbreviated, time: .omitted)) – \(latest.formatted(date: .abbreviated, time: .omitted))")
+                        .foregroundStyle(SottoPalette.muted)
+                }
+                Divider()
+                countRow("With transcripts", count: preview.transcriptCount)
+                countRow("Without text", count: preview.sessionCount - preview.transcriptCount)
+                countRow("Metadata only", count: preview.metadataOnlyCount)
+                countRow("With recovered audio", count: preview.wavCount)
+                countRow("Opus packet sets", count: preview.opusCount)
+                countRow("Screenshots", count: preview.screenshotCount)
+                countRow("Dictionary entries to archive", count: preview.dictionaryCount)
+                if let knownCount {
+                    countRow("Already in Soto", count: knownCount)
+                }
+                if let destinationError {
+                    Text(destinationError).font(.caption).foregroundStyle(SottoPalette.warning)
+                }
+                Text("About \(ByteCountFormatter.string(fromByteCount: preview.estimatedArtifactBytes, countStyle: .file)) of source files")
+                    .font(.caption)
+                    .foregroundStyle(SottoPalette.muted)
+                Text("Sources: \(sourceSummary(preview.sourceURLs))")
+                    .font(.caption)
+                    .foregroundStyle(SottoPalette.muted)
+                ForEach(preview.warnings, id: \.self) { warning in
+                    Text(warning).font(.caption).foregroundStyle(SottoPalette.warning)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func progressContent(_ preview: WisprFlowImportPreview, counts: WisprFlowImportCounts) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Importing \(preview.sessionCount) sessions")
+                .font(.headline)
+            ProgressView(value: Double(counts.processed), total: Double(max(1, counts.total)))
+                .accessibilityIdentifier("wispr-flow-import.progress")
+            Text("\(counts.processed) of \(counts.total) processed")
+                .monospacedDigit()
+                .foregroundStyle(SottoPalette.muted)
+            Text("\(counts.imported) imported · \(counts.enriched) enriched · \(counts.skipped) complete · \(counts.partial) partial · \(counts.failed) failed")
+                .font(.caption)
+        }
+    }
+
+    private func resultContent(_ preview: WisprFlowImportPreview, counts: WisprFlowImportCounts,
+                               cancelled: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(cancelled ? "Import stopped" : (counts.processed < preview.sessionCount ? "Import incomplete" : "Import complete"))
+                .font(.headline)
+            Text("\(counts.processed) of \(preview.sessionCount) sessions processed")
+                .monospacedDigit()
+            countRow("Imported", count: counts.imported)
+            countRow("Enriched", count: counts.enriched)
+            countRow("Already complete", count: counts.skipped)
+            countRow("Partial media", count: counts.partial)
+            countRow("Failed", count: counts.failed)
+            if preview.dictionaryCount > 0 {
+                Text(counts.dictionaryArchived ? "Dictionary archived" : "Dictionary was not archived")
+                    .font(.caption)
+                    .foregroundStyle(counts.dictionaryArchived ? SottoPalette.muted : SottoPalette.warning)
+            }
+            if let warning = counts.warning {
+                Text(warning).font(.caption).foregroundStyle(SottoPalette.warning)
+            }
+            if let warning = counts.unarchivedWarning {
+                Text(warning).font(.caption).foregroundStyle(SottoPalette.warning)
+            }
+        }
+    }
+
+    private func countRow(_ label: String, count: Int) -> some View {
+        HStack {
+            Text(label)
+            Spacer()
+            Text("\(count)").monospacedDigit()
+        }
+        .font(.callout)
+    }
+
+    private func sourceSummary(_ urls: [URL]) -> String {
+        let names = urls.map(\.lastPathComponent)
+        var parts: [String] = []
+        if names.contains("flow.sqlite") { parts.append("flow.sqlite") }
+        let backups = names.filter { $0.hasPrefix("backup-") }.count
+        if backups > 0 { parts.append("\(backups) backup\(backups == 1 ? "" : "s")") }
+        let selected = names.count - (names.contains("flow.sqlite") ? 1 : 0) - backups
+        if selected > 0 { parts.append("\(selected) selected file\(selected == 1 ? "" : "s")") }
+        return parts.joined(separator: " + ")
+    }
+
+    @ViewBuilder private var actions: some View {
+        switch controller.wisprFlowImportState {
+        case .idle, .preparing:
+            Button("Cancel") { controller.cancelWisprFlowImport(); dismiss() }
+        case .preview(_, _, let destinationError):
+            Button("Cancel") { dismiss() }
+            Button("Import") { controller.startWisprFlowImport() }
+                .buttonStyle(.borderedProminent)
+                .disabled(destinationError != nil || controller.serverHealth?.apiVersion != SottoAPI.version || controller.isBusy)
+                .accessibilityIdentifier("wispr-flow-import.start")
+        case .running:
+            Button("Cancel import") { controller.cancelWisprFlowImport() }
+        case .finished:
+            Button("Done") { dismiss() }
+        case .failed:
+            Button("Close") { dismiss() }
+            Button("Try again") { controller.prepareWisprFlowImport() }
         }
     }
 }

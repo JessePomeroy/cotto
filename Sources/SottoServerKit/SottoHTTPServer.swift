@@ -29,13 +29,41 @@ public enum SottoHTTPServer {
             let input = try await decode(CreateGenerationRequest.self, request: request)
             return try json(await service.create(input), status: .created)
         }
+        router.post("/v1/imports/wispr-flow/known") { request, _ in
+            let input = try await decode(WisprFlowKnownIDsRequest.self, request: request)
+            return try json(await service.knownWisprFlowIDs(input))
+        }
+        router.put("/v1/imports/wispr-flow/dictionary") { request, _ in
+            let buffer = try await request.body.collect(upTo: 262_144)
+            return try json(await service.archiveWisprFlowDictionary(Data(buffer.readableBytesView)))
+        }
+        router.post("/v1/imports/wispr-flow") { request, _ in
+            let input = try await decode(WisprFlowImportRequest.self, request: request)
+            return try json(await service.beginWisprFlowImport(input), status: .created)
+        }
+        router.put("/v1/imports/wispr-flow/:id/artifacts/:filename") { request, context in
+            guard let raw = context.parameters.get("filename"), let filename = WisprFlowArtifactName(rawValue: raw) else {
+                throw ServiceError(400, "invalid_source_artifact", "Choose an allowlisted source artifact.")
+            }
+            let buffer = try await request.body.collect(upTo: 8_388_608)
+            return try json(await service.uploadWisprFlowArtifact(identifier(context), filename: filename,
+                                                                 data: Data(buffer.readableBytesView)))
+        }
+        router.post("/v1/imports/wispr-flow/:id/complete") { _, context in
+            try json(await service.completeWisprFlowImport(identifier(context)))
+        }
+        router.delete("/v1/imports/wispr-flow/:id") { _, context in
+            try await service.cancelWisprFlowImport(identifier(context))
+            return Response(status: .noContent)
+        }
         router.get("/v1/generations") { request, _ in
             let limit: Int
             if let raw = request.uri.queryParameters.get("limit") {
                 guard let value = Int(raw) else { throw ServiceError(400, "invalid_limit", "Invalid history page size.") }
                 limit = value
             } else { limit = 50 }
-            return try json(await service.history(limit: limit, before: request.uri.queryParameters.get("before")))
+            return try json(await service.history(limit: limit, before: request.uri.queryParameters.get("before"),
+                                                  source: request.uri.queryParameters.get("source")))
         }
         router.get("/v1/generations/:id") { _, context in try json(await service.get(identifier(context))) }
         router.post("/v1/generations/:id/audio/:kind") { request, context in
@@ -75,7 +103,8 @@ public enum SottoHTTPServer {
             guard let filename = context.parameters.get("filename") else { throw ServiceError(404, "artifact_not_found", "Artifact not found.") }
             let path = try await service.artifact(identifier(context), filename: filename)
             let body = try await FileIO().loadFile(path: path.path, context: context)
-            let type = filename.hasSuffix(".wav") ? "audio/wav" : (filename.hasSuffix(".json") ? "application/json" : "text/plain; charset=utf-8")
+            let type = filename.hasSuffix(".wav") ? "audio/wav" : (filename.hasSuffix(".png") ? "image/png" :
+                (filename.hasSuffix(".json") ? "application/json" : "text/plain; charset=utf-8"))
             return Response(status: .ok, headers: [.contentType: type, .cacheControl: "no-store"], body: body)
         }
         router.delete("/v1/generations/:id") { _, context in

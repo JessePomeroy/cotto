@@ -9,6 +9,28 @@ private enum DictationDestination: Equatable {
     case field(InsertionTarget)
 }
 
+struct WisprFlowImportCounts {
+    var processed = 0
+    var total = 0
+    var imported = 0
+    var enriched = 0
+    var skipped = 0
+    var partial = 0
+    var failed = 0
+    var dictionaryArchived = false
+    var warning: String?
+    var unarchivedWarning: String?
+}
+
+enum WisprFlowImportState {
+    case idle
+    case preparing
+    case preview(WisprFlowImportPreview, knownCount: Int?, destinationError: String?)
+    case running(WisprFlowImportPreview, WisprFlowImportCounts)
+    case finished(WisprFlowImportPreview, WisprFlowImportCounts, cancelled: Bool)
+    case failed(String)
+}
+
 /// The desktop never owns a durable generation or a model process. A take has
 /// one accepted server generation, one bounded upload, and at most one delivery.
 @MainActor
@@ -51,7 +73,14 @@ final class SottoController: ObservableObject {
     @Published private(set) var generations: [GenerationRecord] = []
     @Published private(set) var isLoadingHistory = false
     @Published private(set) var hasMoreHistory = false
+    @Published private(set) var historySourceFilter = "all"
+    @Published private(set) var wisprFlowImportState: WisprFlowImportState = .idle
     private var historyCursor: String?
+    private var wisprFlowReader: WisprFlowSourceReader?
+    private var wisprFlowPrepareTask: Task<Void, Never>?
+    private var wisprFlowPrepareRevision = 0
+    private var wisprFlowImportTask: Task<Void, Never>?
+    private var wisprFlowDestinationEndpoint: String?
     let configuration: ConfigurationStore
     let microphones: MicrophonePreferencesStore
     let preferences: ClientPreferencesStore
@@ -173,10 +202,11 @@ final class SottoController: ObservableObject {
                 : (health.ready ? "Server online" : (health.message ?? "Server models are not ready"))
             if !isBusy, activity == .idle { statusMessage = isServerReady ? "Ready when you are" : serverStatusMessage }
             if refreshData {
+                let source = historySourceFilter
                 async let settings = connection.preferences()
-                async let page = connection.history()
+                async let page = connection.history(source: source == "all" ? nil : source)
                 let (saved, history) = try await (settings, page)
-                guard endpoint == preferences.endpoint, !Task.isCancelled else { return }
+                guard endpoint == preferences.endpoint, source == historySourceFilter, !Task.isCancelled else { return }
                 sharedPreferences = saved
                 if generations.count > history.items.count, history.nextCursor != nil,
                    let oldest = history.items.last?.createdAt {
@@ -200,7 +230,7 @@ final class SottoController: ObservableObject {
     }
 
     func saveConnection(endpoint: String, token: String, deviceName: String) {
-        guard !isBusy else { return }
+        guard !isBusy, wisprFlowImportTask == nil else { return }
         guard preferences.save(endpoint: endpoint, token: token, deviceName: deviceName) else {
             errorMessage = preferences.errorMessage
             return
@@ -220,8 +250,9 @@ final class SottoController: ObservableObject {
             guard let self else { return }
             do {
                 let endpoint = preferences.endpoint
-                let page = try await client().history()
-                guard endpoint == preferences.endpoint else { return }
+                let source = historySourceFilter
+                let page = try await client().history(source: source == "all" ? nil : source)
+                guard endpoint == preferences.endpoint, source == historySourceFilter else { return }
                 generations = page.items
                 historyCursor = page.nextCursor
                 hasMoreHistory = page.nextCursor != nil
@@ -237,13 +268,208 @@ final class SottoController: ObservableObject {
             defer { isLoadingHistory = false }
             do {
                 let endpoint = preferences.endpoint
-                let page = try await client().history(before: cursor)
-                guard endpoint == preferences.endpoint, historyCursor == cursor else { return }
+                let source = historySourceFilter
+                let page = try await client().history(before: cursor, source: source == "all" ? nil : source)
+                guard endpoint == preferences.endpoint, historyCursor == cursor, source == historySourceFilter else { return }
                 let existing = Set(generations.map(\.id))
                 generations += page.items.filter { !existing.contains($0.id) }
                 historyCursor = page.nextCursor
                 hasMoreHistory = page.nextCursor != nil
             } catch { errorMessage = error.localizedDescription }
+        }
+    }
+
+    func setHistorySourceFilter(_ source: String) {
+        guard ["all", "sotto", "wispr-flow"].contains(source), source != historySourceFilter else { return }
+        historySourceFilter = source
+        generations = []
+        historyCursor = nil
+        hasMoreHistory = false
+        refreshHistory()
+    }
+
+    func prepareWisprFlowImport() {
+        guard wisprFlowImportTask == nil else { return }
+        wisprFlowPrepareRevision += 1
+        let revision = wisprFlowPrepareRevision
+        wisprFlowPrepareTask?.cancel()
+        wisprFlowReader = nil
+        wisprFlowImportState = .preparing
+        wisprFlowDestinationEndpoint = preferences.endpoint
+        wisprFlowPrepareTask = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                if revision == wisprFlowPrepareRevision { wisprFlowPrepareTask = nil }
+            }
+            do {
+                let reader = try await Task.detached(priority: .utility) {
+                    try WisprFlowSourceReader()
+                }.value
+                try Task.checkCancellation()
+                guard revision == wisprFlowPrepareRevision else { return }
+                wisprFlowReader = reader
+                let knownCount: Int?
+                let destinationError: String?
+                do {
+                    knownCount = try await client().knownWisprFlowSourceIDs(reader.sourceIDs).count
+                    destinationError = nil
+                } catch {
+                    knownCount = nil
+                    if let clientError = error as? ServerClientError,
+                       case .rejected(let status, _) = clientError, status == 404 {
+                        destinationError = "This server does not support Wispr Flow imports. Connect the new Sotto Dev server."
+                    } else {
+                        destinationError = "Cannot check the destination server: \(error.localizedDescription)"
+                    }
+                }
+                try Task.checkCancellation()
+                guard revision == wisprFlowPrepareRevision else { return }
+                wisprFlowImportState = .preview(reader.preview, knownCount: knownCount,
+                                               destinationError: destinationError)
+            } catch is CancellationError {
+            } catch {
+                wisprFlowImportState = .failed(error.localizedDescription)
+            }
+        }
+    }
+
+    func startWisprFlowImport() {
+        guard case .preview(let preview, _, let destinationError) = wisprFlowImportState,
+              destinationError == nil,
+              let reader = wisprFlowReader,
+              wisprFlowImportTask == nil, !isBusy else { return }
+        guard wisprFlowDestinationEndpoint == preferences.endpoint else {
+            wisprFlowImportState = .failed("The server connection changed. Preview the import again.")
+            return
+        }
+        let connection: ServerClient
+        do { connection = try client() }
+        catch { wisprFlowImportState = .failed(error.localizedDescription); return }
+        let counts = WisprFlowImportCounts(total: reader.sourceIDs.count)
+        wisprFlowImportState = .running(preview, counts)
+        wisprFlowImportTask = Task { [weak self] in
+            await self?.runWisprFlowImport(reader: reader, preview: preview, connection: connection, counts: counts)
+        }
+    }
+
+    func cancelWisprFlowImport() {
+        wisprFlowImportTask?.cancel()
+        wisprFlowPrepareTask?.cancel()
+    }
+
+    func closeWisprFlowImportSheet() {
+        guard wisprFlowImportTask == nil else { return }
+        wisprFlowPrepareRevision += 1
+        wisprFlowPrepareTask?.cancel()
+        wisprFlowReader = nil
+        wisprFlowDestinationEndpoint = nil
+        wisprFlowImportState = .idle
+    }
+
+    private func runWisprFlowImport(reader: WisprFlowSourceReader, preview: WisprFlowImportPreview,
+                                    connection: ServerClient, counts initialCounts: WisprFlowImportCounts) async {
+        var counts = initialCounts
+        var cancelled = false
+        var stoppedEarly = false
+        for sourceID in reader.sourceIDs {
+            if Task.isCancelled { cancelled = true; break }
+            var materializedSession: WisprFlowSourceSession?
+            var activeTransferID: UUID?
+            do {
+                let session = try await Task.detached(priority: .utility) {
+                    try reader.session(for: sourceID)
+                }.value
+                materializedSession = session
+                let manifests = try await Task.detached(priority: .utility) {
+                    try session.artifacts.map {
+                        try ServerClient.wisprFlowArtifactManifest(filename: $0.filename, url: $0.url)
+                    }
+                }.value
+                try Task.checkCancellation()
+                let input = WisprFlowImportRequest(sourceID: session.sourceID, createdAt: session.createdAt,
+                                                   sourceStatus: session.sourceStatus, finalText: session.displayText,
+                                                   rawText: session.rawText, durationSeconds: session.durationSeconds,
+                                                   variantNames: session.availableVariants, artifacts: manifests)
+                let transfer = try await connection.beginWisprFlowImport(input)
+                activeTransferID = transfer.id
+                for (artifact, manifest) in zip(session.artifacts, manifests) {
+                    try Task.checkCancellation()
+                    let receipt = try await connection.uploadWisprFlowArtifact(artifact.url, filename: artifact.filename,
+                                                                               contentType: artifact.contentType, to: transfer.id)
+                    guard receipt.filename == manifest.filename, receipt.byteCount == manifest.byteCount else {
+                        throw ServerClientError.invalidResponse
+                    }
+                }
+                let result = try await connection.completeWisprFlowImport(transfer.id)
+                activeTransferID = nil
+                switch result.outcome {
+                case .imported: counts.imported += 1
+                case .enriched: counts.enriched += 1
+                case .skipped: counts.skipped += 1
+                case .partial:
+                    counts.partial += 1
+                    if counts.unarchivedWarning == nil {
+                        let names = result.unarchivedArtifactNames.map(\.rawValue).joined(separator: ", ")
+                        counts.unarchivedWarning = "Session \(sourceID.uuidString) has unarchived media: \(names)"
+                    }
+                }
+            } catch is CancellationError {
+                cancelled = true
+            } catch {
+                if Task.isCancelled {
+                    cancelled = true
+                } else {
+                    counts.failed += 1
+                    if counts.warning == nil {
+                        counts.warning = "Session \(sourceID.uuidString): \(error.localizedDescription)"
+                    }
+                    if error is URLError { stoppedEarly = true }
+                    if let clientError = error as? ServerClientError,
+                       case .rejected(let status, _) = clientError, [401, 403].contains(status) {
+                        stoppedEarly = true
+                    }
+                }
+            }
+            if let activeTransferID {
+                let cleanup = Task.detached(priority: .utility) {
+                    try? await connection.cancelWisprFlowImport(activeTransferID)
+                }
+                _ = await cleanup.value
+            }
+            if let materializedSession {
+                let cleanup = Task.detached(priority: .utility) {
+                    reader.discardArtifacts(for: materializedSession)
+                }
+                await cleanup.value
+            }
+            if cancelled { break }
+            counts.processed += 1
+            wisprFlowImportState = .running(preview, counts)
+            if stoppedEarly { break }
+        }
+        if !cancelled, !stoppedEarly, preview.dictionaryCount > 0 {
+            do {
+                let dictionary = try await Task.detached(priority: .utility) {
+                    try reader.dictionaryArtifactURL()
+                }.value
+                guard let dictionary else { throw ServerClientError.invalidResponse }
+                _ = try await connection.archiveWisprFlowDictionary(dictionary)
+                counts.dictionaryArchived = true
+            } catch is CancellationError {
+                cancelled = true
+            } catch {
+                let dictionaryWarning = "Dictionary archive failed: \(error.localizedDescription)"
+                counts.warning = [counts.warning, dictionaryWarning].compactMap { $0 }.joined(separator: "\n")
+            }
+        }
+        cancelled = cancelled || Task.isCancelled
+        wisprFlowImportTask = nil
+        wisprFlowReader = nil
+        wisprFlowDestinationEndpoint = nil
+        wisprFlowImportState = .finished(preview, counts, cancelled: cancelled)
+        if counts.imported + counts.enriched + counts.skipped + counts.partial > 0 {
+            if historySourceFilter == "wispr-flow" { refreshHistory() }
+            else { setHistorySourceFilter("wispr-flow") }
         }
     }
 
@@ -278,6 +504,15 @@ final class SottoController: ObservableObject {
         Task { [weak self] in
             guard let self else { return }
             do { NSWorkspace.shared.open(try await client().audio(generation.id, kind: kind)) }
+            catch { errorMessage = error.localizedDescription }
+        }
+    }
+
+    func openWisprFlowArtifact(_ generation: GenerationRecord, filename: WisprFlowArtifactName) {
+        guard generation.importedSource?.artifactNames.contains(filename) == true else { return }
+        Task { [weak self] in
+            guard let self else { return }
+            do { NSWorkspace.shared.open(try await client().wisprFlowArtifact(generation.id, filename: filename)) }
             catch { errorMessage = error.localizedDescription }
         }
     }
@@ -365,6 +600,7 @@ final class SottoController: ObservableObject {
     func shutdown() {
         guard !isShuttingDown else { return }
         isShuttingDown = true
+        wisprFlowPrepareTask?.cancel(); wisprFlowImportTask?.cancel()
         stopShortcutCheck()
         // Quitting the client cancels an incomplete recording. A sealed server
         // generation remains independently owned and may complete in history.
