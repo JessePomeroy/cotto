@@ -372,6 +372,7 @@ final class TextInserter {
         guard !Task.isCancelled, AXIsProcessTrusted() else {
             return .blocked(reason: "Allow Accessibility access to check the destination safely. Nothing was pasted or copied.")
         }
+        enableWebAccessibilityIfNeeded()
         let focused: FocusedFieldSnapshot
         switch readFocusedElement() {
         case .found(let value): focused = value
@@ -395,6 +396,22 @@ final class TextInserter {
         let command = includeDeliveryMetadata ? NativePasteCommand.find(for: focused.applicationPID) : nil
         return .field(InsertionFieldSnapshot(focus: focused, selection: selection, capturedAt: capturedAt,
                                             strategy: strategy, pasteCommand: command))
+    }
+
+    /// Chromium-based apps (Electron, Chrome) build their Accessibility tree
+    /// only after an assistive client announces itself. Without this, a web
+    /// editor reports no focused field and dictation falls back to the
+    /// clipboard. Native apps ignore the attribute.
+    private nonisolated static func enableWebAccessibilityIfNeeded() {
+        guard !Task.isCancelled else { return }
+        let system = AXUIElementCreateSystemWide()
+        AXUIElementSetMessagingTimeout(system, 0.2)
+        guard let app = elementAttribute(kAXFocusedApplicationAttribute as CFString, of: system).element else { return }
+        AXUIElementSetMessagingTimeout(app, 0.2)
+        var current: CFTypeRef?
+        if AXUIElementCopyAttributeValue(app, "AXManualAccessibility" as CFString, &current) == .success,
+           current as? Bool == true { return }
+        _ = AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue)
     }
 
     /// This is the system's focused object, not an application's remembered
