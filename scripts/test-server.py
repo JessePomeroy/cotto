@@ -22,6 +22,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--endpoint", default=os.environ.get("SOTTO_SERVER_URL", "http://127.0.0.1:8391"))
     parser.add_argument("--token-file", type=Path)
+    parser.add_argument("--audio-fixture", type=Path, help="Public mono 16 kHz PCM16 WAV; defaults to whisper.cpp's JFK sample")
     parser.add_argument("--keep-results", action="store_true", help="Keep the two synthetic generations for UI inspection")
     args = parser.parse_args()
     token = args.token_file.read_text().strip() if args.token_file else ""
@@ -60,7 +61,7 @@ def main():
         assert time.monotonic() < deadline, health
         time.sleep(1)
 
-    with wave.open(str(root / "vendor/whisper.cpp/samples/jfk.wav"), "rb") as source:
+    with wave.open(str(args.audio_fixture or root / "vendor/whisper.cpp/samples/jfk.wav"), "rb") as source:
         assert source.getnchannels() == 1 and source.getframerate() == 16000 and source.getsampwidth() == 2
         samples = array.array("h", source.readframes(source.getnframes()))
     if sys.byteorder != "little":
