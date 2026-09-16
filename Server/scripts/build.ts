@@ -11,14 +11,17 @@ function currentTarget() {
 }
 function options(arguments_: string[]) {
   let all = false;
-  let target: typeof targets[number] | undefined;
+  let target: (typeof targets)[number] | undefined;
   let outfile: string | undefined;
   for (let index = 0; index < arguments_.length; index++) {
     const argument = arguments_[index];
-    if (argument === "--all") { all = true; continue; }
+    if (argument === "--all") {
+      all = true;
+      continue;
+    }
     if (argument === "--target" || argument?.startsWith("--target=")) {
       const value = argument === "--target" ? arguments_[++index] : argument.slice(9);
-      target = targets.find(candidate => candidate === value);
+      target = targets.find((candidate) => candidate === value);
       if (!target) throw new Error(`Unsupported target: ${value}. Use ${targets.join(", ")}.`);
       continue;
     }
@@ -29,7 +32,8 @@ function options(arguments_: string[]) {
     }
     throw new Error(`Unknown build argument: ${argument}.`);
   }
-  if (all && (target || outfile)) throw new Error("--all cannot be combined with --target or --outfile.");
+  if (all && (target || outfile))
+    throw new Error("--all cannot be combined with --target or --outfile.");
   return { all, target, outfile };
 }
 

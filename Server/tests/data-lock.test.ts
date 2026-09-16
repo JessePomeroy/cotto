@@ -11,7 +11,8 @@ function temporaryDirectory() {
   return directory;
 }
 afterEach(() => {
-  for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true });
+  for (const directory of directories.splice(0))
+    rmSync(directory, { recursive: true, force: true });
 });
 
 describe("data directory ownership", () => {
@@ -22,7 +23,9 @@ describe("data directory ownership", () => {
       expect(() => acquireDataDirectoryLock(directory)).toThrow("Another Sotto server");
       const independent = acquireDataDirectoryLock(join(directory, "independent"));
       independent.release();
-    } finally { first.release(); }
+    } finally {
+      first.release();
+    }
     expect(existsSync(join(directory, ".server.lock"))).toBe(true);
     const next = acquireDataDirectoryLock(directory);
     next.release();
@@ -48,7 +51,10 @@ describe("data directory ownership", () => {
     const directory = temporaryDirectory();
     const lock = acquireDataDirectoryLock(directory);
     try {
-      const result = Bun.spawnSync(["python3", "-c", `
+      const result = Bun.spawnSync([
+        "python3",
+        "-c",
+        `
 import fcntl, os, sys
 with open(os.path.join(sys.argv[1], '.server.lock'), 'a+') as file:
     try:
@@ -56,17 +62,24 @@ with open(os.path.join(sys.argv[1], '.server.lock'), 'a+') as file:
         sys.exit(1)
     except BlockingIOError:
         print('busy')
-`, directory]);
+`,
+        directory,
+      ]);
       expect(result.exitCode).toBe(0);
       expect(result.stdout.toString().trim()).toBe("busy");
-    } finally { lock.release(); }
+    } finally {
+      lock.release();
+    }
   });
 
   test("spawned helpers do not inherit the archive lock descriptor", () => {
     const directory = temporaryDirectory();
     const lock = acquireDataDirectoryLock(directory);
     try {
-      const result = Bun.spawnSync(["python3", "-c", `
+      const result = Bun.spawnSync([
+        "python3",
+        "-c",
+        `
 import os, sys
 lock = os.stat(os.path.join(sys.argv[1], '.server.lock'))
 for descriptor in range(3, 1024):
@@ -76,9 +89,13 @@ for descriptor in range(3, 1024):
         continue
     if (entry.st_dev, entry.st_ino) == (lock.st_dev, lock.st_ino):
         sys.exit(1)
-`, directory]);
+`,
+        directory,
+      ]);
       expect(result.exitCode).toBe(0);
-    } finally { lock.release(); }
+    } finally {
+      lock.release();
+    }
   });
 });
 
@@ -103,7 +120,10 @@ describe("cross-process and compiled locking", () => {
     test(`Python ownership excludes the ${compiled ? "compiled binary" : "source process"}`, () => {
       const directory = temporaryDirectory();
       const command = compiled ? [executable, directory] : [process.execPath, fixture, directory];
-      const result = Bun.spawnSync(["python3", "-c", `
+      const result = Bun.spawnSync([
+        "python3",
+        "-c",
+        `
 import fcntl, os, subprocess, sys
 with open(os.path.join(sys.argv[1], '.server.lock'), 'a+') as file:
     fcntl.flock(file, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -111,7 +131,10 @@ with open(os.path.join(sys.argv[1], '.server.lock'), 'a+') as file:
     if result.returncode != 1 or 'Another Sotto server' not in result.stderr:
         print(result.stdout, result.stderr)
         sys.exit(1)
-`, directory, ...command]);
+`,
+        directory,
+        ...command,
+      ]);
       expect(result.exitCode).toBe(0);
       const released = Bun.spawnSync(command);
       expect(released.exitCode).toBe(0);
@@ -120,7 +143,9 @@ with open(os.path.join(sys.argv[1], '.server.lock'), 'a+') as file:
 
     test(`a crashed ${compiled ? "compiled binary" : "source process"} releases ownership`, async () => {
       const directory = temporaryDirectory();
-      const command = compiled ? [executable, directory, "--hold"] : [process.execPath, fixture, directory, "--hold"];
+      const command = compiled
+        ? [executable, directory, "--hold"]
+        : [process.execPath, fixture, directory, "--hold"];
       const child = Bun.spawn(command, { stdout: "pipe", stderr: "pipe" });
       try {
         const ready = await child.stdout.getReader().read();

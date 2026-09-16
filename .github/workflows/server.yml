@@ -23,6 +23,7 @@ jobs:
         with:
           bun-version: 1.4.2
       - run: bun install --frozen-lockfile
+      - run: bun run fmt:check
       - run: bun run check
       - run: bun run test
       - run: bun run generate:api --check --typescript-only

@@ -40,20 +40,35 @@ function deferred<T>() {
 
 function decodeResponse(line: Buffer): HelperResponse | undefined {
   let value: unknown;
-  try { value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(line)); }
-  catch { return; }
+  try {
+    value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(line));
+  } catch {
+    return;
+  }
   if (!value || typeof value !== "object" || Array.isArray(value)) return;
   const response = value as Record<string, unknown>;
   if (typeof response.type !== "string") return;
   const strings = ["id", "message", "text", "language", "engineVersion"];
   const numbers = ["duration", "elapsed", "value"];
   const integers = ["tokenCount", "tokenBudget"];
-  if (strings.some(key => response[key] != null && (typeof response[key] !== "string" || /[\uD800-\uDFFF]/u.test(response[key])))) return;
-  if (numbers.some(key => response[key] != null && typeof response[key] !== "number")) return;
-  if (integers.some(key => response[key] != null && !Number.isSafeInteger(response[key]))) return;
+  if (
+    strings.some(
+      (key) =>
+        response[key] != null &&
+        (typeof response[key] !== "string" || /[\uD800-\uDFFF]/u.test(response[key])),
+    )
+  )
+    return;
+  if (numbers.some((key) => response[key] != null && typeof response[key] !== "number")) return;
+  if (integers.some((key) => response[key] != null && !Number.isSafeInteger(response[key]))) return;
   for (const key of ["includedTerms", "omittedTerms"]) {
     const terms = response[key];
-    if (terms != null && (!Array.isArray(terms) || terms.some(term => typeof term !== "string" || /[\uD800-\uDFFF]/u.test(term)))) return;
+    if (
+      terms != null &&
+      (!Array.isArray(terms) ||
+        terms.some((term) => typeof term !== "string" || /[\uD800-\uDFFF]/u.test(term)))
+    )
+      return;
   }
   // JSON null is the same as an absent optional field in Swift's decoder.
   for (const key of Object.keys(response)) if (response[key] === null) delete response[key];
@@ -79,7 +94,9 @@ export class HelperProcess {
 
   snapshot() {
     return {
-      loaded: Boolean(this.loaded && this.child?.exitCode === null && this.child.signalCode === null),
+      loaded: Boolean(
+        this.loaded && this.child?.exitCode === null && this.child.signalCode === null,
+      ),
       loading: this.loading !== undefined,
       busy: this.operation !== undefined,
       engineVersion: this.engineVersion,
@@ -93,35 +110,54 @@ export class HelperProcess {
       const loading = this.start();
       this.loading = loading;
       // A reset or replacement must not be undone by an old task's finalizer.
-      void loading.finally(() => { if (this.loading === loading) this.loading = undefined; }).catch(() => {});
+      void loading
+        .finally(() => {
+          if (this.loading === loading) this.loading = undefined;
+        })
+        .catch(() => {});
     }
     const loading = this.loading;
-    const cancel = () => { if (this.loading === loading) this.reset(new InferenceError("cancelled")); };
+    const cancel = () => {
+      if (this.loading === loading) this.reset(new InferenceError("cancelled"));
+    };
     signal?.addEventListener("abort", cancel, { once: true });
-    try { await loading; checkCancellation(signal); }
-    finally { signal?.removeEventListener("abort", cancel); }
+    try {
+      await loading;
+      checkCancellation(signal);
+    } finally {
+      signal?.removeEventListener("abort", cancel);
+    }
   }
 
-  async request(payload: object, id: string, timeout: number, onProgress?: (value: number) => void, signal?: AbortSignal) {
+  async request(
+    payload: object,
+    id: string,
+    timeout: number,
+    onProgress?: (value: number) => void,
+    signal?: AbortSignal,
+  ) {
     checkCancellation(signal);
     if (this.operation) throw new InferenceError("busy");
     const line = JSON.stringify(payload) + "\n";
     const operation = Symbol();
     this.operation = operation;
-    const cancel = () => { if (this.operation === operation) this.reset(new InferenceError("cancelled")); };
+    const cancel = () => {
+      if (this.operation === operation) this.reset(new InferenceError("cancelled"));
+    };
     signal?.addEventListener("abort", cancel, { once: true });
     try {
       await this.ensureLoaded(signal);
       checkCancellation(signal);
       const child = this.child;
-      if (this.operation !== operation || !child || !this.snapshot().loaded) throw new InferenceError("cancelled");
+      if (this.operation !== operation || !child || !this.snapshot().loaded)
+        throw new InferenceError("cancelled");
       const result = deferred<HelperResponse>();
       this.result = result;
       this.requestID = id;
       this.progress = onProgress;
       const current = this.generation;
       this.setTimeout(timeout, `${this.configuration.name} inference timed out.`);
-      child.stdin.write(line, error => {
+      child.stdin.write(line, (error) => {
         if (error) this.transportFailed(current, `Could not write to ${this.configuration.name}.`);
       });
       return await result.promise;
@@ -146,10 +182,22 @@ export class HelperProcess {
   private async start() {
     const configuration = this.configuration;
     const startingGeneration = this.generation;
-    try { await access(configuration.executable, constants.X_OK); }
-    catch { throw new InferenceError("unavailable", `${configuration.name} executable is missing: ${configuration.executable}`); }
-    try { await Promise.all(configuration.requiredFiles.map(file => access(file, constants.R_OK))); }
-    catch { throw new InferenceError("unavailable", `${configuration.name} model files are missing or unreadable.`); }
+    try {
+      await access(configuration.executable, constants.X_OK);
+    } catch {
+      throw new InferenceError(
+        "unavailable",
+        `${configuration.name} executable is missing: ${configuration.executable}`,
+      );
+    }
+    try {
+      await Promise.all(configuration.requiredFiles.map((file) => access(file, constants.R_OK)));
+    } catch {
+      throw new InferenceError(
+        "unavailable",
+        `${configuration.name} model files are missing or unreadable.`,
+      );
+    }
     // Asset checks are asynchronous. A cancelled or replaced start cannot launch.
     if (this.generation !== startingGeneration) throw new InferenceError("cancelled");
     const current = ++this.generation;
@@ -158,8 +206,12 @@ export class HelperProcess {
     const ready = deferred<void>();
     this.ready = ready;
     let child: ChildProcessWithoutNullStreams;
-    try { child = spawn(configuration.executable, configuration.arguments, { stdio: ["pipe", "pipe", "pipe"], shell: false }); }
-    catch {
+    try {
+      child = spawn(configuration.executable, configuration.arguments, {
+        stdio: ["pipe", "pipe", "pipe"],
+        shell: false,
+      });
+    } catch {
       this.reset(new InferenceError("unavailable", `Could not launch ${configuration.name}.`));
       return ready.promise;
     }
@@ -178,20 +230,29 @@ export class HelperProcess {
         }
         const piece = chunk.subarray(offset, end);
         const line = buffer.length ? Buffer.concat([buffer, piece]) : piece;
-        if (newline === -1) { buffer = Buffer.from(line); return; }
+        if (newline === -1) {
+          buffer = Buffer.from(line);
+          return;
+        }
         buffer = Buffer.alloc(0);
         this.receive(line, current);
         if (this.generation !== current) return;
         offset = newline + 1;
       }
     });
-    child.stdout.on("error", () => this.transportFailed(current, "Could not read native helper output."));
+    child.stdout.on("error", () =>
+      this.transportFailed(current, "Could not read native helper output."),
+    );
     child.stdout.on("end", () => this.transportFailed(current, "Native helper closed its output."));
-    child.stdin.on("error", () => this.transportFailed(current, `Could not write to ${configuration.name}.`));
+    child.stdin.on("error", () =>
+      this.transportFailed(current, `Could not write to ${configuration.name}.`),
+    );
     // Drain GPU diagnostics without retaining them or logging transcript content.
     child.stderr.resume();
     child.stderr.on("error", () => {});
-    child.on("error", () => this.transportFailed(current, `Could not launch ${configuration.name}.`));
+    child.on("error", () =>
+      this.transportFailed(current, `Could not launch ${configuration.name}.`),
+    );
     child.on("close", () => this.transportFailed(current, "Native helper closed its output."));
     this.setTimeout(configuration.loadTimeout, `${configuration.name} model loading timed out.`);
     return ready.promise;
@@ -200,7 +261,12 @@ export class HelperProcess {
   private receive(line: Buffer, current: number) {
     if (current !== this.generation) return;
     const response = decodeResponse(line);
-    if (!response) { this.reset(new InferenceError("invalidResponse", `${this.configuration.name} returned invalid JSON.`)); return; }
+    if (!response) {
+      this.reset(
+        new InferenceError("invalidResponse", `${this.configuration.name} returned invalid JSON.`),
+      );
+      return;
+    }
     switch (response.type) {
       case "ready": {
         if (!this.ready || this.loaded) return;
@@ -213,7 +279,11 @@ export class HelperProcess {
         break;
       }
       case "progress":
-        if (response.id === this.requestID && response.value !== undefined && Number.isFinite(response.value)) {
+        if (
+          response.id === this.requestID &&
+          response.value !== undefined &&
+          Number.isFinite(response.value)
+        ) {
           this.progress?.(Math.min(1, Math.max(0, response.value)));
         }
         break;
@@ -229,10 +299,20 @@ export class HelperProcess {
       }
       case "error":
         if (response.id !== undefined && response.id !== this.requestID) return;
-        this.reset(new InferenceError("unavailable", response.message ?? `${this.configuration.name} inference failed.`));
+        this.reset(
+          new InferenceError(
+            "unavailable",
+            response.message ?? `${this.configuration.name} inference failed.`,
+          ),
+        );
         break;
       default:
-        this.reset(new InferenceError("invalidResponse", `${this.configuration.name} returned an unknown event.`));
+        this.reset(
+          new InferenceError(
+            "invalidResponse",
+            `${this.configuration.name} returned an unknown event.`,
+          ),
+        );
     }
   }
 
@@ -242,7 +322,10 @@ export class HelperProcess {
 
   private setTimeout(seconds: number, message: string) {
     this.clearTimeout();
-    this.timeout = setTimeout(() => this.reset(new InferenceError("timeout", message)), Math.max(0.001, seconds) * 1000);
+    this.timeout = setTimeout(
+      () => this.reset(new InferenceError("timeout", message)),
+      Math.max(0.001, seconds) * 1000,
+    );
   }
 
   private clearTimeout() {

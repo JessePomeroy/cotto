@@ -15,13 +15,22 @@ export type DictationBoundary = Schemas["DictationBoundary"];
 // Archive/request decoding fills the historical defaults represented as optional
 // wire properties. Internally every dictionary and preferences value is complete.
 export type DictionaryEntry = Required<Schemas["DictionaryEntry"]>;
-export type DictionaryList = Omit<Schemas["DictionaryList"], "entries"> & { entries: DictionaryEntry[] };
-export type PersonalDictionary = Omit<Schemas["PersonalDictionary"], "lists"> & { lists: DictionaryList[] };
-export type ServerPreferences = Omit<Schemas["ServerPreferences"], "dictionary" | "proofreadingPrompt"> & {
+export type DictionaryList = Omit<Schemas["DictionaryList"], "entries"> & {
+  entries: DictionaryEntry[];
+};
+export type PersonalDictionary = Omit<Schemas["PersonalDictionary"], "lists"> & {
+  lists: DictionaryList[];
+};
+export type ServerPreferences = Omit<
+  Schemas["ServerPreferences"],
+  "dictionary" | "proofreadingPrompt"
+> & {
   dictionary: PersonalDictionary;
   proofreadingPrompt: string;
 };
-export type PreferencesSnapshot = Omit<Schemas["PreferencesSnapshot"], "preferences"> & { preferences: ServerPreferences };
+export type PreferencesSnapshot = Omit<Schemas["PreferencesSnapshot"], "preferences"> & {
+  preferences: ServerPreferences;
+};
 
 export type DeviceIdentity = Schemas["DeviceIdentity"];
 export type ModelRuntimeInfo = Schemas["ModelRuntimeInfo"];
@@ -48,9 +57,15 @@ export type WisprFlowKnownIDsRequest = Schemas["WisprFlowKnownIDsRequest"];
 export type WisprFlowKnownIDsResponse = Schemas["WisprFlowKnownIDsResponse"];
 export type WisprFlowDictionaryArchiveReceipt = Schemas["WisprFlowDictionaryArchiveReceipt"];
 export type ImportedSource = Schemas["ImportedSource"];
-export type GenerationRecord = Omit<Schemas["GenerationRecord"], "settings"> & { settings: PreferencesSnapshot };
-export type GenerationPage = Omit<Schemas["GenerationPage"], "items"> & { items: GenerationRecord[] };
-export type WisprFlowImportResult = Omit<Schemas["WisprFlowImportResult"], "record"> & { record: GenerationRecord };
+export type GenerationRecord = Omit<Schemas["GenerationRecord"], "settings"> & {
+  settings: PreferencesSnapshot;
+};
+export type GenerationPage = Omit<Schemas["GenerationPage"], "items"> & {
+  items: GenerationRecord[];
+};
+export type WisprFlowImportResult = Omit<Schemas["WisprFlowImportResult"], "record"> & {
+  record: GenerationRecord;
+};
 export type APIErrorResponse = Schemas["APIErrorResponse"];
 
 export const API_VERSION = 1;

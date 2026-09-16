@@ -3,13 +3,20 @@ import { NativeInference } from "../../src/inference/native-inference";
 const executable = process.argv[2];
 const model = process.argv[3];
 if (!executable || !model) throw new Error("Missing fixture helper or model.");
-const inference = new NativeInference({
-  speechHelper: executable, speechModel: model, vadModel: model,
-  proofHelper: executable, proofModel: model,
-  speechLoadTimeout: 3, proofLoadTimeout: 3,
-}, {});
+const inference = new NativeInference(
+  {
+    speechHelper: executable,
+    speechModel: model,
+    vadModel: model,
+    proofHelper: executable,
+    proofModel: model,
+    speechLoadTimeout: 3,
+    proofLoadTimeout: 3,
+  },
+  {},
+);
 await inference.warmUp();
-const request = inference.transcribe(model, "en", []).catch(error => error);
+const request = inference.transcribe(model, "en", []).catch((error) => error);
 await Bun.sleep(20);
 await inference.cancel();
 await request;

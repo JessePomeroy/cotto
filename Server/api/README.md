@@ -19,7 +19,9 @@ requires Swift 6.2 or newer.
 The generator checkout lives under `.build`; normal client builds use committed
 sources and only depend on the pinned Swift OpenAPI runtime.
 
-TypeScript transport types live in `Server/src/generated/api.ts`. The public aliases
+TypeScript transport types live in `Server/src/generated/api.ts` and are generated
+with the repository's Prettier configuration so formatting does not change the
+generation drift check. The public aliases
 in `Server/src/api.ts` make defaults required after archive/request normalization.
 Swift transport types live in `Sources/SottoAPIWire`; `SottoAPI.APIWireModel` bridges
 them to the existing public Swift models while retaining dictionary validation,

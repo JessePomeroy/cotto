@@ -22,20 +22,24 @@ beforeAll(async () => {
       await handle.writeFile(chunk);
       digest.update(chunk);
     }
-  } finally { await handle.close(); }
+  } finally {
+    await handle.close();
+  }
   pin = { bytes: chunk.length * 16, sha256: digest.digest("hex") };
 });
 
-afterAll(async () => { await rm(directory, { recursive: true, force: true }); });
+afterAll(async () => {
+  await rm(directory, { recursive: true, force: true });
+});
 
 describe("shared model-verification waiters", () => {
   test("cancelling one consumer leaves other consumers and later joiners intact", async () => {
     const verifier = new ModelVerifier();
     const firstController = new AbortController();
     const secondController = new AbortController();
-    const first = verifier.verify(model, pin, firstController.signal).catch(error => error);
+    const first = verifier.verify(model, pin, firstController.signal).catch((error) => error);
     let secondSettled = false;
-    const second = verifier.verify(model, pin, secondController.signal).then(result => {
+    const second = verifier.verify(model, pin, secondController.signal).then((result) => {
       secondSettled = true;
       return result;
     });
@@ -54,8 +58,8 @@ describe("shared model-verification waiters", () => {
     const verifier = new ModelVerifier();
     const firstController = new AbortController();
     const secondController = new AbortController();
-    const first = verifier.verify(model, pin, firstController.signal).catch(error => error);
-    const second = verifier.verify(model, pin, secondController.signal).catch(error => error);
+    const first = verifier.verify(model, pin, firstController.signal).catch((error) => error);
+    const second = verifier.verify(model, pin, secondController.signal).catch((error) => error);
     const remaining = verifier.verify(model, pin);
     await Bun.sleep(1);
     firstController.abort();
@@ -70,7 +74,7 @@ describe("shared model-verification waiters", () => {
   test("aborting the final waiter permits immediate verification again", async () => {
     const verifier = new ModelVerifier();
     const controller = new AbortController();
-    const cancelled = verifier.verify(model, pin, controller.signal).catch(error => error);
+    const cancelled = verifier.verify(model, pin, controller.signal).catch((error) => error);
     await Bun.sleep(1);
     controller.abort();
     expect(await cancelled).toMatchObject({ code: "cancelled" });
@@ -81,8 +85,8 @@ describe("shared model-verification waiters", () => {
 
   test("explicit cancellation rejects every consumer without poisoning later work", async () => {
     const verifier = new ModelVerifier();
-    const first = verifier.verify(model, pin).catch(error => error);
-    const second = verifier.verify(model, pin).catch(error => error);
+    const first = verifier.verify(model, pin).catch((error) => error);
+    const second = verifier.verify(model, pin).catch((error) => error);
     await Bun.sleep(1);
     verifier.cancel();
     expect(await first).toMatchObject({ code: "cancelled" });
@@ -95,8 +99,8 @@ describe("shared model-verification waiters", () => {
   test("shutdown aborts all consumers and awaits cancelled hashes before reuse", async () => {
     const verifier = new ModelVerifier();
     const controller = new AbortController();
-    const first = verifier.verify(model, pin, controller.signal).catch(error => error);
-    const second = verifier.verify(model, pin).catch(error => error);
+    const first = verifier.verify(model, pin, controller.signal).catch((error) => error);
+    const second = verifier.verify(model, pin).catch((error) => error);
     await Bun.sleep(1);
     controller.abort();
     expect(await first).toMatchObject({ code: "cancelled" });
@@ -109,8 +113,8 @@ describe("shared model-verification waiters", () => {
 
   test("shutdown also cancels consumers still checking the digest cache", async () => {
     const verifier = new ModelVerifier();
-    const first = verifier.verify(model, pin).catch(error => error);
-    const second = verifier.verify(model, pin).catch(error => error);
+    const first = verifier.verify(model, pin).catch((error) => error);
+    const second = verifier.verify(model, pin).catch((error) => error);
     await verifier.shutdown();
     expect(await first).toMatchObject({ code: "cancelled" });
     expect(await second).toMatchObject({ code: "cancelled" });

@@ -15,13 +15,18 @@ export function acquireDataDirectoryLock(directory: string) {
   });
   let descriptor: number | undefined;
   try {
-    descriptor = openSync(join(directory, ".server.lock"),
-      constants.O_RDWR | constants.O_CREAT | constants.O_NOFOLLOW | constants.O_NONBLOCK, 0o600);
+    descriptor = openSync(
+      join(directory, ".server.lock"),
+      constants.O_RDWR | constants.O_CREAT | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+      0o600,
+    );
     if (!fstatSync(descriptor).isFile()) {
       throw new Error("The server data directory lock must be a regular file.");
     }
     if (library.symbols.flock(descriptor, 2 | 4) !== 0) {
-      throw new Error("Another Sotto server is already using this data directory, or its lock could not be acquired. Stop that runner or choose a different --data-dir.");
+      throw new Error(
+        "Another Sotto server is already using this data directory, or its lock could not be acquired. Stop that runner or choose a different --data-dir.",
+      );
     }
   } catch (error) {
     if (descriptor !== undefined) closeSync(descriptor);

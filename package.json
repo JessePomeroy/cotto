@@ -2,11 +2,15 @@
   "name": "sotto",
   "private": true,
   "packageManager": "bun@1.4.2",
-  "workspaces": ["Server"],
+  "workspaces": [
+    "Server"
+  ],
   "scripts": {
     "dev:server": "bun run --cwd Server dev",
     "build:server": "bun run --cwd Server build",
     "generate:api": "bun run --cwd Server generate",
+    "fmt": "bun run --cwd Server fmt",
+    "fmt:check": "bun run --cwd Server fmt:check",
     "check": "bun run --cwd Server typecheck",
     "test": "bun run --cwd Server test"
   }

@@ -6,6 +6,8 @@
     "dev": "bun src/main.ts",
     "build": "bun scripts/build.ts",
     "generate": "bun scripts/generate-api.ts",
+    "fmt": "prettier --write \"{src,scripts,tests}/**/*.ts\" package.json tsconfig.json ../package.json ../.prettierrc.json",
+    "fmt:check": "prettier --check \"{src,scripts,tests}/**/*.ts\" package.json tsconfig.json ../package.json ../.prettierrc.json",
     "typecheck": "tsc --noEmit",
     "test": "bun test"
   },
@@ -18,6 +20,7 @@
   "devDependencies": {
     "@types/bun": "1.4.2",
     "openapi-typescript": "7.10.1",
+    "prettier": "3.9.6",
     "typescript": "5.9.3"
   }
 }

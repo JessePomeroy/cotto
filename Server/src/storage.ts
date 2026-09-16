@@ -1,17 +1,25 @@
-import { constants } from 'node:fs';
-import { chmod, lstat, mkdir, open, rename, rm, statfs } from 'node:fs/promises';
-import { dirname, basename, join } from 'node:path';
-import { createHash, randomUUID } from 'node:crypto';
-import { ServiceError } from './errors.ts';
+import { constants } from "node:fs";
+import { chmod, lstat, mkdir, open, rename, rm, statfs } from "node:fs/promises";
+import { dirname, basename, join } from "node:path";
+import { createHash, randomUUID } from "node:crypto";
+import { ServiceError } from "./errors.ts";
 
 export async function requireRegularDirectory(path: string) {
   const info = await lstat(path);
-  if (!info.isDirectory() || info.isSymbolicLink()) throw new ServiceError(500, 'invalid_storage', 'Archive directories must be regular directories.');
+  if (!info.isDirectory() || info.isSymbolicLink())
+    throw new ServiceError(
+      500,
+      "invalid_storage",
+      "Archive directories must be regular directories.",
+    );
 }
 
 export async function ensureDirectory(path: string) {
-  try { await mkdir(path, { mode: 0o700 }); }
-  catch (error) { if (!(error instanceof Error && 'code' in error && error.code === 'EEXIST')) throw error; }
+  try {
+    await mkdir(path, { mode: 0o700 });
+  } catch (error) {
+    if (!(error instanceof Error && "code" in error && error.code === "EEXIST")) throw error;
+  }
   await requireRegularDirectory(path);
   await chmod(path, 0o700);
 }
@@ -21,33 +29,75 @@ export async function readRegularFile(path: string, maximumBytes: number) {
   const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
     const info = await file.stat();
-    if (!info.isFile() || info.size > maximumBytes) throw new ServiceError(500, 'invalid_archive', 'An archive artifact must be a regular file within its storage limit.');
+    if (!info.isFile() || info.size > maximumBytes)
+      throw new ServiceError(
+        500,
+        "invalid_archive",
+        "An archive artifact must be a regular file within its storage limit.",
+      );
     const data = await file.readFile();
-    if (data.length > maximumBytes) throw new ServiceError(500, 'invalid_archive', 'An archive artifact exceeded its storage limit.');
+    if (data.length > maximumBytes)
+      throw new ServiceError(
+        500,
+        "invalid_archive",
+        "An archive artifact exceeded its storage limit.",
+      );
     return data;
-  } finally { await file.close(); }
+  } finally {
+    await file.close();
+  }
 }
 
 export async function atomicPrivateWrite(path: string, data: Uint8Array | string) {
   await requireRegularDirectory(dirname(path));
   try {
     const info = await lstat(path);
-    if (!info.isFile() || info.isSymbolicLink()) throw new ServiceError(500, 'invalid_storage', 'An archive artifact must be a regular file.');
-  } catch (error) { if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error; }
+    if (!info.isFile() || info.isSymbolicLink())
+      throw new ServiceError(500, "invalid_storage", "An archive artifact must be a regular file.");
+  } catch (error) {
+    if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
+  }
   const temporary = join(dirname(path), `.${basename(path)}.${randomUUID()}.partial`);
-  const file = await open(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW | constants.O_NONBLOCK, 0o600);
+  const file = await open(
+    temporary,
+    constants.O_WRONLY |
+      constants.O_CREAT |
+      constants.O_EXCL |
+      constants.O_NOFOLLOW |
+      constants.O_NONBLOCK,
+    0o600,
+  );
   try {
-    await file.writeFile(data); await file.sync(); await file.close();
+    await file.writeFile(data);
+    await file.sync();
+    await file.close();
     await rename(temporary, path);
     // Persist the directory entry before acknowledging a durable mutation.
-    const directory = await open(dirname(path), constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
-    try { await directory.sync(); } finally { await directory.close(); }
-  } catch (error) { await file.close().catch(() => {}); await rm(temporary, { force: true }).catch(() => {}); throw error; }
+    const directory = await open(
+      dirname(path),
+      constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+    );
+    try {
+      await directory.sync();
+    } finally {
+      await directory.close();
+    }
+  } catch (error) {
+    await file.close().catch(() => {});
+    await rm(temporary, { force: true }).catch(() => {});
+    throw error;
+  }
 }
 
-export const sha256 = (data: Uint8Array | string) => createHash('sha256').update(data).digest('hex');
+export const sha256 = (data: Uint8Array | string) =>
+  createHash("sha256").update(data).digest("hex");
 
 export async function requireDiskSpace(dataDirectory: string) {
   const disk = await statfs(dataDirectory, { bigint: true });
-  if (disk.bavail * disk.bsize < 100n * 1024n * 1024n) throw new ServiceError(507, 'storage_full', 'The server needs more free disk space before accepting audio.');
+  if (disk.bavail * disk.bsize < 100n * 1024n * 1024n)
+    throw new ServiceError(
+      507,
+      "storage_full",
+      "The server needs more free disk space before accepting audio.",
+    );
 }

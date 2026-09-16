@@ -1,31 +1,67 @@
 import { describe, expect, test } from "bun:test";
 import type { DictionaryEntry, DictationContinuation, PersonalDictionary } from "../src/api.ts";
-import { applyDictionary, decodePersonalDictionary, defaultDictionary, dictionaryKey, dictionaryValidationError, dictionaryVocabularyTerms, recognitionVocabularyTerms } from "../src/domain/dictionary.ts";
+import {
+  applyDictionary,
+  decodePersonalDictionary,
+  defaultDictionary,
+  dictionaryKey,
+  dictionaryValidationError,
+  dictionaryVocabularyTerms,
+  recognitionVocabularyTerms,
+} from "../src/domain/dictionary.ts";
 import { cleanTranscript, vocabularyPrompt } from "../src/domain/cleaner.ts";
 import { composeDictation, DictationContinuationMemory } from "../src/domain/composition.ts";
 import { formatSpokenList } from "../src/domain/lists.ts";
 
-const entry = (id: string, term: string, aliases: string[] = [], isPriority = false): DictionaryEntry => ({ id, term, aliases, isPriority });
-const makeDictionary = (entries: DictionaryEntry[]): PersonalDictionary => ({ lists: [{ id: "personal", name: "Personal", entries }] });
-const compose = (text: string, previous?: DictationContinuation) => composeDictation(formatSpokenList(text, previous?.list), previous);
+const entry = (
+  id: string,
+  term: string,
+  aliases: string[] = [],
+  isPriority = false,
+): DictionaryEntry => ({ id, term, aliases, isPriority });
+const makeDictionary = (entries: DictionaryEntry[]): PersonalDictionary => ({
+  lists: [{ id: "personal", name: "Personal", entries }],
+});
+const compose = (text: string, previous?: DictationContinuation) =>
+  composeDictation(formatSpokenList(text, previous?.list), previous);
 
 describe("personal dictionary Swift parity", () => {
   test("defaults normalize only explicit preferred spellings", () => {
     expect(dictionaryVocabularyTerms(defaultDictionary)).toEqual(["MiniMax", "Codex"]);
-    expect(applyDictionary(defaultDictionary, "Ask minimax and CODEX, not mini max or codecs.")).toBe("Ask MiniMax and Codex, not mini max or codecs.");
+    expect(
+      applyDictionary(defaultDictionary, "Ask minimax and CODEX, not mini max or codecs."),
+    ).toBe("Ask MiniMax and Codex, not mini max or codecs.");
   });
 
   test("longest phrases and replacements do not cascade", () => {
     const dictionary = makeDictionary([
-      entry("mini", "Mini"), entry("minimax", "MiniMax", ["mini max", "mini-max"]), entry("codex", "Codex", ["code x"]),
+      entry("mini", "Mini"),
+      entry("minimax", "MiniMax", ["mini max", "mini-max"]),
+      entry("codex", "Codex", ["code x"]),
     ]);
-    expect(applyDictionary(dictionary, "mini max and MINI-MAX; mini, code x and codex_plugin.")).toBe("MiniMax and MiniMax; Mini, Codex and codex_plugin.");
-    expect(applyDictionary(makeDictionary([entry("alpha", "Alpha", ["first"]), entry("joined", "Joined", ["Alpha Beta"])]), "first Beta; alpha beta")).toBe("Alpha Beta; Joined");
+    expect(
+      applyDictionary(dictionary, "mini max and MINI-MAX; mini, code x and codex_plugin."),
+    ).toBe("MiniMax and MiniMax; Mini, Codex and codex_plugin.");
+    expect(
+      applyDictionary(
+        makeDictionary([
+          entry("alpha", "Alpha", ["first"]),
+          entry("joined", "Joined", ["Alpha Beta"]),
+        ]),
+        "first Beta; alpha beta",
+      ),
+    ).toBe("Alpha Beta; Joined");
   });
 
   test("canonical Unicode forms and full case folding preserve surrounding source", () => {
-    const dictionary = makeDictionary([entry("cafe", "Café", ["coffee shop"]), entry("street", "Straße"), entry("sigma", "Σ")]);
-    expect(applyDictionary(dictionary, "café, CAFE\u0301, COFFEE SHOP; thé\u0301. STRASSE ς")).toBe("Café, Café, Café; thé\u0301. Straße Σ");
+    const dictionary = makeDictionary([
+      entry("cafe", "Café", ["coffee shop"]),
+      entry("street", "Straße"),
+      entry("sigma", "Σ"),
+    ]);
+    expect(applyDictionary(dictionary, "café, CAFE\u0301, COFFEE SHOP; thé\u0301. STRASSE ς")).toBe(
+      "Café, Café, Café; thé\u0301. Straße Σ",
+    );
     expect(applyDictionary(dictionary, "cafe")).toBe("cafe");
     expect(dictionaryKey("Straße")).toBe(dictionaryKey("STRASSE"));
     expect(dictionaryKey("ﬃ")).toBe("ffi");
@@ -34,25 +70,57 @@ describe("personal dictionary Swift parity", () => {
   });
 
   test("whole graphemes, accents, connector punctuation and join controls cannot be partially replaced", () => {
-    const dictionary = makeDictionary([entry("person", "Engineer", ["👩"]), entry("codex", "Codex")]);
-    expect(applyDictionary(dictionary, "👩 👩🏽 👩‍💻 codex codex‿plugin codex\u200Cplugin tool\u200Dcodex")).toBe("Engineer 👩🏽 👩‍💻 Codex codex‿plugin codex\u200Cplugin tool\u200Dcodex");
+    const dictionary = makeDictionary([
+      entry("person", "Engineer", ["👩"]),
+      entry("codex", "Codex"),
+    ]);
+    expect(
+      applyDictionary(dictionary, "👩 👩🏽 👩‍💻 codex codex‿plugin codex\u200Cplugin tool\u200Dcodex"),
+    ).toBe("Engineer 👩🏽 👩‍💻 Codex codex‿plugin codex\u200Cplugin tool\u200Dcodex");
     expect(applyDictionary(makeDictionary([entry("accent", "A")]), "a\u0301 A")).toBe("a\u0301 A");
   });
 
   test("regex and replacement metacharacters stay literal", () => {
-    const dictionary = makeDictionary([entry("cpp", "C++", ["see plus plus"]), entry("money", "$Tool\\Kit", ["tool kit"]), entry("dot", "Node.js", ["node jay ess"])]);
-    expect(applyDictionary(dictionary, "see plus plus, tool kit, node jay ess; c++, anode.js and c++17.")).toBe("C++, $Tool\\Kit, Node.js; C++, anode.js and c++17.");
+    const dictionary = makeDictionary([
+      entry("cpp", "C++", ["see plus plus"]),
+      entry("money", "$Tool\\Kit", ["tool kit"]),
+      entry("dot", "Node.js", ["node jay ess"]),
+    ]);
+    expect(
+      applyDictionary(
+        dictionary,
+        "see plus plus, tool kit, node jay ess; c++, anode.js and c++17.",
+      ),
+    ).toBe("C++, $Tool\\Kit, Node.js; C++, anode.js and c++17.");
   });
 
   test("priority hints stay stable and freeform terms do not install replacements", () => {
-    const dictionary: PersonalDictionary = { lists: [
-      { id: "first", name: "First", entries: [entry("ordinary", "ordinary", ["usual"]), entry("auth", "auth", [], true), entry("cafe", "Café")] },
-      { id: "second", name: "Second", entries: [entry("qwen", "Qwen", [], true), entry("duplicate", "Café", [], true)] },
-    ] };
+    const dictionary: PersonalDictionary = {
+      lists: [
+        {
+          id: "first",
+          name: "First",
+          entries: [
+            entry("ordinary", "ordinary", ["usual"]),
+            entry("auth", "auth", [], true),
+            entry("cafe", "Café"),
+          ],
+        },
+        {
+          id: "second",
+          name: "Second",
+          entries: [entry("qwen", "Qwen", [], true), entry("duplicate", "Café", [], true)],
+        },
+      ],
+    };
     expect(dictionaryValidationError(dictionary)).toBeUndefined();
     expect(dictionaryVocabularyTerms(dictionary)).toEqual(["auth", "Qwen", "Café", "ordinary"]);
-    expect(recognitionVocabularyTerms(dictionary, "AUTH, server\nCAFE\u0301, queue, , server")).toEqual(["auth", "Qwen", "Café", "ordinary", "server", "queue"]);
-    expect(recognitionVocabularyTerms(dictionary, "auth\tmiddleware, auth  middleware, \tserver\t")).toEqual(["auth", "Qwen", "Café", "ordinary", "auth middleware", "server"]);
+    expect(
+      recognitionVocabularyTerms(dictionary, "AUTH, server\nCAFE\u0301, queue, , server"),
+    ).toEqual(["auth", "Qwen", "Café", "ordinary", "server", "queue"]);
+    expect(
+      recognitionVocabularyTerms(dictionary, "auth\tmiddleware, auth  middleware, \tserver\t"),
+    ).toEqual(["auth", "Qwen", "Café", "ordinary", "auth middleware", "server"]);
     expect(applyDictionary(dictionary, "usual AUTH queue")).toBe("ordinary auth queue");
   });
 
@@ -72,30 +140,65 @@ describe("personal dictionary Swift parity", () => {
   });
 
   test("strict decoding fills legacy defaults and rejects explicit nulls and wrong types", () => {
-    const minimal = { lists: [{ id: "personal", name: "Personal", entries: [{ id: "codex", term: "Codex" }] }] };
-    expect(decodePersonalDictionary(minimal).value).toEqual(makeDictionary([entry("codex", "Codex")]));
-    expect(decodePersonalDictionary({ lists: [{ id: "empty", name: "Empty" }] }).value).toEqual({ lists: [{ id: "empty", name: "Empty", entries: [] }] });
+    const minimal = {
+      lists: [{ id: "personal", name: "Personal", entries: [{ id: "codex", term: "Codex" }] }],
+    };
+    expect(decodePersonalDictionary(minimal).value).toEqual(
+      makeDictionary([entry("codex", "Codex")]),
+    );
+    expect(decodePersonalDictionary({ lists: [{ id: "empty", name: "Empty" }] }).value).toEqual({
+      lists: [{ id: "empty", name: "Empty", entries: [] }],
+    });
     for (const value of [
-      {}, { lists: null }, { lists: {} }, { lists: [{ name: "Personal" }] },
+      {},
+      { lists: null },
+      { lists: {} },
+      { lists: [{ name: "Personal" }] },
       { lists: [{ id: "a", name: "Personal", entries: null }] },
       { lists: [{ id: "a", name: "Personal", entries: [{ term: "Codex" }] }] },
-      ...[null, 1, "true"].map((isPriority) => ({ lists: [{ id: "a", name: "A", entries: [{ id: "b", term: "Codex", isPriority }] }] })),
-      ...[null, [5]].map((aliases) => ({ lists: [{ id: "a", name: "A", entries: [{ id: "b", term: "Codex", aliases }] }] })),
-    ]) expect(decodePersonalDictionary(value).error).toBeDefined();
+      ...[null, 1, "true"].map((isPriority) => ({
+        lists: [{ id: "a", name: "A", entries: [{ id: "b", term: "Codex", isPriority }] }],
+      })),
+      ...[null, [5]].map((aliases) => ({
+        lists: [{ id: "a", name: "A", entries: [{ id: "b", term: "Codex", aliases }] }],
+      })),
+    ])
+      expect(decodePersonalDictionary(value).error).toBeDefined();
   });
 
   test("IDs, text, duplicate aliases and count limits are validated", () => {
     const invalid: PersonalDictionary[] = [
       { lists: [{ id: "", name: "Personal", entries: [] }] },
       { lists: [{ id: "a", name: " ", entries: [] }] },
-      { lists: [{ id: "a", name: "A", entries: [] }, { id: "a", name: "B", entries: [] }] },
+      {
+        lists: [
+          { id: "a", name: "A", entries: [] },
+          { id: "a", name: "B", entries: [] },
+        ],
+      },
       makeDictionary([entry("a", "Codex"), entry("a", "MiniMax")]),
-      ...[" Codex", "A\nB", "A\0B", "A\u200DB", "a".repeat(129)].map((term) => makeDictionary([entry("a", term)])),
+      ...[" Codex", "A\nB", "A\0B", "A\u200DB", "a".repeat(129)].map((term) =>
+        makeDictionary([entry("a", term)]),
+      ),
       makeDictionary([entry("a", "Codex", ["codex"])]),
       makeDictionary([entry("a", "Codex", ["code x", "CODE X"])]),
-      makeDictionary([entry("a", "Codex", Array.from({ length: 9 }, (_, index) => `alias ${index}`))]),
-      makeDictionary(Array.from({ length: 501 }, (_, index) => entry(String(index), `Term${index}`))),
-      { lists: Array.from({ length: 33 }, (_, index) => ({ id: String(index), name: `List${index}`, entries: [] })) },
+      makeDictionary([
+        entry(
+          "a",
+          "Codex",
+          Array.from({ length: 9 }, (_, index) => `alias ${index}`),
+        ),
+      ]),
+      makeDictionary(
+        Array.from({ length: 501 }, (_, index) => entry(String(index), `Term${index}`)),
+      ),
+      {
+        lists: Array.from({ length: 33 }, (_, index) => ({
+          id: String(index),
+          name: `List${index}`,
+          entries: [],
+        })),
+      },
     ];
     for (const dictionary of invalid) {
       expect(dictionaryValidationError(dictionary)).toBeDefined();
@@ -118,8 +221,11 @@ describe("personal dictionary Swift parity", () => {
 
 describe("transcript cleaning", () => {
   test("silence markers and model tokens are removed without rewriting hesitations", () => {
-    for (const marker of ["[BLANK_AUDIO]", "[no_speech]", "[SILENCE]", "(silence)", "[Music]"]) expect(cleanTranscript(` \t${marker}\n`)).toBe("");
-    expect(cleanTranscript(" <|startoftranscript|>Um,  I\tmean\nthis. <|endoftext|> ")).toBe("Um, I mean\nthis.");
+    for (const marker of ["[BLANK_AUDIO]", "[no_speech]", "[SILENCE]", "(silence)", "[Music]"])
+      expect(cleanTranscript(` \t${marker}\n`)).toBe("");
+    expect(cleanTranscript(" <|startoftranscript|>Um,  I\tmean\nthis. <|endoftext|> ")).toBe(
+      "Um, I mean\nthis.",
+    );
     expect(cleanTranscript("We heard [Music] outside.")).toBe("We heard [Music] outside.");
     expect(cleanTranscript("\u200Btext\u200B")).toBe("text");
     expect(cleanTranscript("\uFEFFtext\uFEFF")).toBe("\uFEFFtext\uFEFF");
@@ -129,13 +235,19 @@ describe("transcript cleaning", () => {
     for (const marker of ["[BLANK_AUDIO]", "[no_speech]", "[SILENCE]", "(silence)", "[Music]"]) {
       expect(cleanTranscript(`<|startoftranscript|> \t${marker}\n<|endoftext|>`)).toBe("");
     }
-    expect(cleanTranscript("<|startoftranscript|>We heard [Music] outside.<|endoftext|>")).toBe("We heard [Music] outside.");
-    expect(cleanTranscript("<|startoftranscript|>Café  tomorrow.\n\nありがとう。<|endoftext|>")).toBe("Café tomorrow.\n\nありがとう。");
+    expect(cleanTranscript("<|startoftranscript|>We heard [Music] outside.<|endoftext|>")).toBe(
+      "We heard [Music] outside.",
+    );
+    expect(
+      cleanTranscript("<|startoftranscript|>Café  tomorrow.\n\nありがとう。<|endoftext|>"),
+    ).toBe("Café tomorrow.\n\nありがとう。");
   });
 
   test("vocabulary prompts are bounded by terms and graphemes", () => {
     expect(vocabularyPrompt(" auth,\nCodex, , Qwen ")).toBe("auth, Codex, Qwen");
-    expect(vocabularyPrompt(Array.from({ length: 90 }, (_, index) => `t${index}`).join(",")).split(", ")).toHaveLength(80);
+    expect(
+      vocabularyPrompt(Array.from({ length: 90 }, (_, index) => `t${index}`).join(",")).split(", "),
+    ).toHaveLength(80);
     const emoji = "👩🏽‍💻".repeat(1100);
     expect(vocabularyPrompt(emoji)).toBe("👩🏽‍💻".repeat(1024));
   });

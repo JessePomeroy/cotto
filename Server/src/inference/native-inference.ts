@@ -23,11 +23,21 @@ export interface InferenceConfiguration {
   proofTimeout: number;
 }
 
-type ConfigurationInput = Pick<InferenceConfiguration, "speechHelper" | "speechModel" | "vadModel" | "proofHelper" | "proofModel">
-  & Partial<Omit<InferenceConfiguration, "speechHelper" | "speechModel" | "vadModel" | "proofHelper" | "proofModel">>;
+type ConfigurationInput = Pick<
+  InferenceConfiguration,
+  "speechHelper" | "speechModel" | "vadModel" | "proofHelper" | "proofModel"
+> &
+  Partial<
+    Omit<
+      InferenceConfiguration,
+      "speechHelper" | "speechModel" | "vadModel" | "proofHelper" | "proofModel"
+    >
+  >;
 
 function deadline(value: number | undefined, fallback: number) {
-  return value !== undefined && Number.isFinite(value) && value > 0 && value <= 3600 ? value : fallback;
+  return value !== undefined && Number.isFinite(value) && value > 0 && value <= 3600
+    ? value
+    : fallback;
 }
 
 export function createInferenceConfiguration(input: ConfigurationInput): InferenceConfiguration {
@@ -69,29 +79,64 @@ export interface ProofInferenceResult {
 export interface InferenceBackend {
   readiness(proofreadingEnabled?: boolean): Promise<InferenceReadiness>;
   warmUp(proofreadingEnabled?: boolean, signal?: AbortSignal): Promise<void>;
-  transcribe(audioPath: string, language: string, vocabularyTerms: string[], onProgress?: (value: number) => void, signal?: AbortSignal): Promise<SpeechInferenceResult>;
-  correct(text: string, terms: string[], language: string, systemPrompt: string, signal?: AbortSignal): Promise<ProofInferenceResult>;
+  transcribe(
+    audioPath: string,
+    language: string,
+    vocabularyTerms: string[],
+    onProgress?: (value: number) => void,
+    signal?: AbortSignal,
+  ): Promise<SpeechInferenceResult>;
+  correct(
+    text: string,
+    terms: string[],
+    language: string,
+    systemPrompt: string,
+    signal?: AbortSignal,
+  ): Promise<ProofInferenceResult>;
   cancel(): Promise<void>;
   shutdown(): Promise<void>;
 }
 
-function bytes(value: string) { return Buffer.byteLength(value, "utf8"); }
+function bytes(value: string) {
+  return Buffer.byteLength(value, "utf8");
+}
 
-function validLanguage(language: string) { return language.length > 0 && bytes(language) <= 32 && !language.includes("\0"); }
+function validLanguage(language: string) {
+  return language.length > 0 && bytes(language) <= 32 && !language.includes("\0");
+}
 
-function vocabularyDiagnostics(response: HelperResponse, terms: string[]): ModelHintUsage | undefined {
+function vocabularyDiagnostics(
+  response: HelperResponse,
+  terms: string[],
+): ModelHintUsage | undefined {
   const { includedTerms: included, omittedTerms: omitted, tokenCount, tokenBudget } = response;
-  if (included === undefined && omitted === undefined && tokenCount === undefined && tokenBudget === undefined) return;
-  if (included && omitted && tokenCount !== undefined && tokenBudget !== undefined
-      && tokenCount >= 0 && tokenBudget > 0 && tokenCount <= tokenBudget
-      && included.length + omitted.length === terms.length) {
+  if (
+    included === undefined &&
+    omitted === undefined &&
+    tokenCount === undefined &&
+    tokenBudget === undefined
+  )
+    return;
+  if (
+    included &&
+    omitted &&
+    tokenCount !== undefined &&
+    tokenBudget !== undefined &&
+    tokenCount >= 0 &&
+    tokenBudget > 0 &&
+    tokenCount <= tokenBudget &&
+    included.length + omitted.length === terms.length
+  ) {
     const includedSet = new Set(included);
     const omittedSet = new Set(omitted);
     const combined = new Set([...included, ...omitted]);
-    if (included.every(term => !omittedSet.has(term))
-        && combined.size === terms.length && terms.every(term => combined.has(term))
-        && JSON.stringify(included) === JSON.stringify(terms.filter(term => includedSet.has(term)))
-        && JSON.stringify(omitted) === JSON.stringify(terms.filter(term => omittedSet.has(term)))) {
+    if (
+      included.every((term) => !omittedSet.has(term)) &&
+      combined.size === terms.length &&
+      terms.every((term) => combined.has(term)) &&
+      JSON.stringify(included) === JSON.stringify(terms.filter((term) => includedSet.has(term))) &&
+      JSON.stringify(omitted) === JSON.stringify(terms.filter((term) => omittedSet.has(term)))
+    ) {
       return { includedTerms: included, omittedTerms: omitted, tokenCount, tokenBudget };
     }
   }
@@ -108,23 +153,44 @@ export class NativeInference implements InferenceBackend {
   private readonly proofPin?: ModelPin;
   private readonly proofManifestSHA256?: string;
 
-  constructor(configuration: ConfigurationInput, fixturePins?: { speech?: ModelPin; proof?: ModelPin }) {
+  constructor(
+    configuration: ConfigurationInput,
+    fixturePins?: { speech?: ModelPin; proof?: ModelPin },
+  ) {
     this.configuration = createInferenceConfiguration(configuration);
     // Constructor-only fixture injection is never exposed by server configuration
     // or the CLI. Production always enforces the immutable native-model pins.
     this.speechPin = fixturePins ? fixturePins.speech : speechModelPin;
-    this.proofPin = fixturePins ? fixturePins.proof : process.platform === "darwin" ? undefined : linuxProofModelPin;
-    this.proofManifestSHA256 = !fixturePins && process.platform === "darwin" ? macProofManifestSHA256 : undefined;
+    this.proofPin = fixturePins
+      ? fixturePins.proof
+      : process.platform === "darwin"
+        ? undefined
+        : linuxProofModelPin;
+    this.proofManifestSHA256 =
+      !fixturePins && process.platform === "darwin" ? macProofManifestSHA256 : undefined;
     const config = this.configuration;
     this.speech = new HelperProcess({
-      name: "Whisper", executable: config.speechHelper,
-      arguments: ["--model", config.speechModel, "--vad-model", config.vadModel, "--threads", String(config.threads)],
-      requiredFiles: [config.speechModel, config.vadModel], loadTimeout: config.speechLoadTimeout, lineLimit: 1_048_576,
+      name: "Whisper",
+      executable: config.speechHelper,
+      arguments: [
+        "--model",
+        config.speechModel,
+        "--vad-model",
+        config.vadModel,
+        "--threads",
+        String(config.threads),
+      ],
+      requiredFiles: [config.speechModel, config.vadModel],
+      loadTimeout: config.speechLoadTimeout,
+      lineLimit: 1_048_576,
     });
     this.proof = new HelperProcess({
-      name: "Qwen", executable: config.proofHelper,
+      name: "Qwen",
+      executable: config.proofHelper,
       arguments: ["--model", config.proofModel, "--threads", String(config.threads)],
-      requiredFiles: [config.proofModel], loadTimeout: config.proofLoadTimeout, lineLimit: 65_536,
+      requiredFiles: [config.proofModel],
+      loadTimeout: config.proofLoadTimeout,
+      lineLimit: 65_536,
     });
   }
 
@@ -132,13 +198,25 @@ export class NativeInference implements InferenceBackend {
     const config = this.configuration;
     const speechState = this.speech.snapshot();
     const proofState = this.proof.snapshot();
-    const helpers = proofreadingEnabled ? [config.speechHelper, config.proofHelper] : [config.speechHelper];
-    const models = [config.speechModel, config.vadModel, ...(proofreadingEnabled ? [config.proofModel] : [])];
+    const helpers = proofreadingEnabled
+      ? [config.speechHelper, config.proofHelper]
+      : [config.speechHelper];
+    const models = [
+      config.speechModel,
+      config.vadModel,
+      ...(proofreadingEnabled ? [config.proofModel] : []),
+    ];
     let missing: string | undefined;
-    for (const [paths, mode] of [[helpers, constants.X_OK], [models, constants.R_OK]] as const) {
+    for (const [paths, mode] of [
+      [helpers, constants.X_OK],
+      [models, constants.R_OK],
+    ] as const) {
       for (const path of paths) {
-        try { await access(path, mode); }
-        catch { missing ??= path; }
+        try {
+          await access(path, mode);
+        } catch {
+          missing ??= path;
+        }
       }
     }
     const speechVerified = await this.verifier.isVerified(config.speechModel, this.speechPin);
@@ -147,10 +225,15 @@ export class NativeInference implements InferenceBackend {
     const warm = speechState.loaded && (!proofreadingEnabled || proofState.loaded);
     return {
       available: !missing && speechVerified && (!proofreadingEnabled || proofVerified),
-      message: missing ? `Missing or inaccessible inference asset: ${missing}`
-        : !speechVerified || (proofreadingEnabled && !proofVerified) ? "Models need integrity verification."
-        : warm ? "Models are warm and ready." : "Models need to warm up.",
-      speechLoaded: speechState.loaded, proofLoaded: proofState.loaded,
+      message: missing
+        ? `Missing or inaccessible inference asset: ${missing}`
+        : !speechVerified || (proofreadingEnabled && !proofVerified)
+          ? "Models need integrity verification."
+          : warm
+            ? "Models are warm and ready."
+            : "Models need to warm up.",
+      speechLoaded: speechState.loaded,
+      proofLoaded: proofState.loaded,
     };
   }
 
@@ -163,33 +246,87 @@ export class NativeInference implements InferenceBackend {
     }
   }
 
-  async transcribe(audioPath: string, language: string, vocabularyTerms: string[], onProgress?: (value: number) => void, signal?: AbortSignal): Promise<SpeechInferenceResult> {
+  async transcribe(
+    audioPath: string,
+    language: string,
+    vocabularyTerms: string[],
+    onProgress?: (value: number) => void,
+    signal?: AbortSignal,
+  ): Promise<SpeechInferenceResult> {
     checkCancellation(signal);
     let readable = true;
-    try { await access(audioPath, constants.R_OK); } catch { readable = false; }
-    if (!readable || !validLanguage(language) || vocabularyTerms.length > 8192
-        || vocabularyTerms.some(term => !term.length || bytes(term) > 16_384 || term !== term.trim() || /[\p{Cc}\p{Cf}]/u.test(term))
-        || vocabularyTerms.reduce((total, term) => total + bytes(term), 0) > 384 * 1024) {
+    try {
+      await access(audioPath, constants.R_OK);
+    } catch {
+      readable = false;
+    }
+    if (
+      !readable ||
+      !validLanguage(language) ||
+      vocabularyTerms.length > 8192 ||
+      vocabularyTerms.some(
+        (term) =>
+          !term.length ||
+          bytes(term) > 16_384 ||
+          term !== term.trim() ||
+          /[\p{Cc}\p{Cf}]/u.test(term),
+      ) ||
+      vocabularyTerms.reduce((total, term) => total + bytes(term), 0) > 384 * 1024
+    ) {
       throw new InferenceError("invalidRequest", "Audio, language, or Whisper prompt is invalid.");
     }
-    if (new Set(vocabularyTerms).size !== vocabularyTerms.length) throw new InferenceError("invalidRequest", "Whisper vocabulary terms must be unique.");
-    const digest = await this.verifier.verify(this.configuration.speechModel, this.speechPin, signal);
-    const request = { type: "transcribe", id: randomUUID(), path: audioPath, language, vocabularyTerms };
-    if (bytes(JSON.stringify(request)) >= 1_048_576) throw new InferenceError("invalidRequest", "The encoded vocabulary exceeds 1 MB.");
-    const response = await this.speech.request(request, request.id, this.configuration.speechTimeout, onProgress, signal);
-    if (response.text === undefined || bytes(response.text) > 256 * 1024 || response.text.includes("\0")
-        || response.duration === undefined || !Number.isFinite(response.duration) || response.duration < 0
-        || response.elapsed === undefined || !Number.isFinite(response.elapsed) || response.elapsed < 0
-        || response.language === undefined || !response.language.length || bytes(response.language) > 32) {
+    if (new Set(vocabularyTerms).size !== vocabularyTerms.length)
+      throw new InferenceError("invalidRequest", "Whisper vocabulary terms must be unique.");
+    const digest = await this.verifier.verify(
+      this.configuration.speechModel,
+      this.speechPin,
+      signal,
+    );
+    const request = {
+      type: "transcribe",
+      id: randomUUID(),
+      path: audioPath,
+      language,
+      vocabularyTerms,
+    };
+    if (bytes(JSON.stringify(request)) >= 1_048_576)
+      throw new InferenceError("invalidRequest", "The encoded vocabulary exceeds 1 MB.");
+    const response = await this.speech.request(
+      request,
+      request.id,
+      this.configuration.speechTimeout,
+      onProgress,
+      signal,
+    );
+    if (
+      response.text === undefined ||
+      bytes(response.text) > 256 * 1024 ||
+      response.text.includes("\0") ||
+      response.duration === undefined ||
+      !Number.isFinite(response.duration) ||
+      response.duration < 0 ||
+      response.elapsed === undefined ||
+      !Number.isFinite(response.elapsed) ||
+      response.elapsed < 0 ||
+      response.language === undefined ||
+      !response.language.length ||
+      bytes(response.language) > 32
+    ) {
       this.speech.shutdown();
       throw new InferenceError("invalidResponse", "Whisper returned an invalid transcript.");
     }
     let hints: ModelHintUsage | undefined;
-    try { hints = vocabularyDiagnostics(response, vocabularyTerms); }
-    catch (error) { this.speech.shutdown(); throw error; }
+    try {
+      hints = vocabularyDiagnostics(response, vocabularyTerms);
+    } catch (error) {
+      this.speech.shutdown();
+      throw error;
+    }
     const state = this.speech.snapshot();
     return {
-      text: response.text, audioSeconds: response.duration, processingSeconds: response.elapsed,
+      text: response.text,
+      audioSeconds: response.duration,
+      processingSeconds: response.elapsed,
       language: response.language,
       ...(state.engineVersion !== undefined ? { engineVersion: state.engineVersion } : {}),
       ...(digest !== undefined ? { modelSHA256: digest } : {}),
@@ -197,33 +334,69 @@ export class NativeInference implements InferenceBackend {
     };
   }
 
-  async correct(text: string, terms: string[], language: string, systemPrompt: string, signal?: AbortSignal): Promise<ProofInferenceResult> {
+  async correct(
+    text: string,
+    terms: string[],
+    language: string,
+    systemPrompt: string,
+    signal?: AbortSignal,
+  ): Promise<ProofInferenceResult> {
     checkCancellation(signal);
-    if (!text.trim().length || bytes(text) > 24 * 1024 || text.includes("\0")
-        || terms.length > 256 || terms.some(term => !term.length || bytes(term) > 256 || term.includes("\0"))
-        || terms.reduce((total, term) => total + bytes(term), 0) > 16_384 || !validLanguage(language)
-        || !systemPrompt.trim().length || bytes(systemPrompt) > 4096 || systemPrompt.includes("\0")) {
-      throw new InferenceError("invalidRequest", "The transcript or dictionary exceeds the Qwen correction limit.");
+    if (
+      !text.trim().length ||
+      bytes(text) > 24 * 1024 ||
+      text.includes("\0") ||
+      terms.length > 256 ||
+      terms.some((term) => !term.length || bytes(term) > 256 || term.includes("\0")) ||
+      terms.reduce((total, term) => total + bytes(term), 0) > 16_384 ||
+      !validLanguage(language) ||
+      !systemPrompt.trim().length ||
+      bytes(systemPrompt) > 4096 ||
+      systemPrompt.includes("\0")
+    ) {
+      throw new InferenceError(
+        "invalidRequest",
+        "The transcript or dictionary exceeds the Qwen correction limit.",
+      );
     }
     const request = { type: "correct", id: randomUUID(), text, terms, language, systemPrompt };
-    if (bytes(JSON.stringify(request)) > 64 * 1024) throw new InferenceError("invalidRequest", "The encoded correction request exceeds 64 KB.");
+    if (bytes(JSON.stringify(request)) > 64 * 1024)
+      throw new InferenceError("invalidRequest", "The encoded correction request exceeds 64 KB.");
     const digest = await this.verifier.verify(this.configuration.proofModel, this.proofPin, signal);
-    const response = await this.proof.request(request, request.id, this.configuration.proofTimeout, undefined, signal);
-    if (response.text === undefined || !response.text.length || bytes(response.text) > 24 * 1024 || response.text.includes("\0")
-        || response.elapsed === undefined || !Number.isFinite(response.elapsed) || response.elapsed < 0) {
+    const response = await this.proof.request(
+      request,
+      request.id,
+      this.configuration.proofTimeout,
+      undefined,
+      signal,
+    );
+    if (
+      response.text === undefined ||
+      !response.text.length ||
+      bytes(response.text) > 24 * 1024 ||
+      response.text.includes("\0") ||
+      response.elapsed === undefined ||
+      !Number.isFinite(response.elapsed) ||
+      response.elapsed < 0
+    ) {
       this.proof.shutdown();
       throw new InferenceError("invalidResponse", "Qwen returned an invalid correction.");
     }
     const state = this.proof.snapshot();
     const modelSHA256 = digest ?? this.proofManifestSHA256;
     return {
-      text: response.text, processingSeconds: response.elapsed,
+      text: response.text,
+      processingSeconds: response.elapsed,
       ...(state.engineVersion !== undefined ? { engineVersion: state.engineVersion } : {}),
       ...(modelSHA256 !== undefined ? { modelSHA256 } : {}),
     };
   }
 
-  async cancel() { this.verifier.cancel(); this.speech.cancel(); this.proof.cancel(); }
+  async cancel() {
+    this.verifier.cancel();
+    this.speech.cancel();
+    this.proof.cancel();
+  }
   async shutdown() {
     await Promise.all([this.verifier.shutdown(), this.speech.shutdown(), this.proof.shutdown()]);
   }

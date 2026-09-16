@@ -10,4 +10,5 @@ export const linuxProofModelPin = {
 };
 
 // The MLX helper verifies its six-file artifact before emitting `ready`.
-export const macProofManifestSHA256 = "6689706a7d1a746920df5c5d5dc1e8ed3280790a542085d6e3c870c565e77307";
+export const macProofManifestSHA256 =
+  "6689706a7d1a746920df5c5d5dc1e8ed3280790a542085d6e3c870c565e77307";

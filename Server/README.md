@@ -147,6 +147,8 @@ For a GPU server, use `sotto-server:cuda` and add `--gpus all`. The example expo
 
 ```sh
 bun install --frozen-lockfile
+bun run fmt
+bun run fmt:check
 bun run check
 bun run test
 bun run generate:api --check

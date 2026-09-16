@@ -9,12 +9,16 @@ test("production standalone manifest runs the embedded correction worker", async
   const executable = join(directory, "correction-worker-probe");
   try {
     const built = await Bun.build({
-      ...standaloneBuildSettings(resolve(import.meta.dirname, "fixtures/correction-worker-standalone.ts")),
+      ...standaloneBuildSettings(
+        resolve(import.meta.dirname, "fixtures/correction-worker-standalone.ts"),
+      ),
       compile: { outfile: executable, autoloadDotenv: false, autoloadBunfig: false },
     });
     expect(built.success).toBe(true);
     const result = Bun.spawnSync([executable]);
     expect(result.exitCode).toBe(0);
     expect(result.stdout.toString().trim()).toBe("Compiled correction worker parity passed.");
-  } finally { await rm(directory, { recursive: true, force: true }); }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 }, 15_000);
