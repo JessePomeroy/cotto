@@ -246,6 +246,22 @@ final class NativeIntegrationTests: XCTestCase {
         XCTAssertFalse(driver.events.contains("start"), "Preparing a take must not start IO")
     }
 
+    func testInputOnlyCaptureRejectsChannelCountsBeyondOriginalUploadLimit() {
+        for channels in [UInt32(9), 16] {
+            let driver = FakeInputAudioUnitDriver()
+            driver.hardware.mChannelsPerFrame = channels
+            let input = InputOnlyAudioUnit(operations: driver.operations)
+            XCTAssertThrowsError(try input.prepare(deviceID: 23)) { error in
+                guard case InputAudioUnitError.invalidFormat = error else {
+                    return XCTFail("Expected an unsupported microphone format, got \(error)")
+                }
+            }
+            XCTAssertNil(driver.clientFormat)
+            XCTAssertFalse(driver.events.contains("start"))
+            XCTAssertEqual(driver.events.last, "dispose")
+        }
+    }
+
     func testFourChannelInterfacePreservesOriginalAndMixesEveryInputForSpeech() async throws {
         let layout = try XCTUnwrap(AVAudioChannelLayout(layoutTag: kAudioChannelLayoutTag_DiscreteInOrder | 4))
         let hardwareFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 48_000,

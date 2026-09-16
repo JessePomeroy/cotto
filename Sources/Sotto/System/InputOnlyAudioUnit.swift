@@ -81,9 +81,10 @@ final class InputOnlyAudioUnit {
             try set(kAudioOutputUnitProperty_EnableIO, kAudioUnitScope_Input, 1, UInt32(1))
             try set(kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0, deviceID)
             let hardware = try hardwareFormat()
+            // Original-audio uploads support at most eight input channels.
             guard hardware.mSampleRate.isFinite, hardware.mSampleRate > 0,
                   hardware.mSampleRate <= 768_000,
-                  hardware.mChannelsPerFrame > 0, hardware.mChannelsPerFrame <= 128 else {
+                  hardware.mChannelsPerFrame > 0, hardware.mChannelsPerFrame <= 8 else {
                 throw InputAudioUnitError.invalidFormat
             }
             // The channel-count initializer only supports mono and stereo.
