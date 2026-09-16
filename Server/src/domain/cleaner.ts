@@ -4,9 +4,10 @@ const trim = (text: string) => text.replace(/^[\p{White_Space}\u200B]+|[\p{White
 export function cleanTranscript(raw: string) {
   let text = trim(raw);
   const silenceMarkers = ["[BLANK_AUDIO]", "[NO_SPEECH]", "[SILENCE]", "(silence)", "[Music]", "[MUSIC]"];
-  if (silenceMarkers.some((marker) => text.toLowerCase() === marker.toLowerCase())) return "";
   text = text.replace(/<\|[^|]*\|>/g, "").replace(/[\t ]+/g, " ");
-  return trim(text);
+  text = trim(text);
+  if (silenceMarkers.some((marker) => text.toLowerCase() === marker.toLowerCase())) return "";
+  return text;
 }
 
 export function vocabularyPrompt(vocabulary: string) {

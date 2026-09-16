@@ -6,7 +6,7 @@ and domain packages remain as migration references; the macOS client remains Swi
 ## Local verification
 
 - `bun run check`: passes.
-- `bun run test`: 176 tests pass, covering the HTTP contract, text behavior,
+- `bun run test`: 185 tests pass, covering the HTTP contract, text behavior,
   storage/recovery/imports, helper supervision, locks, and correction workers.
 - `bun run generate:api --check`: TypeScript and Swift bindings match OpenAPI.
 - `swift test`: existing Swift domain/server/client tests and new API bridge tests
@@ -15,6 +15,9 @@ and domain packages remain as migration references; the macOS client remains Swi
   with no differences.
 - Standalone coordinators compile for macOS arm64 and Linux x64/arm64. Linux
   executables and their native file locks were exercised in Ubuntu containers.
+- Complete Linux CPU archives from CI include the runtime, native helpers, VAD,
+  and notices. Their coordinator and both helpers launch in matching Ubuntu
+  containers without an installed Bun or Node runtime.
 - Compiled HTTP smoke covers preferences, imports, archive deletion, NDJSON,
   Origin rejection, and unavailable-model readiness using a temporary archive.
 - Real Whisper and Qwen inference passes the server integration script using the
@@ -25,6 +28,9 @@ and domain packages remain as migration references; the macOS client remains Swi
 Two independent reviews covered security and API/domain/build compatibility.
 Material findings were fixed and checked again: Swift artifact upload MIME types,
 the download schema, archive FIFO handling, and retired helper shutdown.
+Automated review also led to fixes for processing-task drainage before archive
+lock release, independent hash-waiter cancellation, and token-wrapped silence.
+Workflow actions now use verified immutable revisions.
 
 ## Isolated development instance
 

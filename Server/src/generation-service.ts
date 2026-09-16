@@ -69,7 +69,7 @@ export class GenerationService {
   private uploads = new Map<string, Partial<Record<AudioKind, Upload>>>();
   private activeID?: string;
   private activeController?: AbortController;
-  private activeTask?: Promise<void>;
+  private processingTasks = new Set<Promise<void>>();
   private warmController?: AbortController;
   private warmTask?: Promise<void>;
   private warming = false;
@@ -162,7 +162,7 @@ export class GenerationService {
     const id = await this.mutate(() => this.activeID);
     if (id) await this.cancel(id).catch(() => {});
     await this.inference.shutdown();
-    await Promise.allSettled([this.activeTask, this.warmTask].filter((task): task is Promise<void> => Boolean(task)));
+    await Promise.allSettled([...this.processingTasks, this.warmTask].filter((task): task is Promise<void> => Boolean(task)));
     await this.mutate(() => { for (const watchers of this.subscribers.values()) for (const watcher of watchers) { watcher.done = true; watcher.wake?.(); } this.subscribers.clear(); });
   }
   async health(): Promise<ServerHealth> {
@@ -286,7 +286,10 @@ export class GenerationService {
       this.uploads.delete(id);
       const controller = new AbortController(); this.activeController = controller;
       // Queueing defers the first process mutation until this finish commit completes.
-      this.activeTask = this.process(id, previous, controller.signal);
+      // Cancellation releases admission before a helper finishes unwinding.
+      // Retain every processing task until its queued catch/finally work completes.
+      const task = this.process(id, previous, controller.signal).finally(() => { this.processingTasks.delete(task); });
+      this.processingTasks.add(task);
       return copy(record);
     });
   }
@@ -343,7 +346,7 @@ export class GenerationService {
     });
     if (cancelled.active) {
       await this.inference.cancel();
-      await this.mutate(() => { if (this.activeID === id) { this.activeID = undefined; this.activeController = undefined; this.activeTask = undefined; this.beginWarmup(); } });
+      await this.mutate(() => { if (this.activeID === id) { this.activeID = undefined; this.activeController = undefined; this.beginWarmup(); } });
     }
     return cancelled.record;
   }
@@ -439,7 +442,7 @@ export class GenerationService {
     } catch (error) {
       await this.mutate(async () => { const record = this.records.get(id); if (!record || terminal(record)) return; const failed = copy(record); failed.status = signal.aborted ? 'cancelled' : 'failed'; failed.error = signal.aborted ? 'Recording cancelled.' : error instanceof Error ? error.message : 'Processing failed.'; failed.updatedAt = now(); delete failed.progress; await this.save(failed).catch(() => this.publish(failed)); });
     } finally {
-      await this.mutate(() => { if (this.activeID === id && this.records.get(id)?.status !== 'cancelled') { this.activeID = undefined; this.activeTask = undefined; this.activeController = undefined; this.beginWarmup(); } });
+      await this.mutate(() => { if (this.activeID === id && this.records.get(id)?.status !== 'cancelled') { this.activeID = undefined; this.activeController = undefined; this.beginWarmup(); } });
     }
   }
   private async proofread(text: string, settings: ServerPreferences, dictionaryChanged: boolean, language: string, signal: AbortSignal) {

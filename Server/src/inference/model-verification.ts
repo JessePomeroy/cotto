@@ -21,11 +21,13 @@ async function pathFingerprint(path: string) {
 /** Hashes in bounded chunks; caches bind to inode, size and nanosecond timestamps. */
 export class ModelVerifier {
   private verified = new Map<string, { pin: string; fingerprint: string }>();
+  private generation = 0;
   private readonly hashes = new Set<Promise<unknown>>();
   private pending = new Map<string, {
     pin: string;
     controller: AbortController;
     task: Promise<{ pin: string; fingerprint: string }>;
+    waiters: number;
   }>();
 
   async isVerified(path: string, pin?: ModelPin) {
@@ -39,35 +41,64 @@ export class ModelVerifier {
   async verify(path: string, pin?: ModelPin, signal?: AbortSignal) {
     checkCancellation(signal);
     if (!pin) return undefined;
-    if (await this.isVerified(path, pin)) { checkCancellation(signal); return pin.sha256; }
+    const generation = this.generation;
+    const verified = await this.isVerified(path, pin);
     checkCancellation(signal);
+    if (generation !== this.generation) throw new InferenceError("cancelled");
+    if (verified) return pin.sha256;
     this.verified.delete(path);
     let operation = this.pending.get(path);
+    if (operation?.controller.signal.aborted) {
+      this.pending.delete(path);
+      operation = undefined;
+    }
     if (!operation) {
       const controller = new AbortController();
-      operation = { pin: pinKey(pin), controller, task: this.hash(path, pin, controller.signal) };
+      operation = { pin: pinKey(pin), controller, task: this.hash(path, pin, controller.signal), waiters: 0 };
       this.pending.set(path, operation);
-      const task = operation.task;
+      const started = operation;
+      const task = started.task;
       this.hashes.add(task);
-      void task.finally(() => this.hashes.delete(task)).catch(() => {});
+      void task.finally(() => {
+        this.hashes.delete(task);
+        if (this.pending.get(path) === started) this.pending.delete(path);
+      }).catch(() => {});
     }
     const pending = operation;
-    const cancel = () => pending.controller.abort();
-    signal?.addEventListener("abort", cancel, { once: true });
+    if (pending.pin !== pinKey(pin)) throw new InferenceError("unavailable", "Model verification configuration changed.");
+    ++pending.waiters;
+    let cancel: (() => void) | undefined;
     try {
-      const result = await pending.task;
+      const result = await new Promise<Awaited<typeof pending.task>>((resolve, reject) => {
+        // A caller owns only its wait. Other consumers retain the shared hash.
+        cancel = () => reject(new InferenceError("cancelled"));
+        signal?.addEventListener("abort", cancel, { once: true });
+        pending.controller.signal.addEventListener("abort", cancel, { once: true });
+        if (signal?.aborted || pending.controller.signal.aborted) cancel();
+        pending.task.then(resolve, reject);
+      });
       checkCancellation(signal);
       checkCancellation(pending.controller.signal);
+      if (generation !== this.generation) throw new InferenceError("cancelled");
       if (result.pin !== pinKey(pin)) throw new InferenceError("unavailable", "Model verification configuration changed.");
       this.verified.set(path, result);
       return pin.sha256;
     } finally {
-      signal?.removeEventListener("abort", cancel);
-      if (this.pending.get(path) === pending) this.pending.delete(path);
+      if (cancel) {
+        signal?.removeEventListener("abort", cancel);
+        pending.controller.signal.removeEventListener("abort", cancel);
+      }
+      --pending.waiters;
+      if (pending.waiters === 0 && this.pending.get(path) === pending) {
+        // Retire immediately so a new request cannot join an aborted operation.
+        this.pending.delete(path);
+        pending.controller.abort();
+      }
     }
   }
 
   cancel() {
+    ++this.generation;
     for (const operation of this.pending.values()) operation.controller.abort();
     this.pending.clear();
   }

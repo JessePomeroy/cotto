@@ -17,7 +17,7 @@ API version 1, default port **8391**. [`Server/api/openapi.yaml`](../Server/api/
 | `GET /v1/generations?limit=50&before=CURSOR` | `GenerationPage`, descending creation order, bounded limit/cursor. |
 | `POST /v1/generations/:id/cancel` | Explicit cancellation, terminal idempotency, → `GenerationRecord`. |
 | `POST /v1/generations/:id/delivery` | `DeliveryReceipt`; store actual client outcome separately from inference completion. → `GenerationRecord`. |
-| `GET /v1/generations/:id/artifacts/:filename` | Allowlisted original.wav, inference.wav, transcript.txt, metadata.json only. |
+| `GET /v1/generations/:id/artifacts/:filename` | Allowlisted original.wav, inference.wav, transcript.txt, metadata.json, source.json, source.wav, opus.json, screenshot.png, and built-in-audio.bin. Imported artifacts exist only when supplied by the source. |
 | `DELETE /v1/generations/:id` | Explicit history removal; active generation cannot be deleted. 204. |
 | `POST /v1/imports/wispr-flow/known` | Source IDs → known imported source IDs. |
 | `POST /v1/imports/wispr-flow` | Source metadata and checksummed artifact manifests → staging session. 201. |

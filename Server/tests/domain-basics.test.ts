@@ -125,6 +125,14 @@ describe("transcript cleaning", () => {
     expect(cleanTranscript("\uFEFFtext\uFEFF")).toBe("\uFEFFtext\uFEFF");
   });
 
+  test("token-wrapped silence remains empty while spoken markers and paragraphs survive", () => {
+    for (const marker of ["[BLANK_AUDIO]", "[no_speech]", "[SILENCE]", "(silence)", "[Music]"]) {
+      expect(cleanTranscript(`<|startoftranscript|> \t${marker}\n<|endoftext|>`)).toBe("");
+    }
+    expect(cleanTranscript("<|startoftranscript|>We heard [Music] outside.<|endoftext|>")).toBe("We heard [Music] outside.");
+    expect(cleanTranscript("<|startoftranscript|>Café  tomorrow.\n\nありがとう。<|endoftext|>")).toBe("Café tomorrow.\n\nありがとう。");
+  });
+
   test("vocabulary prompts are bounded by terms and graphemes", () => {
     expect(vocabularyPrompt(" auth,\nCodex, , Qwen ")).toBe("auth, Codex, Qwen");
     expect(vocabularyPrompt(Array.from({ length: 90 }, (_, index) => `t${index}`).join(",")).split(", ")).toHaveLength(80);

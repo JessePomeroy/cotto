@@ -128,7 +128,7 @@ docker build -f Server/Dockerfile --target cpu -t sotto-server:cpu .
 docker build -f Server/Dockerfile --target cuda -t sotto-server:cuda .
 ```
 
-`CUDA_ARCHITECTURES`, `CUDA_IMAGE`, `BUN_VERSION`, and `BUILD_JOBS` are build arguments. Choose CUDA architectures/toolkit/driver versions for your GPU. GPU containers require NVIDIA Container Toolkit and `--gpus all`; Linux containers on a Mac do not have Metal access.
+`CUDA_ARCHITECTURES`, `CUDA_IMAGE`, `BUN_IMAGE`, `UBUNTU_IMAGE`, and `BUILD_JOBS` are build arguments. Choose CUDA architectures/toolkit/driver versions for your GPU. GPU containers require NVIDIA Container Toolkit and `--gpus all`; Linux containers on a Mac do not have Metal access.
 
 Mount a directory containing the Whisper `.bin` and Qwen `.gguf` files, plus a token file:
 

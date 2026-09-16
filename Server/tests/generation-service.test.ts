@@ -160,3 +160,39 @@ test('FIFO replay targets are rejected before any read and leave the mutation qu
   if (replay.status === 'rejected') expect(replay.reason).toMatchObject({ code: 'invalid_archive' });
   expect(snapshot.status).toBe('fulfilled');
 }, 1000);
+
+function deferred() {
+  let release!: () => void;
+  const promise = new Promise<void>(resolve => { release = resolve; });
+  return { promise, release };
+}
+class DelayedCleanupInference extends FakeInference {
+  started = deferred(); aborted = deferred(); cleanup = deferred(); backendStopped = deferred(); cleaned = false;
+  override shutdown() { this.backendStopped.release(); return super.shutdown(); }
+  override async transcribe(_path: string, _language: string, _terms: string[], _progress?: (value: number) => void, signal?: AbortSignal) {
+    signal?.addEventListener('abort', () => this.aborted.release(), { once: true });
+    this.started.release();
+    await this.aborted.promise;
+    await this.cleanup.promise;
+    this.cleaned = true;
+    return { text: this.text, language: 'en', processingSeconds: 0.1, audioSeconds: 0.25, engineVersion: 'fixture' };
+  }
+}
+for (const retired of [false, true]) {
+  test(retired ? 'shutdown drains processing retired by earlier cancellation' : 'shutdown awaits processing cleanup after cancelling active inference', async () => {
+    const inference = new DelayedCleanupInference();
+    const { service } = await setup(inference), record = await upload(service);
+    await service.finish(record.id, { inferenceFrames: 4000 }); await inference.started.promise;
+    if (retired) { await service.cancel(record.id); await service.create(request()); }
+    let stopped = false;
+    const shutdown = service.shutdown().then(() => { stopped = true; });
+    try {
+      await inference.aborted.promise; await inference.backendStopped.promise;
+      expect((await service.get(record.id)).status).toBe('cancelled');
+      // Give queued shutdown continuations a turn while helper cleanup is held.
+      await Bun.sleep(0);
+      expect(stopped).toBe(false);
+    } finally { inference.cleanup.release(); await shutdown; }
+    expect(inference.cleaned).toBe(true); expect(stopped).toBe(true);
+  });
+}
