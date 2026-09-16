@@ -1,6 +1,6 @@
 # Sotto server
 
-The server is an independent HTTP process that owns models, shared preferences, recordings, and history. For same-Mac development, start with the [quick start](../README.md). This guide covers model installation and running the server separately.
+The server is an independent TypeScript/Fastify HTTP process that owns models, shared preferences, recordings, and history. Bun manages its dependencies and compiles standalone executables with the runtime included. Native inference helpers run separately. This guide covers model installation and running the server separately.
 
 | Server | Speech | Proofreading |
 | --- | --- | --- |
@@ -50,9 +50,9 @@ Expected size: 2,497,281,120 bytes. SHA-256: `3605803b982cb64aead44f6c1b2ae36e3a
 
 ## Build
 
-Initialize submodules with `git submodule update --init --recursive`. macOS requires Apple Silicon and full Xcode with its Metal compiler; the complete client/server build uses Xcode 26+ and Swift 6.2+. If Metal is missing, run `xcodebuild -downloadComponent MetalToolchain`.
+Install Bun 1.4.2 and initialize submodules with `git submodule update --init --recursive`. macOS requires Apple Silicon and full Xcode with its Metal compiler for the MLX helper; the complete client/helper build uses Xcode 26+ and Swift 6.2+. If Metal is missing, run `xcodebuild -downloadComponent MetalToolchain`.
 
-Linux requires Swift 6.2+, a C/C++ toolchain, CMake, Git, curl, pkg-config, and libcurl development headers. CUDA builds also need a compatible NVIDIA driver and CUDA toolkit. The [Dockerfile](Dockerfile) provides a pinned build environment.
+Linux requires Bun, a C/C++ toolchain, CMake, Git, curl, pkg-config, and libcurl development headers. Swift is not required. CUDA builds also need a compatible NVIDIA driver and CUDA toolkit. The [Dockerfile](Dockerfile) provides a pinned Ubuntu 24.04 build environment.
 
 ```sh
 ./scripts/build-server.sh                  # macOS Metal/MLX; Linux CPU
@@ -60,6 +60,20 @@ SOTTO_CUDA=ON ./scripts/build-server.sh     # Linux with CUDA
 ```
 
 Output is `build/server`: executable, native helpers, VAD, notices, and resources. Keep the package together; the Mac proofreader requires the adjacent Metal library and bundles. Large model weights and user data live outside it.
+
+To compile only the coordinator, including its correction worker:
+
+```sh
+bun install --frozen-lockfile
+bun run build:server                     # Native coordinator in build/server
+bun run build:server --all               # Mac arm64, Linux x64 and Linux arm64
+```
+
+Cross builds live under `build/server-coordinators`. Bun cross-compiles the coordinator; complete installation archives combine it with helpers built on each matching platform. Installed packages need neither Bun nor Node. Full Linux release packages target Ubuntu 24.04 or a compatible glibc/libstdc++ environment; Mac packages require Apple Silicon and macOS 14+. Linux x64 coordinators use Bun's baseline CPU target. Native helper CPU/CUDA compatibility remains determined by its CMake build flags.
+
+The release workflow produces complete platform tarballs and SHA-256 checksums. Extract a package, retain its `server` directory together, install the pinned model weights separately, then use the arguments below. Developer ID distribution still requires signing/notarization credentials; the draft Mac build is ad-hoc signed with Bun's executable entitlements.
+
+The archive lock uses Bun FFI to call libc `flock`, matching the reference Swift server. This dependency is tested from source and compiled executables on the supported platforms. A running Swift server and Bun server must never share a data directory.
 
 `SOTTO_BUILD_JOBS` controls build concurrency. For another CPU/GPU host, use `SOTTO_NATIVE=OFF` and set `SOTTO_CUDA_ARCHITECTURES` for the destination GPU. CPU support is useful for compatibility tests; validate CUDA support, memory, and dictation latency on the selected host.
 
@@ -81,6 +95,8 @@ From the repository root, with the models installed above:
 On Linux, replace the last path with the GGUF file. Add `--dev` for a development label in health responses. If using the packaged distribution elsewhere, point helper/resource paths at that package and choose durable model/data paths.
 
 Check `curl http://localhost:8391/v1/health`; HTTP reachability alone does not mean the models are ready. The `ready` field means the server can accept a recording. Quitting a client does not stop this process. Use launchd, systemd, or container supervision for boot/restart behavior; the scripts do not install a service.
+
+For server-only development alongside an installed Sotto instance, use `--port 8392 --data-dir "$PWD/.local/typescript-server" --dev` with your helper/model arguments. Start the executable directly or use `bun run dev:server` with those arguments. The client dev runner starts the app and defaults to port 8391; avoid it when preserving a running installation.
 
 | Argument | Environment variable |
 | --- | --- |
@@ -112,7 +128,7 @@ docker build -f Server/Dockerfile --target cpu -t sotto-server:cpu .
 docker build -f Server/Dockerfile --target cuda -t sotto-server:cuda .
 ```
 
-`CUDA_ARCHITECTURES`, `CUDA_IMAGE`, `SWIFT_IMAGE`, and `BUILD_JOBS` are build arguments. Choose CUDA architectures/toolkit/driver versions for your GPU. GPU containers require NVIDIA Container Toolkit and `--gpus all`; Linux containers on a Mac do not have Metal access.
+`CUDA_ARCHITECTURES`, `CUDA_IMAGE`, `BUN_IMAGE`, `UBUNTU_IMAGE`, and `BUILD_JOBS` are build arguments. Choose CUDA architectures/toolkit/driver versions for your GPU. GPU containers require NVIDIA Container Toolkit and `--gpus all`; Linux containers on a Mac do not have Metal access.
 
 Mount a directory containing the Whisper `.bin` and Qwen `.gguf` files, plus a token file:
 
@@ -130,9 +146,17 @@ For a GPU server, use `sotto-server:cuda` and add `--gpus all`. The example expo
 ## Verify
 
 ```sh
+bun install --frozen-lockfile
+bun run fmt
+bun run fmt:check
+bun run check
+bun run test
+bun run generate:api --check
 swift test
 ./scripts/smoke-test.sh
 SOTTO_TEXT_MODEL=/absolute/path/to/qwen ./scripts/test-corrections.sh
 ```
+
+API generation/Swift checks need Swift 6.2+. Linux-only development can check TypeScript bindings with `bun run generate:api --check --typescript-only`. The reference Swift server/domain remain as a parity oracle; packaged server builds use TypeScript. See the [contract guide](api/README.md) for generated bindings and the [implementation plan](../docs/typescript-server-plan.md) for the migration.
 
 The HTTP smoke test needs an idle Dev server with proofreading enabled. It uses public sample audio, checks progress/artifacts, temporarily changes and restores retention settings, and removes its test generations. The helper test accepts the MLX directory on Mac or GGUF file on Linux and uses synthetic text. Neither opens a microphone. These checks do not establish live cursor-insertion behavior or GPU performance on a different machine.

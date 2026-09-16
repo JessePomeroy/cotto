@@ -20,6 +20,14 @@ final class SottoCoreTests: XCTestCase {
         XCTAssertEqual(TranscriptCleaner.clean("Mention [draft] in the title."), "Mention [draft] in the title.")
     }
 
+    func testTokenWrappedSilencePreservesSpokenMarkersAndParagraphs() {
+        for marker in ["[BLANK_AUDIO]", "[no_speech]", "[SILENCE]", "(silence)", "[Music]"] {
+            XCTAssertEqual(TranscriptCleaner.clean("<|startoftranscript|> \t\(marker)\n<|endoftext|>"), "")
+        }
+        XCTAssertEqual(TranscriptCleaner.clean("<|startoftranscript|>We heard [Music] outside.<|endoftext|>"), "We heard [Music] outside.")
+        XCTAssertEqual(TranscriptCleaner.clean("<|startoftranscript|>Café  tomorrow.\n\nありがとう。<|endoftext|>"), "Café tomorrow.\n\nありがとう。")
+    }
+
     func testCleanupPreservesParagraphsAndUnicode() {
         XCTAssertEqual(TranscriptCleaner.clean("Café  tomorrow.\n\nありがとう。"), "Café tomorrow.\n\nありがとう。")
     }

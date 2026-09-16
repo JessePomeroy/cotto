@@ -1,13 +1,17 @@
 # syntax=docker/dockerfile:1
-ARG SWIFT_IMAGE=swift:6.2-noble
+ARG BUN_IMAGE=oven/bun:1.4.2
+ARG UBUNTU_IMAGE=ubuntu:24.04
 ARG CUDA_IMAGE=nvidia/cuda:13.0.2-devel-ubuntu24.04
 
-FROM ${SWIFT_IMAGE} AS sources
+FROM ${BUN_IMAGE} AS bun-toolchain
+FROM ${UBUNTU_IMAGE} AS sources
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    cmake make curl ca-certificates git pkg-config libcurl4-openssl-dev \
+    build-essential cmake curl ca-certificates git pkg-config libcurl4-openssl-dev \
     && rm -rf /var/lib/apt/lists/*
+COPY --from=bun-toolchain /usr/local/bin/bun /usr/local/bin/bun
 WORKDIR /src
 COPY Package.swift Package.resolved CMakeLists.txt THIRD_PARTY_NOTICES.md ./
+COPY package.json bun.lock ./
 COPY Sources ./Sources
 COPY Tests ./Tests
 COPY Engine ./Engine
@@ -33,8 +37,8 @@ ENV LD_LIBRARY_PATH=/usr/local/cuda/lib64
 ARG CUDA_ARCHITECTURES=80;86;89;90;120;121
 RUN SOTTO_CUDA=ON SOTTO_CUDA_ARCHITECTURES="${CUDA_ARCHITECTURES}" ./scripts/build-server.sh
 
-FROM ${SWIFT_IMAGE} AS runtime
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
+FROM ${UBUNTU_IMAGE} AS runtime
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl libstdc++6 \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --create-home --uid 10001 sotto \
     && mkdir -p /data /models && chown sotto:sotto /data

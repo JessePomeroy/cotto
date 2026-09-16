@@ -1,0 +1,1275 @@
+# Generated language bindings use this file as their source of truth.
+openapi: "3.1.0"
+info:
+  title: "Sotto API"
+  version: "1.0.0"
+  description: "Shared transport contract for the Swift client and TypeScript server. Optional properties are omitted rather than encoded as null. Dates use whole-second ISO8601 UTC timestamps."
+servers:
+  -
+    url: "http://localhost:8391"
+security:
+  -
+    bearerAuth: []
+x-sotto-apiVersion: 1
+x-sotto-defaultPort: 8391
+x-sotto-maximumRecordingSeconds: 180
+x-sotto-maximumChunkBytes: 1048576
+x-sotto-maximumArtifactBytes: 8388608
+x-sotto-maximumDictionaryBytes: 8388608
+paths:
+  "/v1/health":
+    get:
+      operationId: "getHealth"
+      responses:
+        "200":
+          description: "Success"
+          content:
+            "application/json":
+              schema:
+                "$ref": "#/components/schemas/ServerHealth"
+        default:
+          "$ref": "#/components/responses/APIError"
+      security: []
+  "/v1/preferences":
+    get:
+      operationId: "getPreferences"
+      responses:
+        "200":
+          description: "Success"
+          content:
+            "application/json":
+              schema:
+                "$ref": "#/components/schemas/PreferencesSnapshot"
+        default:
+          "$ref": "#/components/responses/APIError"
+    put:
+      operationId: "updatePreferences"
+      responses:
+        "200":
+          description: "Success"
+          content:
+            "application/json":
+              schema:
+                "$ref": "#/components/schemas/PreferencesSnapshot"
+        default:
+          "$ref": "#/components/responses/APIError"
+      requestBody:
+        required: true
+        content:
+          "application/json":
+            schema:
+              "$ref": "#/components/schemas/PreferencesSnapshot"
+        x-maximumBytes: 262144
+  "/v1/generations":
+    get:
+      operationId: "listGenerations"
+      responses:
+        "200":
+          description: "Success"
+          content:
+            "application/json":
+              schema:
+                "$ref": "#/components/schemas/GenerationPage"
+        default:
+          "$ref": "#/components/responses/APIError"
+      parameters:
+        -
+          name: "limit"
+          in: "query"
+          required: false
+          schema:
+            type: "integer"
+            minimum: 1
+            maximum: 100
+            default: 50
+        -
+          name: "before"
+          in: "query"
+          required: false
+          schema:
+            type: "string"
+        -
+          name: "source"
+          in: "query"
+          required: false
+          schema:
+            type: "string"
+            enum:
+              - "sotto"
+              - "wispr-flow"
+    post:
+      operationId: "createGeneration"
+      responses:
+        "201":
+          description: "Success"
+          content:
+            "application/json":
+              schema:
+                "$ref": "#/components/schemas/GenerationRecord"
+        default:
+          "$ref": "#/components/responses/APIError"
+      requestBody:
+        required: true
+        content:
+          "application/json":
+            schema:
+              "$ref": "#/components/schemas/CreateGenerationRequest"
+        x-maximumBytes: 262144
+  "/v1/generations/{id}":
+    get:
+      operationId: "getGeneration"
+      responses:
+        "200":
+          description: "Success"
+          content:
+            "application/json":
+              schema:
+                "$ref": "#/components/schemas/GenerationRecord"
+        default:
+          "$ref": "#/components/responses/APIError"
+      parameters:
+        -
+          name: "id"
+          in: "path"
+          required: true
+          schema:
+            "$ref": "#/components/schemas/UUID"
+    delete:
+      operationId: "deleteGeneration"
+      responses:
+        "204":
+          description: "Success"
+        default:
+          "$ref": "#/components/responses/APIError"
+      parameters:
+        -
+          name: "id"
+          in: "path"
+          required: true
+          schema:
+            "$ref": "#/components/schemas/UUID"
+  "/v1/generations/{id}/audio/{kind}":
+    post:
+      operationId: "appendAudio"
+      responses:
+        "200":
+          description: "Success"
+          content:
+            "application/json":
+              schema:
+                "$ref": "#/components/schemas/AudioChunkReceipt"
+        default:
+          "$ref": "#/components/responses/APIError"
+      parameters:
+        -
+          name: "id"
+          in: "path"
+          required: true
+          schema:
+            "$ref": "#/components/schemas/UUID"
+        -
+          name: "kind"
+          in: "path"
+          required: true
+          schema:
+            "$ref": "#/components/schemas/AudioKind"
+        -
+          name: "sequence"
+          in: "query"
+          required: true
+          schema:
+            type: "integer"
+            minimum: 0
+            maximum: 4095
+        -
+          name: "sampleRate"
+          in: "query"
+          required: true
+          schema:
+            type: "integer"
+            minimum: 8000
+            maximum: 192000
+        -
+          name: "channels"
+          in: "query"
+          required: true
+          schema:
+            type: "integer"
+            minimum: 1
+            maximum: 8
+      requestBody:
+        required: true
+        content:
+          "application/octet-stream":
+            schema:
+              type: "string"
+              format: "binary"
+        description: "Raw interleaved little-endian float32 PCM. Chunks must contain whole frames. Repeated sequences must have identical bytes."
+        x-maximumBytes: 1048576
+  "/v1/generations/{id}/finish":
+    post:
+      operationId: "finishGeneration"
+      responses:
+        "202":
+          description: "Success"
+          content:
+            "application/json":
+              schema:
+                "$ref": "#/components/schemas/GenerationRecord"
+        default:
+          "$ref": "#/components/responses/APIError"
+      requestBody:
+        required: true
+        content:
+          "application/json":
+            schema:
+              "$ref": "#/components/schemas/FinishGenerationRequest"
+        x-maximumBytes: 262144
+      parameters:
+        -
+          name: "id"
+          in: "path"
+          required: true
+          schema:
+            "$ref": "#/components/schemas/UUID"
+  "/v1/generations/{id}/cancel":
+    post:
+      operationId: "cancelGeneration"
+      responses:
+        "200":
+          description: "Success"
+          content:
+            "application/json":
+              schema:
+                "$ref": "#/components/schemas/GenerationRecord"
+        default:
+          "$ref": "#/components/responses/APIError"
+      parameters:
+        -
+          name: "id"
+          in: "path"
+          required: true
+          schema:
+            "$ref": "#/components/schemas/UUID"
+  "/v1/generations/{id}/delivery":
+    post:
+      operationId: "recordDelivery"
+      responses:
+        "200":
+          description: "Success"
+          content:
+            "application/json":
+              schema:
+                "$ref": "#/components/schemas/GenerationRecord"
+        default:
+          "$ref": "#/components/responses/APIError"
+      requestBody:
+        required: true
+        content:
+          "application/json":
+            schema:
+              "$ref": "#/components/schemas/DeliveryReceipt"
+        x-maximumBytes: 262144
+      parameters:
+        -
+          name: "id"
+          in: "path"
+          required: true
+          schema:
+            "$ref": "#/components/schemas/UUID"
+  "/v1/generations/{id}/events":
+    get:
+      operationId: "generationEvents"
+      responses:
+        "200":
+          description: "Success"
+          content:
+            "application/x-ndjson":
+              schema:
+                type: "string"
+              x-recordSchema:
+                "$ref": "#/components/schemas/GenerationRecord"
+        default:
+          "$ref": "#/components/responses/APIError"
+      description: "A bounded NDJSON stream of complete GenerationRecord values, with the latest record repeated as a two-second heartbeat. Ends after a terminal record."
+      parameters:
+        -
+          name: "id"
+          in: "path"
+          required: true
+          schema:
+            "$ref": "#/components/schemas/UUID"
+  "/v1/generations/{id}/artifacts/{filename}":
+    get:
+      operationId: "downloadArtifact"
+      responses:
+        "200":
+          description: "Success"
+          content:
+            "application/octet-stream":
+              schema:
+                type: "string"
+                format: "binary"
+            "audio/wav":
+              schema:
+                type: "string"
+                format: "binary"
+            "image/png":
+              schema:
+                type: "string"
+                format: "binary"
+            "application/json":
+              schema:
+                type: "string"
+                format: "binary"
+            "text/plain":
+              schema:
+                type: "string"
+        default:
+          "$ref": "#/components/responses/APIError"
+      parameters:
+        -
+          name: "id"
+          in: "path"
+          required: true
+          schema:
+            "$ref": "#/components/schemas/UUID"
+        -
+          name: "filename"
+          in: "path"
+          required: true
+          schema:
+            type: "string"
+            enum:
+              - "inference.wav"
+              - "original.wav"
+              - "metadata.json"
+              - "transcript.txt"
+              - "source.json"
+              - "source.wav"
+              - "opus.json"
+              - "screenshot.png"
+              - "built-in-audio.bin"
+  "/v1/imports/wispr-flow/known":
+    post:
+      operationId: "knownWisprFlowIDs"
+      responses:
+        "200":
+          description: "Success"
+          content:
+            "application/json":
+              schema:
+                "$ref": "#/components/schemas/WisprFlowKnownIDsResponse"
+        default:
+          "$ref": "#/components/responses/APIError"
+      requestBody:
+        required: true
+        content:
+          "application/json":
+            schema:
+              "$ref": "#/components/schemas/WisprFlowKnownIDsRequest"
+        x-maximumBytes: 262144
+  "/v1/imports/wispr-flow":
+    post:
+      operationId: "beginWisprFlowImport"
+      responses:
+        "201":
+          description: "Success"
+          content:
+            "application/json":
+              schema:
+                "$ref": "#/components/schemas/WisprFlowImportSession"
+        default:
+          "$ref": "#/components/responses/APIError"
+      requestBody:
+        required: true
+        content:
+          "application/json":
+            schema:
+              "$ref": "#/components/schemas/WisprFlowImportRequest"
+        x-maximumBytes: 262144
+  "/v1/imports/wispr-flow/dictionary":
+    put:
+      operationId: "archiveWisprFlowDictionary"
+      responses:
+        "200":
+          description: "Success"
+          content:
+            "application/json":
+              schema:
+                "$ref": "#/components/schemas/WisprFlowDictionaryArchiveReceipt"
+        default:
+          "$ref": "#/components/responses/APIError"
+      requestBody:
+        required: true
+        content:
+          "application/json":
+            schema: {}
+        x-maximumBytes: 8388608
+        description: "Original Wispr Flow dictionary JSON archive. This does not change the active personal dictionary."
+  "/v1/imports/wispr-flow/{id}/artifacts/{filename}":
+    put:
+      operationId: "uploadWisprFlowArtifact"
+      responses:
+        "200":
+          description: "Success"
+          content:
+            "application/json":
+              schema:
+                "$ref": "#/components/schemas/WisprFlowArtifactReceipt"
+        default:
+          "$ref": "#/components/responses/APIError"
+      parameters:
+        -
+          name: "id"
+          in: "path"
+          required: true
+          schema:
+            "$ref": "#/components/schemas/UUID"
+        -
+          name: "filename"
+          in: "path"
+          required: true
+          schema:
+            "$ref": "#/components/schemas/WisprFlowArtifactName"
+      requestBody:
+        required: true
+        content:
+          "application/octet-stream":
+            schema:
+              type: "string"
+              format: "binary"
+          "application/json":
+            schema:
+              type: "string"
+              format: "binary"
+          "audio/wav":
+            schema:
+              type: "string"
+              format: "binary"
+          "image/png":
+            schema:
+              type: "string"
+              format: "binary"
+        x-maximumBytes: 8388608
+  "/v1/imports/wispr-flow/{id}/complete":
+    post:
+      operationId: "completeWisprFlowImport"
+      responses:
+        "200":
+          description: "Success"
+          content:
+            "application/json":
+              schema:
+                "$ref": "#/components/schemas/WisprFlowImportResult"
+        default:
+          "$ref": "#/components/responses/APIError"
+      parameters:
+        -
+          name: "id"
+          in: "path"
+          required: true
+          schema:
+            "$ref": "#/components/schemas/UUID"
+  "/v1/imports/wispr-flow/{id}":
+    delete:
+      operationId: "cancelWisprFlowImport"
+      responses:
+        "204":
+          description: "Success"
+        default:
+          "$ref": "#/components/responses/APIError"
+      parameters:
+        -
+          name: "id"
+          in: "path"
+          required: true
+          schema:
+            "$ref": "#/components/schemas/UUID"
+components:
+  schemas:
+    UUID:
+      type: "string"
+      format: "uuid"
+    GenerationMode:
+      type: "string"
+      enum:
+        - "dictation"
+        - "test"
+        - "file"
+    GenerationStatus:
+      type: "string"
+      enum:
+        - "receiving"
+        - "queued"
+        - "transcribing"
+        - "proofreading"
+        - "completed"
+        - "failed"
+        - "cancelled"
+    AudioKind:
+      type: "string"
+      enum:
+        - "inference"
+        - "original"
+    WisprFlowArtifactName:
+      type: "string"
+      enum:
+        - "source.json"
+        - "source.wav"
+        - "opus.json"
+        - "screenshot.png"
+        - "built-in-audio.bin"
+    WisprFlowImportOutcome:
+      type: "string"
+      enum:
+        - "imported"
+        - "enriched"
+        - "skipped"
+        - "partial"
+    TextProcessingStatus:
+      type: "string"
+      enum:
+        - "disabled"
+        - "unavailable"
+        - "applied"
+        - "unchanged"
+        - "rejected"
+        - "failed"
+        - "skipped"
+    SpokenListStyle:
+      type: "string"
+      enum:
+        - "numbered"
+        - "bulleted"
+    DictationBoundary:
+      type: "string"
+      enum:
+        - "none"
+        - "line"
+        - "paragraph"
+    DictionaryEntry:
+      type: "object"
+      additionalProperties: false
+      properties:
+        id:
+          type: "string"
+          minLength: 1
+          x-maximumGraphemes: 128
+        term:
+          type: "string"
+          minLength: 1
+          x-maximumGraphemes: 128
+        aliases:
+          type: "array"
+          items:
+            type: "string"
+            minLength: 1
+            x-maximumGraphemes: 128
+          maxItems: 8
+          default: []
+        isPriority:
+          type: "boolean"
+          default: false
+      required:
+        - "id"
+        - "term"
+    DictionaryList:
+      type: "object"
+      additionalProperties: false
+      properties:
+        id:
+          type: "string"
+          minLength: 1
+          x-maximumGraphemes: 128
+        name:
+          type: "string"
+          minLength: 1
+          x-maximumGraphemes: 80
+        entries:
+          type: "array"
+          items:
+            "$ref": "#/components/schemas/DictionaryEntry"
+          maxItems: 500
+          default: []
+      required:
+        - "id"
+        - "name"
+    PersonalDictionary:
+      type: "object"
+      additionalProperties: false
+      properties:
+        lists:
+          type: "array"
+          items:
+            "$ref": "#/components/schemas/DictionaryList"
+          maxItems: 32
+      required:
+        - "lists"
+    DeviceIdentity:
+      type: "object"
+      additionalProperties: false
+      properties:
+        id:
+          type: "string"
+        name:
+          type: "string"
+      required:
+        - "id"
+        - "name"
+    ServerPreferences:
+      type: "object"
+      additionalProperties: false
+      properties:
+        language:
+          type: "string"
+          enum:
+            - "en"
+            - "auto"
+            - "es"
+            - "fr"
+            - "de"
+            - "it"
+            - "pt"
+            - "nl"
+            - "ja"
+            - "zh"
+            - "ko"
+            - "hi"
+            - "ar"
+            - "pl"
+            - "ru"
+            - "uk"
+            - "sv"
+        proofreadingPrompt:
+          type: "string"
+          minLength: 1
+          description: "Missing values use the built-in cleanup prompt; maximum UTF-8 size is 4096 bytes."
+        vocabulary:
+          type: "string"
+          description: "Maximum UTF-8 size is 16384 bytes."
+        dictionary:
+          "$ref": "#/components/schemas/PersonalDictionary"
+        textCorrectionEnabled:
+          type: "boolean"
+        keepOriginalAudio:
+          type: "boolean"
+      required:
+        - "language"
+        - "vocabulary"
+        - "dictionary"
+        - "textCorrectionEnabled"
+        - "keepOriginalAudio"
+    PreferencesSnapshot:
+      type: "object"
+      additionalProperties: false
+      properties:
+        revision:
+          type: "integer"
+          minimum: 0
+          maximum: 9007199254740991
+        preferences:
+          "$ref": "#/components/schemas/ServerPreferences"
+      required:
+        - "revision"
+        - "preferences"
+    ModelRuntimeInfo:
+      type: "object"
+      additionalProperties: false
+      properties:
+        modelID:
+          type: "string"
+        backend:
+          type: "string"
+        ready:
+          type: "boolean"
+        message:
+          type: "string"
+      required:
+        - "modelID"
+        - "backend"
+        - "ready"
+    ServerHealth:
+      type: "object"
+      additionalProperties: false
+      properties:
+        apiVersion:
+          type: "integer"
+          minimum: 0
+          maximum: 9007199254740991
+        serverVersion:
+          type: "string"
+        isDev:
+          type: "boolean"
+        ready:
+          type: "boolean"
+        speech:
+          "$ref": "#/components/schemas/ModelRuntimeInfo"
+        proofreading:
+          "$ref": "#/components/schemas/ModelRuntimeInfo"
+        message:
+          type: "string"
+      required:
+        - "apiVersion"
+        - "serverVersion"
+        - "isDev"
+        - "ready"
+        - "speech"
+        - "proofreading"
+    CreateGenerationRequest:
+      type: "object"
+      additionalProperties: false
+      properties:
+        requestID:
+          "$ref": "#/components/schemas/UUID"
+        device:
+          "$ref": "#/components/schemas/DeviceIdentity"
+        mode:
+          "$ref": "#/components/schemas/GenerationMode"
+      required:
+        - "requestID"
+        - "device"
+        - "mode"
+    AudioStreamFormat:
+      type: "object"
+      additionalProperties: false
+      properties:
+        sampleRate:
+          type: "integer"
+          minimum: 8000
+          maximum: 192000
+        channels:
+          type: "integer"
+          minimum: 1
+          maximum: 8
+      required:
+        - "sampleRate"
+        - "channels"
+    AudioChunkReceipt:
+      type: "object"
+      additionalProperties: false
+      properties:
+        nextSequence:
+          type: "integer"
+          minimum: 0
+          maximum: 9007199254740991
+        frameCount:
+          type: "integer"
+          minimum: 0
+          maximum: 9007199254740991
+          format: "int64"
+      required:
+        - "nextSequence"
+        - "frameCount"
+    FinishGenerationRequest:
+      type: "object"
+      additionalProperties: false
+      properties:
+        inferenceFrames:
+          type: "integer"
+          minimum: 0
+          maximum: 9007199254740991
+          format: "int64"
+        originalFrames:
+          type: "integer"
+          minimum: 0
+          maximum: 9007199254740991
+          format: "int64"
+        continuationID:
+          "$ref": "#/components/schemas/UUID"
+      required:
+        - "inferenceFrames"
+    AudioArtifact:
+      type: "object"
+      additionalProperties: false
+      properties:
+        filename:
+          type: "string"
+        sampleRate:
+          type: "integer"
+          minimum: 1
+          maximum: 9007199254740991
+        channels:
+          type: "integer"
+          minimum: 1
+          maximum: 9007199254740991
+        frameCount:
+          type: "integer"
+          minimum: 0
+          maximum: 9007199254740991
+          format: "int64"
+        byteCount:
+          type: "integer"
+          minimum: 0
+          maximum: 9007199254740991
+          format: "int64"
+        encoding:
+          type: "string"
+      required:
+        - "filename"
+        - "sampleRate"
+        - "channels"
+        - "frameCount"
+        - "byteCount"
+        - "encoding"
+    ModelProvenance:
+      type: "object"
+      additionalProperties: false
+      properties:
+        modelID:
+          type: "string"
+        modelSHA256:
+          type: "string"
+        backend:
+          type: "string"
+        engineVersion:
+          type: "string"
+        processingSeconds:
+          type: "number"
+          minimum: 0
+      required:
+        - "modelID"
+        - "backend"
+    DeliveryReceipt:
+      type: "object"
+      additionalProperties: false
+      properties:
+        status:
+          type: "string"
+        message:
+          type: "string"
+        reportedAt:
+          type: "string"
+          format: "date-time"
+      required:
+        - "status"
+        - "reportedAt"
+    ModelHintUsage:
+      type: "object"
+      additionalProperties: false
+      properties:
+        includedTerms:
+          type: "array"
+          items:
+            type: "string"
+        omittedTerms:
+          type: "array"
+          items:
+            type: "string"
+        tokenCount:
+          type: "integer"
+          minimum: 0
+          maximum: 9007199254740991
+        tokenBudget:
+          type: "integer"
+          minimum: 0
+          maximum: 9007199254740991
+      required:
+        - "includedTerms"
+        - "omittedTerms"
+    SpokenListContext:
+      type: "object"
+      additionalProperties: false
+      properties:
+        style:
+          "$ref": "#/components/schemas/SpokenListStyle"
+        nextNumber:
+          type: "integer"
+          minimum: 0
+          maximum: 9007199254740991
+      required:
+        - "style"
+        - "nextNumber"
+    ListControlSpan:
+      type: "object"
+      additionalProperties: false
+      properties:
+        location:
+          type: "integer"
+          minimum: 0
+          maximum: 9007199254740991
+        length:
+          type: "integer"
+          minimum: 0
+          maximum: 9007199254740991
+      required:
+        - "location"
+        - "length"
+    TextRepairSpan:
+      type: "object"
+      additionalProperties: false
+      properties:
+        locationUTF16:
+          type: "integer"
+          minimum: 0
+          maximum: 9007199254740991
+        lengthUTF16:
+          type: "integer"
+          minimum: 0
+          maximum: 9007199254740991
+        text:
+          type: "string"
+      required:
+        - "locationUTF16"
+        - "lengthUTF16"
+        - "text"
+    VerifiedTextRepair:
+      type: "object"
+      additionalProperties: false
+      properties:
+        abandoned:
+          "$ref": "#/components/schemas/TextRepairSpan"
+        cue:
+          "$ref": "#/components/schemas/TextRepairSpan"
+        replacement:
+          "$ref": "#/components/schemas/TextRepairSpan"
+      required:
+        - "abandoned"
+        - "cue"
+        - "replacement"
+    TextProcessingRecord:
+      type: "object"
+      additionalProperties: false
+      properties:
+        dictionaryTerms:
+          type: "array"
+          items:
+            type: "string"
+        dictionaryChangedText:
+          type: "boolean"
+        inputText:
+          type: "string"
+        outputText:
+          type: "string"
+        enabled:
+          type: "boolean"
+        status:
+          "$ref": "#/components/schemas/TextProcessingStatus"
+        reason:
+          type: "string"
+        modelID:
+          type: "string"
+        modelSHA256:
+          type: "string"
+        engineVersion:
+          type: "string"
+        processingSeconds:
+          type: "number"
+          minimum: 0
+        wallSeconds:
+          type: "number"
+          minimum: 0
+        proposedText:
+          type: "string"
+        verifiedRepairs:
+          type: "array"
+          items:
+            "$ref": "#/components/schemas/VerifiedTextRepair"
+          maxItems: 8
+      required:
+        - "dictionaryTerms"
+        - "dictionaryChangedText"
+        - "inputText"
+        - "outputText"
+        - "enabled"
+        - "status"
+    DictationContinuation:
+      type: "object"
+      additionalProperties: false
+      properties:
+        list:
+          "$ref": "#/components/schemas/SpokenListContext"
+        preview:
+          type: "string"
+        boundary:
+          "$ref": "#/components/schemas/DictationBoundary"
+      required:
+        - "preview"
+        - "boundary"
+    WisprFlowArtifactManifest:
+      type: "object"
+      additionalProperties: false
+      properties:
+        filename:
+          "$ref": "#/components/schemas/WisprFlowArtifactName"
+        byteCount:
+          type: "integer"
+          minimum: 1
+          maximum: 9007199254740991
+        sha256:
+          type: "string"
+          pattern: "^[a-fA-F0-9]{64}$"
+      required:
+        - "filename"
+        - "byteCount"
+        - "sha256"
+    WisprFlowImportRequest:
+      type: "object"
+      additionalProperties: false
+      properties:
+        sourceID:
+          "$ref": "#/components/schemas/UUID"
+        createdAt:
+          type: "string"
+          format: "date-time"
+        sourceStatus:
+          type: "string"
+        finalText:
+          type: "string"
+        rawText:
+          type: "string"
+        durationSeconds:
+          type: "number"
+          minimum: 0
+        variantNames:
+          type: "array"
+          items:
+            type: "string"
+          maxItems: 32
+        artifacts:
+          type: "array"
+          items:
+            "$ref": "#/components/schemas/WisprFlowArtifactManifest"
+          minItems: 1
+          maxItems: 4
+        unarchivedArtifacts:
+          type: "array"
+          items:
+            "$ref": "#/components/schemas/WisprFlowArtifactManifest"
+      required:
+        - "sourceID"
+        - "createdAt"
+        - "finalText"
+        - "rawText"
+        - "variantNames"
+        - "artifacts"
+    WisprFlowImportSession:
+      type: "object"
+      additionalProperties: false
+      properties:
+        id:
+          "$ref": "#/components/schemas/UUID"
+      required:
+        - "id"
+    WisprFlowArtifactReceipt:
+      type: "object"
+      additionalProperties: false
+      properties:
+        filename:
+          "$ref": "#/components/schemas/WisprFlowArtifactName"
+        byteCount:
+          type: "integer"
+          minimum: 0
+          maximum: 8388608
+      required:
+        - "filename"
+        - "byteCount"
+    WisprFlowKnownIDsRequest:
+      type: "object"
+      additionalProperties: false
+      properties:
+        sourceIDs:
+          type: "array"
+          items:
+            "$ref": "#/components/schemas/UUID"
+          maxItems: 10000
+      required:
+        - "sourceIDs"
+    WisprFlowKnownIDsResponse:
+      type: "object"
+      additionalProperties: false
+      properties:
+        knownSourceIDs:
+          type: "array"
+          items:
+            "$ref": "#/components/schemas/UUID"
+      required:
+        - "knownSourceIDs"
+    WisprFlowDictionaryArchiveReceipt:
+      type: "object"
+      additionalProperties: false
+      properties:
+        byteCount:
+          type: "integer"
+          minimum: 0
+          maximum: 8388608
+        sha256:
+          type: "string"
+      required:
+        - "byteCount"
+        - "sha256"
+    ImportedSource:
+      type: "object"
+      additionalProperties: false
+      properties:
+        provider:
+          type: "string"
+        sourceID:
+          "$ref": "#/components/schemas/UUID"
+        sourceStatus:
+          type: "string"
+        importedAt:
+          type: "string"
+          format: "date-time"
+        variantNames:
+          type: "array"
+          items:
+            type: "string"
+        artifactNames:
+          type: "array"
+          items:
+            "$ref": "#/components/schemas/WisprFlowArtifactName"
+        durationSeconds:
+          type: "number"
+          minimum: 0
+        sourceSHA256:
+          type: "string"
+        artifactSHA256:
+          type: "object"
+          additionalProperties:
+            type: "string"
+        unarchivedArtifactSHA256:
+          type: "object"
+          additionalProperties:
+            type: "string"
+      required:
+        - "provider"
+        - "sourceID"
+        - "importedAt"
+        - "variantNames"
+        - "artifactNames"
+        - "sourceSHA256"
+        - "artifactSHA256"
+    GenerationRecord:
+      type: "object"
+      additionalProperties: false
+      properties:
+        schemaVersion:
+          type: "integer"
+          minimum: 0
+          maximum: 9007199254740991
+        id:
+          "$ref": "#/components/schemas/UUID"
+        requestID:
+          "$ref": "#/components/schemas/UUID"
+        device:
+          "$ref": "#/components/schemas/DeviceIdentity"
+        mode:
+          "$ref": "#/components/schemas/GenerationMode"
+        status:
+          "$ref": "#/components/schemas/GenerationStatus"
+        createdAt:
+          type: "string"
+          format: "date-time"
+        updatedAt:
+          type: "string"
+          format: "date-time"
+        settings:
+          "$ref": "#/components/schemas/PreferencesSnapshot"
+        inferenceAudio:
+          "$ref": "#/components/schemas/AudioArtifact"
+        originalAudio:
+          "$ref": "#/components/schemas/AudioArtifact"
+        rawText:
+          type: "string"
+        finalText:
+          type: "string"
+        insertionText:
+          type: "string"
+        previewText:
+          type: "string"
+        detectedLanguage:
+          type: "string"
+        speech:
+          "$ref": "#/components/schemas/ModelProvenance"
+        proofreading:
+          "$ref": "#/components/schemas/ModelProvenance"
+        textProcessing:
+          "$ref": "#/components/schemas/TextProcessingRecord"
+        recognitionHints:
+          "$ref": "#/components/schemas/ModelHintUsage"
+        proofreadingHints:
+          "$ref": "#/components/schemas/ModelHintUsage"
+        formattingRejectionReason:
+          type: "string"
+        consumedListControls:
+          type: "array"
+          items:
+            "$ref": "#/components/schemas/ListControlSpan"
+        continuation:
+          "$ref": "#/components/schemas/DictationContinuation"
+        delivery:
+          "$ref": "#/components/schemas/DeliveryReceipt"
+        error:
+          type: "string"
+        progress:
+          type: "number"
+          minimum: 0
+          maximum: 1
+        importedSource:
+          "$ref": "#/components/schemas/ImportedSource"
+      required:
+        - "schemaVersion"
+        - "id"
+        - "requestID"
+        - "device"
+        - "mode"
+        - "status"
+        - "createdAt"
+        - "updatedAt"
+        - "settings"
+        - "rawText"
+        - "finalText"
+        - "insertionText"
+        - "previewText"
+    GenerationPage:
+      type: "object"
+      additionalProperties: false
+      properties:
+        items:
+          type: "array"
+          items:
+            "$ref": "#/components/schemas/GenerationRecord"
+        nextCursor:
+          type: "string"
+      required:
+        - "items"
+    WisprFlowImportResult:
+      type: "object"
+      additionalProperties: false
+      properties:
+        outcome:
+          "$ref": "#/components/schemas/WisprFlowImportOutcome"
+        record:
+          "$ref": "#/components/schemas/GenerationRecord"
+        unarchivedArtifactNames:
+          type: "array"
+          items:
+            "$ref": "#/components/schemas/WisprFlowArtifactName"
+      required:
+        - "outcome"
+        - "record"
+        - "unarchivedArtifactNames"
+    APIErrorResponse:
+      type: "object"
+      additionalProperties: false
+      properties:
+        code:
+          type: "string"
+        message:
+          type: "string"
+      required:
+        - "code"
+        - "message"
+  securitySchemes:
+    bearerAuth:
+      type: "http"
+      scheme: "bearer"
+      description: "Optional on loopback. Required for remote binding. Native clients send no Origin header."
+  responses:
+    APIError:
+      description: "A request, admission, or server error."
+      content:
+        "application/json":
+          schema:
+            "$ref": "#/components/schemas/APIErrorResponse"

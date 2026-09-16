@@ -36,6 +36,8 @@ staged_app="$staging_dir/$app_name.app"
 mkdir -p "$staged_app/Contents/MacOS" "$staged_app/Contents/Resources"
 cp "$swift_bin/Sotto" "$staged_app/Contents/MacOS/Sotto"
 cp "$info_plist" "$staged_app/Contents/Info.plist"
+cp Resources/swift-openapi-runtime-LICENSE.txt Resources/swift-http-types-LICENSE.txt \
+    THIRD_PARTY_NOTICES.md "$staged_app/Contents/Resources/"
 swift scripts/make-icon.swift "$project_dir/.build/Sotto.iconset"
 iconutil -c icns .build/Sotto.iconset -o "$staged_app/Contents/Resources/Sotto.icns"
 

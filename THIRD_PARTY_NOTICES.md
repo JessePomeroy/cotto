@@ -7,6 +7,12 @@
 - **JSON for Modern C++** v3.11.2 (Whisper helper) and v3.11.3 (vendored by MLX Swift), MIT license. [nlohmann/json](https://github.com/nlohmann/json). Upstream license/copyright notices are included in `Resources/JSON-LICENSE.txt` and `Resources/mlx-vendored-LICENSE.txt`.
 - **miniaudio / dr_wav**, MIT No Attribution option, copyright 2025 David Reid. [mackron/miniaudio](https://github.com/mackron/miniaudio). Only the WAV decoding component is used; its license is included in the server resources.
 
+## TypeScript server and API bindings
+
+- **Bun 1.4.2**, MIT, embeds its runtime in the compiled server. The exact [upstream license and runtime acknowledgements](https://github.com/oven-sh/bun/blob/bun-v1.4.2/LICENSE.md), including JavaScriptCore/WebKit and linked-library notices, are preserved in `Resources/bun-LICENSE.txt`.
+- **Fastify 5.12.4**, MIT; **Ajv 8.20.0** and **ajv-formats 3.0.1**, MIT; **YAML 2.8.1**, ISC. Direct pins are in `Server/package.json`, and installed transitive versions are in `bun.lock`. Complete package distributions include their shipped license texts/notices in `resources/javascript-LICENSES.txt`, collected from runtime dependencies by `Server/scripts/licenses.ts`.
+- **Swift OpenAPI Runtime 1.11.0** and **Swift HTTP Types 1.8.0**, Apache-2.0, support the Swift API bindings. Exact revisions are pinned in `Package.resolved`; LICENSE and NOTICE texts from those checkouts are in `Resources/swift-openapi-runtime-LICENSE.txt` and `Resources/swift-http-types-LICENSE.txt`. [OpenAPI Runtime upstream](https://github.com/apple/swift-openapi-runtime/tree/1.11.0), [HTTP Types upstream](https://github.com/apple/swift-http-types/tree/1.8.0). **Swift OpenAPI Generator 1.13.1** and **openapi-typescript 7.10.1** are development tools used to regenerate committed bindings; their executable code is not bundled into the server.
+
 ## Native Swift text helper
 
 Direct versions are exact pins in `TextEngine/Package.swift`; the complete resolved graph and commit revisions are in `TextEngine/Package.resolved`. License copies come from those exact upstream checkouts and are bundled through `Resources/*-LICENSE.txt`.
