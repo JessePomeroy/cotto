@@ -317,6 +317,7 @@ final class RecordingWriter: @unchecked Sendable {
     private let url: URL
     private let originalURL: URL?
     private let format: AVAudioFormat
+    private let inputFormat: AVAudioFormat
     private let converter: AVAudioConverter
     private let onLevel: (Float) -> Void
     private let onError: (String) -> Void
@@ -340,11 +341,23 @@ final class RecordingWriter: @unchecked Sendable {
         guard !preserveOriginalAudio || onChunk == nil || inputFormat.commonFormat == .pcmFormatFloat32 else {
             throw AudioRecordingError.conversionUnavailable
         }
+        let conversionInput: AVAudioFormat
+        if inputFormat.channelCount > 2 {
+            guard inputFormat.commonFormat == .pcmFormatFloat32, !inputFormat.isInterleaved,
+                  let mono = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: inputFormat.sampleRate,
+                                           channels: 1, interleaved: false) else {
+                throw AudioRecordingError.conversionUnavailable
+            }
+            conversionInput = mono
+        } else {
+            conversionInput = inputFormat
+        }
         guard let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16_000, channels: 1, interleaved: false),
-              let converter = AVAudioConverter(from: inputFormat, to: format) else {
+              let converter = AVAudioConverter(from: conversionInput, to: format) else {
             throw AudioRecordingError.conversionUnavailable
         }
         self.format = format
+        self.inputFormat = inputFormat
         self.converter = converter
         self.onLevel = onLevel
         self.onError = onError
@@ -418,7 +431,6 @@ final class RecordingWriter: @unchecked Sendable {
                     file = nil // Close and finalize the WAV header before handing it off.
                     originalFile = nil
                     let original = originalURL.map {
-                        let inputFormat = converter.inputFormat
                         let descriptor = inputFormat.streamDescription.pointee
                         let precision = descriptor.mFormatFlags & kAudioFormatFlagIsFloat != 0 ? "f" : "s"
                         return OriginalCapturedAudio(
@@ -451,7 +463,7 @@ final class RecordingWriter: @unchecked Sendable {
 
     private func process(_ input: AVAudioPCMBuffer) {
         guard failure == nil else { return }
-        guard input.format == converter.inputFormat else {
+        guard input.format == inputFormat else {
             fail(AudioRecordingError.microphoneUnavailable)
             return
         }
@@ -473,6 +485,27 @@ final class RecordingWriter: @unchecked Sendable {
             fail(AudioRecordingError.conversionUnavailable)
             return
         }
+        // AVAudioConverter's speaker downmix produces silence for discrete
+        // interface layouts. Mix every input equally before resampling, while
+        // retaining the untouched channels in the original recording.
+        let conversionBuffer: AVAudioPCMBuffer
+        if input.format.channelCount > 2 {
+            guard let mono = AVAudioPCMBuffer(pcmFormat: converter.inputFormat, frameCapacity: input.frameLength),
+                  let source = input.floatChannelData, let destination = mono.floatChannelData else {
+                fail(AudioRecordingError.conversionUnavailable)
+                return
+            }
+            mono.frameLength = input.frameLength
+            let count = Int(input.format.channelCount)
+            for frame in 0..<Int(input.frameLength) {
+                var sample: Float = 0
+                for channel in 0..<count { sample += source[channel][frame] / Float(count) }
+                destination[0][frame] = sample
+            }
+            conversionBuffer = mono
+        } else {
+            conversionBuffer = input
+        }
         var suppliedInput = false
         var conversionError: NSError?
         let status = converter.convert(to: output, error: &conversionError) { _, inputStatus in
@@ -482,7 +515,7 @@ final class RecordingWriter: @unchecked Sendable {
             }
             suppliedInput = true
             inputStatus.pointee = .haveData
-            return input
+            return conversionBuffer
         }
         if status == .error {
             fail(conversionError ?? AudioRecordingError.conversionUnavailable as NSError)

@@ -246,6 +246,46 @@ final class NativeIntegrationTests: XCTestCase {
         XCTAssertFalse(driver.events.contains("start"), "Preparing a take must not start IO")
     }
 
+    func testFourChannelInterfacePreservesOriginalAndMixesEveryInputForSpeech() async throws {
+        let layout = try XCTUnwrap(AVAudioChannelLayout(layoutTag: kAudioChannelLayoutTag_DiscreteInOrder | 4))
+        let hardwareFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 48_000,
+                                          interleaved: false, channelLayout: layout)
+        let driver = FakeInputAudioUnitDriver()
+        driver.hardware = hardwareFormat.streamDescription.pointee
+        let input = InputOnlyAudioUnit(operations: driver.operations)
+        defer { input.stop() }
+        let format = try input.prepare(deviceID: 23)
+        XCTAssertEqual(format.channelCount, 4)
+        XCTAssertEqual(driver.clientFormat?.mChannelsPerFrame, 4)
+
+        // A microphone on input 2 or a higher channel must not become silence.
+        for activeChannel in 0..<4 {
+            let writer = try RecordingWriter(inputFormat: format, preserveOriginalAudio: true,
+                                             onLevel: { _ in }, onError: { XCTFail($0) })
+            defer { writer.cancel() }
+            let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 4_800))
+            buffer.frameLength = 4_800
+            let channels = try XCTUnwrap(buffer.floatChannelData)
+            for channel in 0..<4 {
+                for frame in 0..<4_800 { channels[channel][frame] = channel == activeChannel ? 0.5 : 0 }
+            }
+            writer.append(buffer)
+            let audio = try await writer.finish()
+            defer { audio.cleanup() }
+            let speechFile = try AVAudioFile(forReading: audio.url)
+            let speech = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: speechFile.processingFormat, frameCapacity: 1_600))
+            try speechFile.read(into: speech)
+            XCTAssertEqual(speech.floatChannelData![0][800], 0.125, accuracy: 0.001)
+            let original = try XCTUnwrap(audio.original)
+            XCTAssertEqual(original.channelCount, 4)
+            XCTAssertEqual(original.frameCount, 4_800)
+            let originalFile = try AVAudioFile(forReading: original.url)
+            let raw = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: originalFile.processingFormat, frameCapacity: 4_800))
+            try originalFile.read(into: raw)
+            XCTAssertEqual(raw.floatChannelData![activeChannel][800], 0.5, accuracy: 0.00001)
+        }
+    }
+
     func testInputOnlyCapturePreservesDevicePCMAndStopsAdmissionBeforeTeardown() async throws {
         let driver = FakeInputAudioUnitDriver()
         let input = InputOnlyAudioUnit(operations: driver.operations)
