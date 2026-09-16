@@ -83,11 +83,24 @@ final class InputOnlyAudioUnit {
             let hardware = try hardwareFormat()
             guard hardware.mSampleRate.isFinite, hardware.mSampleRate > 0,
                   hardware.mSampleRate <= 768_000,
-                  hardware.mChannelsPerFrame > 0, hardware.mChannelsPerFrame <= 128,
-                  let format = AVAudioFormat(commonFormat: .pcmFormatFloat32,
-                                             sampleRate: hardware.mSampleRate,
-                                             channels: hardware.mChannelsPerFrame, interleaved: false) else {
+                  hardware.mChannelsPerFrame > 0, hardware.mChannelsPerFrame <= 128 else {
                 throw InputAudioUnitError.invalidFormat
+            }
+            // The channel-count initializer only supports mono and stereo.
+            // USB interfaces expose discrete inputs, not surround speaker positions.
+            let format: AVAudioFormat
+            if hardware.mChannelsPerFrame > 2 {
+                guard let layout = AVAudioChannelLayout(layoutTag: kAudioChannelLayoutTag_DiscreteInOrder | hardware.mChannelsPerFrame) else {
+                    throw InputAudioUnitError.invalidFormat
+                }
+                format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: hardware.mSampleRate,
+                                       interleaved: false, channelLayout: layout)
+            } else {
+                guard let monoOrStereo = AVAudioFormat(commonFormat: .pcmFormatFloat32,
+                    sampleRate: hardware.mSampleRate, channels: hardware.mChannelsPerFrame, interleaved: false) else {
+                    throw InputAudioUnitError.invalidFormat
+                }
+                format = monoOrStereo
             }
             // Set our client PCM layout on OUTPUT scope of INPUT element 1.
             // Keep the physical device's rate/channels; the writer resamples.
