@@ -451,17 +451,20 @@ final class TextInserter {
         // discovery. A genuinely post-release cursor still must never be used.
         let selection = selectedRange(of: focused.element)
         let capturedAt = ProcessInfo.processInfo.systemUptime
-        switch fieldEligibility(of: focused.element) {
-        case .editable: break
-        case .notEditable: return .clipboard
+        let eligibility = fieldEligibility(of: focused.element)
+        switch eligibility {
+        case .editable, .notEditable: break
         case .protected: return .blocked(reason: "This is a protected field. Nothing was pasted or copied.")
         case .unverified, nil:
             return .blocked(reason: "The focused field could not be checked safely. Nothing was pasted or copied.")
         }
-        guard !Task.isCancelled else { return .blocked(reason: "Dictation was cancelled.") }
+        guard !Task.isCancelled, AXIsProcessTrusted() else {
+            return .blocked(reason: "Accessibility access is unavailable or dictation was cancelled. Nothing was pasted or copied.")
+        }
         if let expectedApplication, !applicationIsFocused(expectedApplication) {
             return .blocked(reason: "Focus changed while preparing dictation. Nothing was pasted or copied.")
         }
+        if eligibility == .notEditable { return .clipboard }
         return .field(InsertionFieldSnapshot(focus: focused, selection: selection, capturedAt: capturedAt,
                                             strategy: .keyboardPaste, pasteCommand: nil))
     }
@@ -475,26 +478,19 @@ final class TextInserter {
         let app = application.element
         var current: CFTypeRef?
         let read = AXUIElementCopyAttributeValue(app, "AXManualAccessibility" as CFString, &current)
-        switch read {
-        case .attributeUnsupported, .notImplemented: return .unsupported
-        case .success:
-            guard let enabled = current as? Bool else {
-                return .blocked(reason: "The app's accessibility support could not be verified.")
-            }
-            if enabled { return .supported }
-        case .noValue: break
-        default: return .blocked(reason: "The app's accessibility support could not be verified.")
-        }
         guard !Task.isCancelled, AXIsProcessTrusted(), applicationIsFocused(application) else {
             return .blocked(reason: "Focus or Accessibility access changed while preparing dictation. Nothing was pasted or copied.")
         }
+        if let activation = InsertionAccessibilityPolicy.afterRead(read, enabled: current as? Bool) {
+            return activation
+        }
         // Never repeat this write during retries: Electron restarts a two-second
         // debounce on every request, and its mode getter is not tree readiness.
-        switch AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue) {
-        case .success: return .supported
-        case .attributeUnsupported, .notImplemented: return .unsupported
-        default: return .blocked(reason: "The app's accessibility support could not be enabled safely.")
+        let write = AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue)
+        guard !Task.isCancelled, AXIsProcessTrusted(), applicationIsFocused(application) else {
+            return .blocked(reason: "Focus or Accessibility access changed while preparing dictation. Nothing was pasted or copied.")
         }
+        return InsertionAccessibilityPolicy.afterWrite(write)
     }
 
     private nonisolated static func applicationIsFocused(_ expected: FocusedApplicationSnapshot) -> Bool {

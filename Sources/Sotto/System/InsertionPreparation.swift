@@ -1,4 +1,5 @@
 import Foundation
+import ApplicationServices
 
 enum InsertionPreparationRead<Value: Sendable>: Sendable {
     case ready(Value, capturedAt: TimeInterval)
@@ -11,7 +12,36 @@ extension InsertionPreparationRead: Equatable where Value: Equatable {}
 enum InsertionAccessibilityActivation: Equatable, Sendable {
     case supported
     case unsupported
+    case unavailable
     case blocked(reason: String)
+}
+
+/// Mode discovery is optional after a destination is safely classified. A mode
+/// IPC failure requires a fresh field safety check, not a failed dictation take.
+enum InsertionAccessibilityPolicy {
+    static let accessUnavailable = "Accessibility access is unavailable. Nothing was pasted or copied."
+
+    static func afterRead(_ result: AXError, enabled: Bool?) -> InsertionAccessibilityActivation? {
+        switch result {
+        // Preserve support for apps accepting the mode write without a getter.
+        // The single guarded write, not its read capability, decides support.
+        case .attributeUnsupported, .notImplemented, .noValue: return nil
+        case .success:
+            if enabled == true { return .supported }
+            return enabled == false ? nil : .unavailable
+        case .apiDisabled: return .blocked(reason: accessUnavailable)
+        default: return .unavailable
+        }
+    }
+
+    static func afterWrite(_ result: AXError) -> InsertionAccessibilityActivation {
+        switch result {
+        case .success: return .supported
+        case .attributeUnsupported, .notImplemented: return .unsupported
+        case .apiDisabled: return .blocked(reason: accessUnavailable)
+        default: return .unavailable
+        }
+    }
 }
 
 struct InsertionPreparationEnvironment<Value: Sendable>: Sendable {
@@ -40,7 +70,16 @@ enum InsertionPreparation {
         let activation = environment.activate()
         guard !Task.isCancelled else { return .blocked(reason: cancelled) }
         switch activation {
-        case .unsupported: return .unavailable
+        case .unsupported, .unavailable:
+            // The optional mode query may have stalled while focus or safety
+            // changed. Only the current anchored classification can fall back.
+            let refreshed = environment.read()
+            guard !Task.isCancelled else { return .blocked(reason: cancelled) }
+            if case .ready(_, let capturedAt) = refreshed,
+               !InsertionCapturePolicy.permitsInsertion(capturedAt: capturedAt, releasedAt: deadline) {
+                return .unavailable
+            }
+            return refreshed
         case .blocked(let reason): return .blocked(reason: reason)
         case .supported: break
         }
