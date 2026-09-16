@@ -1,6 +1,6 @@
 # Architecture
 
-Sotto's macOS client handles microphone capture, shortcuts, and cursor insertion. An independent HTTP server owns inference, shared settings, and history. Both processes use the same API whether they run on one machine or across the network.
+Sotto's native Swift macOS client handles microphone capture, shortcuts, and cursor insertion. An independent TypeScript/Fastify server, compiled with Bun, owns inference, shared settings, and history. Both processes use the same OpenAPI v1 contract whether they run on one machine or across the network.
 
 ## Code map
 
@@ -9,13 +9,18 @@ Sotto's macOS client handles microphone capture, shortcuts, and cursor insertion
 | `Sources/Sotto` | SwiftUI/AppKit app, device settings, HTTP client, capture, and guarded delivery. |
 | `Sources/SottoCore` | Mac configuration, audio metering, microphone selection, and model manifests. |
 | `Sources/SottoAPI` | Shared wire types and limits. |
+| `Sources/SottoAPIWire` | Generated Swift transport types used through the API facade. |
+| `Server/api/openapi.yaml` | Language-neutral HTTP and wire-model contract. |
+| `Server/src` | Packaged TypeScript HTTP server, durable coordinator, text pipeline, and helper management. |
 | `Sources/SottoDomain` | Dictionary, list formatting, rewrite validation, and composition. |
-| `Sources/SottoServerKit` | HTTP routes, authentication, generation lifecycle, storage, and helper management. |
-| `Sources/SottoServer` | Server command-line entry point. |
+| `Sources/SottoServerKit` | Reference Swift server retained for migration parity tests. |
+| `Sources/SottoServer` | Reference Swift server command-line entry point. |
 | `Engine` | Persistent whisper.cpp speech helper; Metal on Mac, CPU/CUDA on Linux. |
 | `TextEngine` | Persistent Qwen helper; Swift MLX on Mac, llama.cpp on Linux. |
 
 The server talks to helpers over bounded JSON-lines pipes. Models warm at startup and stay loaded. The client contains no model helpers; it never starts or stops the server. The application has no Python runtime dependency.
+
+Bun manages all JavaScript dependencies and compiles the coordinator plus its correction worker into standalone platform executables. Heavy correction alignment runs outside the HTTP event loop. Native inference helpers still require platform builds; the Mac proofreader remains Swift MLX. Linux server packages require neither Swift nor an installed JavaScript runtime.
 
 ## A recording
 

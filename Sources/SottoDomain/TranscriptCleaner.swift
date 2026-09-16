@@ -5,11 +5,12 @@ public enum TranscriptCleaner {
     public static func clean(_ raw: String) -> String {
         let silenceMarkers = ["[BLANK_AUDIO]", "[NO_SPEECH]", "[SILENCE]", "(silence)", "[Music]", "[MUSIC]"]
         var text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        if silenceMarkers.contains(where: { text.caseInsensitiveCompare($0) == .orderedSame }) { return "" }
         text = text.replacingOccurrences(of: #"<\|[^|]*\|>"#, with: "", options: .regularExpression)
         text = text.replacingOccurrences(of: #"[\t ]+"#, with: " ", options: .regularExpression)
+        text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if silenceMarkers.contains(where: { text.caseInsensitiveCompare($0) == .orderedSame }) { return "" }
         // Keep hesitation and repair cues for the configurable proofreading prompt.
-        return text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return text
     }
 
     public static func vocabularyPrompt(_ vocabulary: String) -> String {

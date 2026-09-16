@@ -1,0 +1,7 @@
+generate: [types]
+accessModifier: public
+namingStrategy: idiomatic
+additionalImports: [Foundation]
+typeOverrides:
+  schemas:
+    UUID: Foundation.UUID

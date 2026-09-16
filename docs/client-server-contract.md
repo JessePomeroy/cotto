@@ -1,6 +1,6 @@
 # HTTP API
 
-API version 1, default port **8391**. JSON uses ISO-8601 dates and the wire types in [`Sources/SottoAPI/API.swift`](../Sources/SottoAPI/API.swift). macOS and Linux expose the same API. See [server setup](../Server/README.md#remote-access) for authentication and endpoint configuration.
+API version 1, default port **8391**. [`Server/api/openapi.yaml`](../Server/api/openapi.yaml) defines the transport contract and generates TypeScript and Swift types. [`Sources/SottoAPI/API.swift`](../Sources/SottoAPI/API.swift) preserves the Swift client-facing facade and defaults. JSON uses whole-second ISO-8601 UTC dates. macOS and Linux expose the same API. See [server setup](../Server/README.md#remote-access) for authentication and endpoint configuration.
 
 ## Routes
 
@@ -17,8 +17,14 @@ API version 1, default port **8391**. JSON uses ISO-8601 dates and the wire type
 | `GET /v1/generations?limit=50&before=CURSOR` | `GenerationPage`, descending creation order, bounded limit/cursor. |
 | `POST /v1/generations/:id/cancel` | Explicit cancellation, terminal idempotency, → `GenerationRecord`. |
 | `POST /v1/generations/:id/delivery` | `DeliveryReceipt`; store actual client outcome separately from inference completion. → `GenerationRecord`. |
-| `GET /v1/generations/:id/artifacts/:filename` | Allowlisted original.wav, inference.wav, transcript.txt, metadata.json only. |
+| `GET /v1/generations/:id/artifacts/:filename` | Allowlisted original.wav, inference.wav, transcript.txt, metadata.json, source.json, source.wav, opus.json, screenshot.png, and built-in-audio.bin. Imported artifacts exist only when supplied by the source. |
 | `DELETE /v1/generations/:id` | Explicit history removal; active generation cannot be deleted. 204. |
+| `POST /v1/imports/wispr-flow/known` | Source IDs → known imported source IDs. |
+| `POST /v1/imports/wispr-flow` | Source metadata and checksummed artifact manifests → staging session. 201. |
+| `PUT /v1/imports/wispr-flow/:id/artifacts/:filename` | JSON/WAV/PNG or binary bytes, ≤8 MiB; validates manifest before publishing. |
+| `POST /v1/imports/wispr-flow/:id/complete` | Atomically publishes or reconciles the imported record. |
+| `DELETE /v1/imports/wispr-flow/:id` | Removes unpublished staging session. 204. |
+| `PUT /v1/imports/wispr-flow/dictionary` | Preserves source JSON and immutable digest versions, ≤8 MiB; does not change active dictionary. |
 
 Errors are `APIErrorResponse`; relevant codes 400 invalid input, 401 auth, 404 missing, 409 stale/conflict/busy, 413 limits, 503 unavailable. Bearer authorization on data routes if token configured; nonloopback server binds require a token. Remote connections use HTTPS; localhost and explicit Tailscale endpoints can use HTTP. No credentials in URLs or diagnostics.
 

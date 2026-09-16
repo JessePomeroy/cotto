@@ -1,12 +1,12 @@
 # Sotto
 
-Hold a key, speak, and release to insert your dictation. Sotto is a native macOS app backed by a model server running on the same Mac, another Mac, or Linux. Audio uploads while you speak; the server returns progress and one finished transcript.
+Hold a key, speak, and release to insert your dictation. Sotto is a native Swift macOS app backed by a Bun-compiled TypeScript/Fastify model server running on the same Mac, another Mac, or Linux. Audio uploads while you speak; the server returns progress and one finished transcript.
 
 The dev runner builds **Sotto Dev**, with separate settings and visible Dev labels. For the regular app, run `./scripts/build-app.sh` and install `build/Sotto.app` in Applications. Both connect to an independently running server.
 
 ## Get started on one Mac
 
-You need Apple Silicon, macOS 14+, full Xcode 26+ with the Metal compiler, CMake, and Git. Xcode provides Swift; the build requires Swift 6.2+. Python 3 is only needed for the test scripts.
+You need Apple Silicon, macOS 14+, full Xcode 26+ with the Metal compiler, Bun 1.4.2, CMake, and Git. Xcode provides Swift; the client/MLX build requires Swift 6.2+. Python 3 is only needed for the test scripts. Bun manages JavaScript dependencies and builds standalone server executables.
 
 ```sh
 git clone --recurse-submodules https://github.com/davis7dotsh/sotto.git
