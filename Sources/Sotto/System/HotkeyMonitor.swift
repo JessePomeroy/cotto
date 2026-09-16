@@ -61,12 +61,19 @@ enum HoldKey: String, CaseIterable, Identifiable {
         return !flags.intersection(disallowed).isEmpty
     }
 
-    fileprivate var physicallyDown: Bool {
+    func isPhysicallyDown(in flags: CGEventFlags, keyState: @autoclosure () -> Bool) -> Bool {
         // keyState can report a held modifier as up (observed for Right Option
         // on macOS 27 with the built-in keyboard) while the HID modifier flags
         // still carry its device-specific bit. Trust either signal.
-        if isDown(in: CGEventSource.flagsState(.hidSystemState)) { return true }
-        return self != .fn && CGEventSource.keyState(.hidSystemState, key: keyCode)
+        if isDown(in: flags) { return true }
+        return self != .fn && keyState()
+    }
+
+    fileprivate var physicallyDown: Bool {
+        isPhysicallyDown(
+            in: CGEventSource.flagsState(.hidSystemState),
+            keyState: CGEventSource.keyState(.hidSystemState, key: keyCode)
+        )
     }
 }
 

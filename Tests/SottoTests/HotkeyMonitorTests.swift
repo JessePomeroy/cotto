@@ -3,6 +3,144 @@ import XCTest
 @testable import Sotto
 
 final class HotkeyMonitorTests: XCTestCase {
+    func testSelectedHIDFlagsSkipKeyStateFallback() {
+        let keysAndFlags: [(HoldKey, CGEventFlags)] = [
+            (.rightOption, CGEventFlags(rawValue: CGEventFlags.maskAlternate.rawValue | 0x40)),
+            (.rightControl, CGEventFlags(rawValue: CGEventFlags.maskControl.rawValue | 0x2000)),
+            (.fn, .maskSecondaryFn),
+        ]
+        for (key, flags) in keysAndFlags {
+            var reads = 0
+            func keyState() -> Bool { reads += 1; return false }
+
+            XCTAssertTrue(key.isPhysicallyDown(in: flags, keyState: keyState()), "\(key)")
+            XCTAssertEqual(reads, 0, "A selected HID flag must not require keyState")
+        }
+    }
+
+    func testModifierKeyStateFallbackPreservesSideSpecificDetection() {
+        let keysAndFlags: [(HoldKey, CGEventFlags, CGEventFlags)] = [
+            (.rightOption, .maskAlternate, CGEventFlags(rawValue: CGEventFlags.maskAlternate.rawValue | 0x20)),
+            (.rightControl, .maskControl, CGEventFlags(rawValue: CGEventFlags.maskControl.rawValue | 0x01)),
+        ]
+        for (key, generic, left) in keysAndFlags {
+            for flags in [CGEventFlags(), generic, left] {
+                XCTAssertFalse(key.isPhysicallyDown(in: flags, keyState: false), "\(key): \(flags)")
+                var reads = 0
+                func keyState() -> Bool { reads += 1; return true }
+
+                XCTAssertTrue(key.isPhysicallyDown(in: flags, keyState: keyState()), "\(key): \(flags)")
+                XCTAssertEqual(reads, 1, "Without the selected HID flag, query the selected key")
+            }
+        }
+    }
+
+    func testFnPhysicalStateNeverFallsBackToKeyState() {
+        var reads = 0
+        func keyState() -> Bool { reads += 1; return true }
+
+        XCTAssertFalse(HoldKey.fn.isPhysicallyDown(in: [], keyState: keyState()))
+        XCTAssertFalse(HoldKey.fn.isPhysicallyDown(in: .maskAlternate, keyState: keyState()))
+        XCTAssertEqual(reads, 0)
+    }
+
+    @MainActor
+    func testModifierHIDFlagsSurviveWatchdogAndRecoverMissedReleaseWhenKeyStateReportsUp() async throws {
+        for key in [HoldKey.rightOption, .rightControl] {
+            var hardwareFlags: CGEventFlags = []
+            let fixture = HotkeyFixture(key: key, isKeyDown: {
+                $0.isPhysicallyDown(in: hardwareFlags, keyState: false)
+            })
+            XCTAssertTrue(fixture.monitor.start())
+            defer { fixture.monitor.stop() }
+
+            fixture.setPhysicalHold(true)
+            hardwareFlags = fixture.flags
+            try fixture.flagsChanged()
+            let delay = try XCTUnwrap(fixture.delays.last)
+            let watchdog = try XCTUnwrap(fixture.timers.last { $0.interval == 0.12 }?.call)
+            // The real watchdog fires at 120 ms, before the 180 ms debounce.
+            watchdog.fire()
+            XCTAssertFalse(delay.cancelled, "HID flags still show \(key) held despite keyState=false")
+            XCTAssertEqual(fixture.presses, 0)
+            delay.fire()
+            delay.fire(evenIfCancelled: true)
+            watchdog.fire()
+            XCTAssertEqual(fixture.presses, 1)
+            XCTAssertEqual(fixture.releases, 0)
+            XCTAssertEqual(fixture.cancels, 0)
+
+            // Hardware release without any delivered event must still stop capture.
+            hardwareFlags = []
+            watchdog.fire()
+            XCTAssertEqual(fixture.releases, 1)
+            watchdog.fire(evenIfCancelled: true)
+            try fixture.release()
+            XCTAssertEqual(fixture.releases, 1, "A late release event must not submit twice")
+
+            // A missed quick release before debounce must not accept a stale press.
+            fixture.setPhysicalHold(true)
+            hardwareFlags = fixture.flags
+            try fixture.flagsChanged()
+            let quickDelay = try XCTUnwrap(fixture.delays.last)
+            hardwareFlags = []
+            try XCTUnwrap(fixture.timers.last { $0.interval == 0.12 }?.call).fire()
+            quickDelay.fire(evenIfCancelled: true)
+            XCTAssertEqual(fixture.presses, 1)
+            XCTAssertEqual(fixture.releases, 1)
+            XCTAssertEqual(fixture.cancels, 0)
+        }
+    }
+
+    @MainActor
+    func testAlreadyHeldModifierHIDFlagsRequireFreshReleaseAfterStartAndTapRecovery() async throws {
+        let keysAndFlags: [(HoldKey, CGEventFlags)] = [
+            (.rightOption, CGEventFlags(rawValue: CGEventFlags.maskAlternate.rawValue | 0x40)),
+            (.rightControl, CGEventFlags(rawValue: CGEventFlags.maskControl.rawValue | 0x2000)),
+        ]
+        for (key, heldFlags) in keysAndFlags {
+            var hardwareFlags = heldFlags
+            let fixture = HotkeyFixture(key: key, isKeyDown: {
+                $0.isPhysicallyDown(in: hardwareFlags, keyState: false)
+            })
+            XCTAssertTrue(fixture.monitor.start())
+            defer { fixture.monitor.stop() }
+            try fixture.press()
+            fixture.timers.last { $0.interval == 0.12 }?.call.fire()
+            XCTAssertTrue(fixture.delays.isEmpty, "Starting mid-hold must require a new press")
+            XCTAssertEqual(fixture.presses, 0)
+
+            hardwareFlags = []
+            try fixture.release()
+            hardwareFlags = heldFlags
+            try fixture.press()
+            let acceptedDelay = try XCTUnwrap(fixture.delays.last)
+            acceptedDelay.fire()
+            XCTAssertEqual(fixture.presses, 1)
+
+            // Recovery cancels the accepted hold while HID flags still report it down.
+            try XCTUnwrap(fixture.taps.first).enabled = false
+            fixture.healthCheck()
+            try fixture.flagsChanged()
+            fixture.timers.last { $0.interval == 0.12 }?.call.fire()
+            acceptedDelay.fire(evenIfCancelled: true)
+            XCTAssertEqual(fixture.delays.count, 1)
+            XCTAssertEqual(fixture.presses, 1)
+            XCTAssertEqual(fixture.cancels, 1)
+            XCTAssertEqual(fixture.releases, 0)
+
+            hardwareFlags = []
+            try fixture.release()
+            hardwareFlags = heldFlags
+            try fixture.press()
+            try XCTUnwrap(fixture.delays.last).fire()
+            hardwareFlags = []
+            try fixture.release()
+            XCTAssertEqual(fixture.presses, 2)
+            XCTAssertEqual(fixture.releases, 1)
+        }
+    }
+
     @MainActor
     func testFnStartsOnTheFirstEventWithoutDebounceOrHardwarePolling() async throws {
         for type in [CGEventType.flagsChanged, .keyDown] {
@@ -521,6 +659,7 @@ private final class ScheduledHotkeyCall {
 @MainActor
 private final class HotkeyFixture {
     private let initialKey: HoldKey
+    private let physicalStateQuery: ((HoldKey) -> Bool)?
     var permissions = PermissionSnapshot(microphone: true, accessibility: true, inputMonitoring: false)
     var down = false
     var flags: CGEventFlags = []
@@ -534,14 +673,18 @@ private final class HotkeyFixture {
     var cancels = 0
     var statuses: [Bool] = []
 
-    init(key: HoldKey = .rightOption) {
+    init(key: HoldKey = .rightOption, isKeyDown: ((HoldKey) -> Bool)? = nil) {
         initialKey = key
+        physicalStateQuery = isKeyDown
     }
 
     lazy var monitor: HotkeyMonitor = {
         var environment = HotkeyMonitorEnvironment.live
         environment.permissions = { [unowned self] in permissions }
-        environment.isKeyDown = { [unowned self] _ in physicalReads += 1; return down }
+        environment.isKeyDown = { [unowned self] key in
+            physicalReads += 1
+            return physicalStateQuery?(key) ?? down
+        }
         environment.flags = { [unowned self] in flags }
         environment.createTap = { [unowned self] _ in
             guard canCreateTap else { return nil }
