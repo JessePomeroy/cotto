@@ -77,6 +77,21 @@ private enum FocusedElementRead {
     case unverified
 }
 
+private struct FocusedApplicationSnapshot: @unchecked Sendable {
+    let element: AXUIElement
+    let window: AXUIElement?
+}
+
+@MainActor
+struct InsertionDestinationCapture {
+    let task: Task<InsertionDestination, Never>
+    let cutoff: InsertionCaptureCutoff
+
+    var value: InsertionDestination { get async { await task.value } }
+    func finish() { cutoff.finish() }
+    func cancel() { task.cancel() }
+}
+
 private enum FieldProbe: Sendable {
     case valid(selection: NSRange?)
     case changed(reason: String)
@@ -137,12 +152,13 @@ final class TextInserter {
     /// System-wide AX focus identifies the keyboard recipient, including floating
     /// editors. Per-application focus can describe a stale background responder.
     /// Keep lookup off-main so another app's AX IPC never delays the microphone.
-    static func beginDestinationCapture() -> Task<InsertionDestination, Never> {
+    static func beginDestinationCapture() -> InsertionDestinationCapture {
         // This is a change detector, not the target owner. A nonactivating panel
         // may own AX focus without matching NSWorkspace's active application.
         let initialActivation = NSWorkspace.shared.frontmostApplication?.processIdentifier
-        return Task { @MainActor in
-            let snapshot = await readOffMain { readDestinationSnapshot(includeDeliveryMetadata: true) }
+        let cutoff = InsertionCaptureCutoff()
+        let task = Task<InsertionDestination, Never> { @MainActor in
+            let snapshot = await readOffMain { await readPreparedDestinationSnapshot(cutoff: cutoff) }
             guard !Task.isCancelled else {
                 return .blocked(reason: "Dictation was cancelled. Nothing was pasted or copied.")
             }
@@ -152,10 +168,11 @@ final class TextInserter {
             }
             return destination(from: snapshot)
         }
+        return InsertionDestinationCapture(task: task, cutoff: cutoff)
     }
 
     static func captureDestination() -> InsertionDestination {
-        destination(from: readDestinationSnapshot(includeDeliveryMetadata: false))
+        destination(from: readDestinationSnapshot())
     }
 
     private static func destination(from snapshot: InsertionDestinationSnapshot) -> InsertionDestination {
@@ -327,7 +344,7 @@ final class TextInserter {
         return !CGEventSource.flagsState(.hidSystemState).intersection(modifiers).isEmpty
     }
 
-    private static func readOffMain<Value: Sendable>(_ operation: @escaping @Sendable () -> Value) async -> Value {
+    private static func readOffMain<Value: Sendable>(_ operation: @escaping @Sendable () async -> Value) async -> Value {
         let task = Task.detached(priority: .userInitiated, operation: operation)
         return await withTaskCancellationHandler { await task.value } onCancel: { task.cancel() }
     }
@@ -368,12 +385,63 @@ final class TextInserter {
         return .valid(selection: selectedRange(of: latest.element))
     }
 
-    private nonisolated static func readDestinationSnapshot(includeDeliveryMetadata: Bool) -> InsertionDestinationSnapshot {
+    private nonisolated static func readPreparedDestinationSnapshot(cutoff: InsertionCaptureCutoff) async -> InsertionDestinationSnapshot {
+        guard !Task.isCancelled, AXIsProcessTrusted() else {
+            return .blocked(reason: "Allow Accessibility access to check the destination safely. Nothing was pasted or copied.")
+        }
+        let system = AXUIElementCreateSystemWide()
+        AXUIElementSetMessagingTimeout(system, 0.2)
+        let appRead = elementAttribute(kAXFocusedApplicationAttribute as CFString, of: system)
+        guard let application = appRead.element else {
+            // Keep the ordinary paired app/field check: an absent application
+            // does not make a present field with unknown ownership safe to copy.
+            return appRead.absent ? readDestinationSnapshot() : .blocked(reason: "The focused application could not be checked safely. Nothing was pasted or copied.")
+        }
+        var applicationPID: pid_t = 0
+        guard AXUIElementGetPid(application, &applicationPID) == .success, applicationPID > 0 else {
+            return .blocked(reason: "The focused application could not be checked safely. Nothing was pasted or copied.")
+        }
+        AXUIElementSetMessagingTimeout(application, 0.2)
+        let windowRead = checkedAttribute(kAXFocusedWindowAttribute as CFString, of: application)
+        let window = windowRead.value.flatMap { value in
+            CFGetTypeID(value) == AXUIElementGetTypeID() ? (value as! AXUIElement) : nil
+        }
+        let original = FocusedApplicationSnapshot(element: application, window: window)
+        let preparation = InsertionPreparationEnvironment<InsertionFieldSnapshot>(
+            read: {
+                switch readDestinationSnapshot(expectedApplication: original) {
+                case .field(let field): return .ready(field, capturedAt: field.capturedAt)
+                case .clipboard: return .unavailable
+                case .blocked(let reason): return .blocked(reason: reason)
+                }
+            },
+            activate: { enableWebAccessibilityIfNeeded(in: original) },
+            canWait: { cutoff.canWait },
+            now: { ProcessInfo.processInfo.systemUptime },
+            pause: { try await Task.sleep(nanoseconds: $0) }
+        )
+        switch await InsertionPreparation.capture(using: preparation) {
+        case .unavailable: return .clipboard
+        case .blocked(let reason): return .blocked(reason: reason)
+        case .ready(let field, _):
+            guard !Task.isCancelled, AXIsProcessTrusted() else {
+                return .blocked(reason: "Accessibility access is unavailable or dictation was cancelled.")
+            }
+            // Preserve the cursor timestamp while slower delivery metadata is
+            // discovered, including when the user has already released the key.
+            let strategy = deliveryStrategy(of: field.focus.element)
+            let command = NativePasteCommand.find(for: field.focus.applicationPID)
+            return .field(InsertionFieldSnapshot(focus: field.focus, selection: field.selection,
+                                                capturedAt: field.capturedAt, strategy: strategy, pasteCommand: command))
+        }
+    }
+
+    private nonisolated static func readDestinationSnapshot(expectedApplication: FocusedApplicationSnapshot? = nil) -> InsertionDestinationSnapshot {
         guard !Task.isCancelled, AXIsProcessTrusted() else {
             return .blocked(reason: "Allow Accessibility access to check the destination safely. Nothing was pasted or copied.")
         }
         let focused: FocusedFieldSnapshot
-        switch readFocusedElement() {
+        switch readFocusedElement(expectedApplication: expectedApplication) {
         case .found(let value): focused = value
         case .absent: return .clipboard
         case .unverified:
@@ -383,23 +451,64 @@ final class TextInserter {
         // discovery. A genuinely post-release cursor still must never be used.
         let selection = selectedRange(of: focused.element)
         let capturedAt = ProcessInfo.processInfo.systemUptime
-        switch fieldEligibility(of: focused.element) {
-        case .editable: break
-        case .notEditable: return .clipboard
+        let eligibility = fieldEligibility(of: focused.element)
+        switch eligibility {
+        case .editable, .notEditable: break
         case .protected: return .blocked(reason: "This is a protected field. Nothing was pasted or copied.")
         case .unverified, nil:
             return .blocked(reason: "The focused field could not be checked safely. Nothing was pasted or copied.")
         }
-        guard !Task.isCancelled else { return .blocked(reason: "Dictation was cancelled.") }
-        let strategy = includeDeliveryMetadata ? deliveryStrategy(of: focused.element) : .keyboardPaste
-        let command = includeDeliveryMetadata ? NativePasteCommand.find(for: focused.applicationPID) : nil
+        guard !Task.isCancelled, AXIsProcessTrusted() else {
+            return .blocked(reason: "Accessibility access is unavailable or dictation was cancelled. Nothing was pasted or copied.")
+        }
+        if let expectedApplication, !applicationIsFocused(expectedApplication) {
+            return .blocked(reason: "Focus changed while preparing dictation. Nothing was pasted or copied.")
+        }
+        if eligibility == .notEditable { return .clipboard }
         return .field(InsertionFieldSnapshot(focus: focused, selection: selection, capturedAt: capturedAt,
-                                            strategy: strategy, pasteCommand: command))
+                                            strategy: .keyboardPaste, pasteCommand: nil))
+    }
+
+    /// Electron documents this application attribute for third-party assistive
+    /// clients. Native unsupported apps keep their ordinary immediate path.
+    private nonisolated static func enableWebAccessibilityIfNeeded(in application: FocusedApplicationSnapshot) -> InsertionAccessibilityActivation {
+        guard !Task.isCancelled, AXIsProcessTrusted(), applicationIsFocused(application) else {
+            return .blocked(reason: "Focus or Accessibility access changed while preparing dictation. Nothing was pasted or copied.")
+        }
+        let app = application.element
+        var current: CFTypeRef?
+        let read = AXUIElementCopyAttributeValue(app, "AXManualAccessibility" as CFString, &current)
+        guard !Task.isCancelled, AXIsProcessTrusted(), applicationIsFocused(application) else {
+            return .blocked(reason: "Focus or Accessibility access changed while preparing dictation. Nothing was pasted or copied.")
+        }
+        if let activation = InsertionAccessibilityPolicy.afterRead(read, enabled: current as? Bool) {
+            return activation
+        }
+        // Never repeat this write during retries: Electron restarts a two-second
+        // debounce on every request, and its mode getter is not tree readiness.
+        let write = AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue)
+        guard !Task.isCancelled, AXIsProcessTrusted(), applicationIsFocused(application) else {
+            return .blocked(reason: "Focus or Accessibility access changed while preparing dictation. Nothing was pasted or copied.")
+        }
+        return InsertionAccessibilityPolicy.afterWrite(write)
+    }
+
+    private nonisolated static func applicationIsFocused(_ expected: FocusedApplicationSnapshot) -> Bool {
+        guard !Task.isCancelled else { return false }
+        let system = AXUIElementCreateSystemWide()
+        AXUIElementSetMessagingTimeout(system, 0.2)
+        guard let current = elementAttribute(kAXFocusedApplicationAttribute as CFString, of: system).element,
+              CFEqual(current, expected.element) else { return false }
+        if let window = expected.window {
+            let currentWindow = elementAttribute(kAXFocusedWindowAttribute as CFString, of: expected.element).element
+            guard let currentWindow, CFEqual(window, currentWindow) else { return false }
+        }
+        return true
     }
 
     /// This is the system's focused object, not an application's remembered
     /// responder. Keep application and element PIDs distinct for remote web AX.
-    private nonisolated static func readFocusedElement() -> FocusedElementRead {
+    private nonisolated static func readFocusedElement(expectedApplication: FocusedApplicationSnapshot? = nil) -> FocusedElementRead {
         guard !Task.isCancelled else { return .unverified }
         let system = AXUIElementCreateSystemWide()
         AXUIElementSetMessagingTimeout(system, 0.2)
@@ -409,6 +518,10 @@ final class TextInserter {
         // other. A field without a verified application owner is also unsafe.
         guard appRead.element != nil || appRead.absent,
               fieldRead.element != nil || fieldRead.absent else { return .unverified }
+        if let expectedApplication {
+            guard let app = appRead.element, CFEqual(app, expectedApplication.element),
+                  applicationIsFocused(expectedApplication) else { return .unverified }
+        }
         if fieldRead.absent { return .absent }
         guard let app = appRead.element, let element = fieldRead.element else { return .unverified }
         var applicationPID: pid_t = 0

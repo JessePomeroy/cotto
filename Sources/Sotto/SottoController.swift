@@ -167,7 +167,7 @@ final class SottoController: ObservableObject {
     private var activeClient: ServerClient?
     private var serverSealed = false
     @Published private var insertionDestination: InsertionDestination?
-    private var destinationTask: Task<InsertionDestination, Never>?
+    private var destinationTask: InsertionDestinationCapture?
     private var recordingClipboardChangeCount = 0
     private struct ContinuationAnchor {
         let destination: DictationDestination
@@ -860,6 +860,7 @@ final class SottoController: ObservableObject {
         recorder.stopAcceptingAudio()
         guard activity == .recording else { cancelDictation(); return }
         let releasedAt = ProcessInfo.processInfo.systemUptime
+        destinationTask?.finish()
         guard releasedAt - recordingStart >= 0.25 else { cancelDictation(); return }
         guard let id = activeGenerationID, let connection = activeClient, let uploadTask, let uploadPipe else {
             failSession("This recording has no server session.", cancelServer: true); return
