@@ -65,11 +65,11 @@ struct ServerClient: Sendable {
         return request
     }
 
-    func json<Response: Decodable>(path: String, method: String = "GET", body: Data? = nil) async throws -> Response {
+    func json<Response: APIWireModel>(path: String, method: String = "GET", body: Data? = nil) async throws -> Response {
         let (data, response) = try await session.data(for: request(path: path, method: method, body: body))
         try Self.validate(response, data: data)
         guard data.count <= 16 * 1_024 * 1_024 else { throw ServerClientError.invalidResponse }
-        do { return try Self.decoder().decode(Response.self, from: data) }
+        do { return try SottoAPI.decodeWire(Response.self, from: data) }
         catch { throw ServerClientError.invalidResponse }
     }
 
@@ -78,10 +78,8 @@ struct ServerClient: Sendable {
         try Self.validate(response, data: data)
     }
 
-    static func encode<T: Encodable>(_ value: T) throws -> Data {
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        return try encoder.encode(value)
+    static func encode<T: APIWireModel>(_ value: T) throws -> Data {
+        try SottoAPI.encodeWire(value)
     }
 
     static func decoder() -> JSONDecoder {
@@ -159,7 +157,7 @@ extension ServerClient {
         let (data, response) = try await session.data(for: request(path: "v1/generations", query: query))
         try Self.validate(response, data: data)
         guard data.count <= 16 * 1_024 * 1_024 else { throw ServerClientError.invalidResponse }
-        return try Self.decoder().decode(GenerationPage.self, from: data)
+        return try SottoAPI.decodeWire(GenerationPage.self, from: data)
     }
 
     func knownWisprFlowSourceIDs(_ sourceIDs: [UUID]) async throws -> Set<UUID> {
@@ -185,7 +183,7 @@ extension ServerClient {
                                  method: "PUT", contentType: contentType)
         let (data, response) = try await session.upload(for: upload, fromFile: url)
         try Self.validate(response, data: data)
-        return try Self.decoder().decode(WisprFlowArtifactReceipt.self, from: data)
+        return try SottoAPI.decodeWire(WisprFlowArtifactReceipt.self, from: data)
     }
 
     func completeWisprFlowImport(_ importID: UUID) async throws -> WisprFlowImportResult {
@@ -204,7 +202,7 @@ extension ServerClient {
         let upload = try request(path: "v1/imports/wispr-flow/dictionary", method: "PUT", contentType: "application/json")
         let (data, response) = try await session.upload(for: upload, fromFile: url)
         try Self.validate(response, data: data)
-        return try Self.decoder().decode(WisprFlowDictionaryArchiveReceipt.self, from: data)
+        return try SottoAPI.decodeWire(WisprFlowDictionaryArchiveReceipt.self, from: data)
     }
 
     static func wisprFlowArtifactManifest(filename: WisprFlowArtifactName, url: URL) throws -> WisprFlowArtifactManifest {
@@ -276,7 +274,7 @@ extension ServerClient {
             try Task.checkCancellation()
             if byte == 10 {
                 if !line.isEmpty {
-                    guard let record = try? Self.decoder().decode(GenerationRecord.self, from: line), record.id == id else {
+                    guard let record = try? SottoAPI.decodeWire(GenerationRecord.self, from: line), record.id == id else {
                         throw ServerClientError.invalidResponse
                     }
                     await onUpdate(record)
@@ -326,7 +324,7 @@ extension ServerClient {
                                   body: buffer.data, contentType: "application/octet-stream", query: query)
         let (data, response) = try await session.data(for: request)
         try Self.validate(response, data: data)
-        let receipt = try Self.decoder().decode(AudioChunkReceipt.self, from: data)
+        let receipt = try SottoAPI.decodeWire(AudioChunkReceipt.self, from: data)
         guard receipt.nextSequence == buffer.sequence + 1, receipt.frameCount == buffer.frames else {
             throw ServerClientError.invalidResponse
         }

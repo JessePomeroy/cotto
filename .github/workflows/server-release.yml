@@ -1,0 +1,63 @@
+name: Server release packages
+
+on:
+  workflow_dispatch:
+  push:
+    tags: [server-v*]
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: Package ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-26
+            platform: darwin-arm64
+          - runner: ubuntu-24.04
+            platform: linux-x64-cpu
+          - runner: ubuntu-24.04-arm
+            platform: linux-arm64-cpu
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - name: Install Linux native dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y cmake build-essential pkg-config libcurl4-openssl-dev
+      - name: Install the Metal compiler
+        if: runner.os == 'macOS'
+        run: xcodebuild -downloadComponent MetalToolchain
+      - run: bun install --frozen-lockfile
+      - run: bun run check
+      - run: bun run test
+      - name: Verify embedded correction worker
+        run: bun test Server/tests/correction-worker-standalone.test.ts
+      - name: Build complete platform package
+        env:
+          SOTTO_NATIVE: "OFF"
+          SOTTO_CUDA: "OFF"
+          SOTTO_BUILD_JOBS: "4"
+        run: ./scripts/build-server.sh
+      - run: ./build/server/sotto-server --help
+      - name: Test packaged HTTP server
+        run: bun Server/scripts/smoke.ts --executable ./build/server/sotto-server
+      - name: Package and checksum
+        run: |
+          cd build
+          tar -czf sotto-server-${{ matrix.platform }}.tar.gz server
+          shasum -a 256 sotto-server-${{ matrix.platform }}.tar.gz > sotto-server-${{ matrix.platform }}.tar.gz.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sotto-server-${{ matrix.platform }}
+          path: |
+            build/sotto-server-${{ matrix.platform }}.tar.gz
+            build/sotto-server-${{ matrix.platform }}.tar.gz.sha256
+          if-no-files-found: error

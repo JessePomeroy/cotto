@@ -1,0 +1,119 @@
+import { createHash } from "node:crypto";
+import { constants, type BigIntStats } from "node:fs";
+import { lstat, open } from "node:fs/promises";
+import { basename } from "node:path";
+import { checkCancellation, InferenceError } from "./inference-error";
+
+export interface ModelPin { bytes?: number; sha256: string }
+
+function fingerprint(info: BigIntStats) {
+  return [info.dev, info.ino, info.size, info.mtimeNs, info.ctimeNs].join(":");
+}
+
+function pinKey(pin: ModelPin) { return `${pin.bytes ?? ""}:${pin.sha256}`; }
+
+async function pathFingerprint(path: string) {
+  const info = await lstat(path, { bigint: true });
+  if (!info.isFile()) throw new InferenceError("unavailable", `The inference model must be a readable regular file: ${basename(path)}`);
+  return fingerprint(info);
+}
+
+/** Hashes in bounded chunks; caches bind to inode, size and nanosecond timestamps. */
+export class ModelVerifier {
+  private verified = new Map<string, { pin: string; fingerprint: string }>();
+  private readonly hashes = new Set<Promise<unknown>>();
+  private pending = new Map<string, {
+    pin: string;
+    controller: AbortController;
+    task: Promise<{ pin: string; fingerprint: string }>;
+  }>();
+
+  async isVerified(path: string, pin?: ModelPin) {
+    if (!pin) return true;
+    const entry = this.verified.get(path);
+    if (!entry || entry.pin !== pinKey(pin)) return false;
+    try { return entry.fingerprint === await pathFingerprint(path); }
+    catch { return false; }
+  }
+
+  async verify(path: string, pin?: ModelPin, signal?: AbortSignal) {
+    checkCancellation(signal);
+    if (!pin) return undefined;
+    if (await this.isVerified(path, pin)) { checkCancellation(signal); return pin.sha256; }
+    checkCancellation(signal);
+    this.verified.delete(path);
+    let operation = this.pending.get(path);
+    if (!operation) {
+      const controller = new AbortController();
+      operation = { pin: pinKey(pin), controller, task: this.hash(path, pin, controller.signal) };
+      this.pending.set(path, operation);
+      const task = operation.task;
+      this.hashes.add(task);
+      void task.finally(() => this.hashes.delete(task)).catch(() => {});
+    }
+    const pending = operation;
+    const cancel = () => pending.controller.abort();
+    signal?.addEventListener("abort", cancel, { once: true });
+    try {
+      const result = await pending.task;
+      checkCancellation(signal);
+      checkCancellation(pending.controller.signal);
+      if (result.pin !== pinKey(pin)) throw new InferenceError("unavailable", "Model verification configuration changed.");
+      this.verified.set(path, result);
+      return pin.sha256;
+    } finally {
+      signal?.removeEventListener("abort", cancel);
+      if (this.pending.get(path) === pending) this.pending.delete(path);
+    }
+  }
+
+  cancel() {
+    for (const operation of this.pending.values()) operation.controller.abort();
+    this.pending.clear();
+  }
+
+  async shutdown() {
+    const tasks = [...this.hashes];
+    this.cancel();
+    // Hash tasks close their descriptors in finally before shutdown resolves.
+    await Promise.allSettled(tasks);
+  }
+
+  private async hash(path: string, pin: ModelPin, signal: AbortSignal) {
+    let handle;
+    try {
+      handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+      checkCancellation(signal);
+      const info = await handle.stat({ bigint: true });
+      if (!info.isFile()) throw new InferenceError("unavailable", "The inference model must be a regular file.");
+      const before = fingerprint(info);
+      if (pin.bytes !== undefined && info.size !== BigInt(pin.bytes)) {
+        throw new InferenceError("unavailable", `The ${basename(path)} model has an incorrect size; install the pinned model.`);
+      }
+      const digest = createHash("sha256");
+      const buffer = Buffer.allocUnsafe(4 * 1024 * 1024);
+      let total = 0n;
+      while (true) {
+        checkCancellation(signal);
+        const { bytesRead } = await handle.read(buffer, 0, buffer.length, null);
+        checkCancellation(signal);
+        if (bytesRead === 0) break;
+        total += BigInt(bytesRead);
+        if (total > info.size) throw new InferenceError("unavailable", "The model changed during integrity verification.");
+        digest.update(buffer.subarray(0, bytesRead));
+      }
+      const after = await handle.stat({ bigint: true });
+      if (total !== info.size || fingerprint(after) !== before || await pathFingerprint(path) !== before) {
+        throw new InferenceError("unavailable", "The model changed during integrity verification.");
+      }
+      checkCancellation(signal);
+      if (digest.digest("hex") !== pin.sha256) {
+        throw new InferenceError("unavailable", `The ${basename(path)} model failed SHA-256 verification; install the pinned model.`);
+      }
+      return { pin: pinKey(pin), fingerprint: before };
+    } catch (error) {
+      if (error instanceof InferenceError) throw error;
+      throw new InferenceError("unavailable", `Could not read inference model: ${basename(path)}`);
+    } finally { await handle?.close(); }
+  }
+}
