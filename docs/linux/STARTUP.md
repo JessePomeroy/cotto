@@ -38,7 +38,9 @@ units, not a relocatable desktop package.
   `SOTTO_TEXT_GPU_LAYERS` and `SOTTO_TEXT_KV_TYPE` for your hardware; use zero GPU
   layers for CPU operation.
 
-`COTTO_QT_CONFIG_HOME` is a CMake cache setting, defaulting to `~/.config`. A custom
+`COTTO_QT_CONFIG_HOME` is a CMake cache setting. On first configure it defaults to
+an absolute `XDG_CONFIG_HOME`, falling back to `~/.config` when unset, empty, or
+relative. An existing cache or explicit override keeps its chosen value. A custom
 value selects a distinct Qt profile, including its personal dictionary. Always
 use the service's configured profile when importing or editing words.
 

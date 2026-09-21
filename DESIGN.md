@@ -41,4 +41,6 @@ navigation and back navigation must work with both mouse and keyboard. No animat
 
 One word or phrase per line, an explicit Save, and inline validation. Words belong
 to the Linux user and travel only with that user's takes. Never seed personal
-project names into application defaults or server-wide preferences.
+project names into application defaults or server-wide preferences. This does not
+remove inherited public API defaults: requests omitting the personal override keep
+existing shared behavior, while Qt always supplies its user-local snapshot.

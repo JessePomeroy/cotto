@@ -30,7 +30,7 @@ case "$mode" in
   subsystem)
     [ $# -eq 1 ] || usage
     case "$1" in
-      desktop) linux_ctest -R '^(sotto-desktop-paste|sotto-desktop-shortcuts|sotto-desktop-tray|sotto-settings-ui)$' ;;
+      desktop) linux_ctest -R '^(sotto-startup-config|sotto-desktop-paste|sotto-desktop-shortcuts|sotto-desktop-tray|sotto-settings-ui)$' ;;
       pi) linux_ctest -R '^(sotto-pi-bridge|sotto-pi-dictation|sotto-recording-status)$' ;;
       server) bun run test ;;
       *) usage ;;

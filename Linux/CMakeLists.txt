@@ -46,7 +46,11 @@ configure_file(resources/org.sotto.Sotto.Dev.desktop.in org.sotto.Sotto.Dev.desk
 # Checkout-based user services. Installing this component never enables startup.
 get_filename_component(COTTO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/.." ABSOLUTE)
 set(COTTO_NATIVE "${CMAKE_CURRENT_BINARY_DIR}/sotto-linux")
-set(COTTO_QT_CONFIG_HOME "$ENV{HOME}/.config" CACHE PATH "Existing cotto Qt configuration root")
+set(COTTO_DEFAULT_CONFIG_HOME "$ENV{HOME}/.config")
+if(IS_ABSOLUTE "$ENV{XDG_CONFIG_HOME}")
+    set(COTTO_DEFAULT_CONFIG_HOME "$ENV{XDG_CONFIG_HOME}")
+endif()
+set(COTTO_QT_CONFIG_HOME "${COTTO_DEFAULT_CONFIG_HOME}" CACHE PATH "Existing cotto Qt configuration root")
 set(COTTO_SETTINGS "${COTTO_QT_CONFIG_HOME}")
 foreach(value COTTO_ROOT COTTO_NATIVE COTTO_SETTINGS)
     string(REPLACE "\\" "\\\\" ${value} "${${value}}")
@@ -68,6 +72,12 @@ install(FILES resources/cotto-managed.desktop DESTINATION share/applications
 
 include(CTest)
 if(BUILD_TESTING)
+    add_test(NAME sotto-startup-config COMMAND ${CMAKE_COMMAND}
+        "-DCOTTO_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}"
+        "-DCOTTO_TEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/startup-config-tests"
+        "-DCOTTO_TEST_GENERATOR=${CMAKE_GENERATOR}"
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/StartupTests.cmake)
+    set_tests_properties(sotto-startup-config PROPERTIES TIMEOUT 120)
     find_package(Qt6 REQUIRED COMPONENTS Test QuickTest)
     qt_add_executable(sotto-settings-tests tests/SettingsTests.cpp)
     target_link_libraries(sotto-settings-tests PRIVATE Qt6::QuickTest Qt6::QuickControls2)

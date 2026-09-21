@@ -22,7 +22,7 @@ scripts/run_test_gates.sh broad
 | Gate | Scope |
 | --- | --- |
 | `fast` | Five entries: native settings UI, personal dictionary, PCM core, generation protocol, Pi integration. |
-| `subsystem desktop` | UI, tray, clipboard paste, KDE shortcuts; private D-Bus where needed. |
+| `subsystem desktop` | Startup profile configuration, UI, tray, clipboard paste, KDE shortcuts; private D-Bus where needed. |
 | `subsystem pi` | Native bridge, Pi integration, recording-status publisher. |
 | `subsystem server` | Bun server tests, fake inference helpers, temporary archives, and isolated HTTP. |
 | `broad` | Server tests and every native CTest entry. |
@@ -31,8 +31,8 @@ Selections use `--no-tests=error`. CMake reports when Bun is missing; install th
 pinned Bun version rather than treating missing Pi coverage as success. The gate
 script can use an existing local Bun tool copy, but does not download one.
 
-The current local baseline is 188 server tests and 11 CTest entries. Fast takes
-roughly five seconds; the broad native portion takes roughly 27 seconds. Timings
+The suite currently has 188 server tests and 12 CTest entries. Fast takes
+roughly five seconds; the broad native portion takes roughly 30 seconds. Timings
 are illustrative, not thresholds. The optional acoustic test normally **skips**
 without explicit inputs; a passing CTest entry does not prove live inference.
 
@@ -62,7 +62,8 @@ extension into a live user session, request microphone capture, or submit text.
 - Pi one-use IDs across 4,101 takes, replay rejection, ownership, malformed frames,
   deadlines, receipts, draft/cursor protection, and recording observation.
 - Clipboard ownership changes and one-attempt dispatch; shortcut/session signals;
-  tray Open/Quit separation and read-only desktop activation.
+  tray Open/Quit separation and read-only desktop activation; generated startup
+  units honor XDG configuration and explicit profile overrides.
 - Server archive locking, HTTP policy, model verification, helper cancellation/
   replacement, deterministic text rules, and isolated compiled-server smoke tests.
 
