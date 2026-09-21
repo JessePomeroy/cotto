@@ -5,7 +5,7 @@ foreach(required COTTO_SOURCE COTTO_TEST_ROOT)
     endif()
 endforeach()
 
-foreach(case unset empty relative custom override escaped)
+foreach(case unset empty relative custom override escaped legacy relative-override)
     set(directory "${COTTO_TEST_ROOT}/${case}")
     set(expected "${COTTO_TEST_ROOT}/home/.config")
     set(environment)
@@ -24,15 +24,27 @@ foreach(case unset empty relative custom override escaped)
     elseif(case STREQUAL "escaped")
         set(expected "${COTTO_TEST_ROOT}/profile%with\"quotes\\and$dollars")
         set(environment "XDG_CONFIG_HOME=${expected}")
+    elseif(case STREQUAL "legacy")
+        set(expected "${COTTO_TEST_ROOT}/legacy profile")
+        set(options "-DCOTTO_QT_CONFIG_HOME:PATH=${expected}")
+    elseif(case STREQUAL "relative-override")
+        set(options "-DCOTTO_QT_CONFIG_HOME=relative-profile")
     endif()
 
     file(MAKE_DIRECTORY "${directory}")
     execute_process(
         COMMAND "${CMAKE_COMMAND}" -E env --unset=XDG_CONFIG_HOME
             "HOME=${COTTO_TEST_ROOT}/home" ${environment}
-            "${CMAKE_COMMAND}" ${options} -P "${COTTO_SOURCE}/cmake/Startup.cmake"
+            "${CMAKE_COMMAND}" "-DCOTTO_SOURCE=${COTTO_SOURCE}" ${options}
+            -P "${COTTO_SOURCE}/tests/StartupFixture.cmake"
         WORKING_DIRECTORY "${directory}"
         RESULT_VARIABLE result OUTPUT_VARIABLE output ERROR_VARIABLE errors)
+    if(case STREQUAL "relative-override")
+        if(result EQUAL 0 OR NOT errors MATCHES "COTTO_QT_CONFIG_HOME must be an absolute path")
+            message(FATAL_ERROR "Relative override was not explicitly rejected: ${errors}")
+        endif()
+        continue()
+    endif()
     if(NOT result EQUAL 0)
         message(FATAL_ERROR "${case} configuration failed: ${output}\n${errors}")
     endif()
@@ -45,4 +57,4 @@ foreach(case unset empty relative custom override escaped)
         message(FATAL_ERROR "${case}: service did not preserve expected profile ${expected}")
     endif()
 endforeach()
-message(STATUS "Startup profiles: defaults, custom paths, explicit override, and escaping passed")
+message(STATUS "Startup profiles: defaults, overrides, escaping, legacy cache, and invalid-path rejection passed")

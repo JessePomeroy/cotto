@@ -40,7 +40,8 @@ units, not a relocatable desktop package.
 
 `COTTO_QT_CONFIG_HOME` is a CMake cache setting. On first configure it defaults to
 an absolute `XDG_CONFIG_HOME`, falling back to `~/.config` when unset, empty, or
-relative. An existing cache or explicit override keeps its chosen value. A custom
+relative. An existing cache or explicit override keeps its chosen value; explicit
+overrides must be absolute paths or configuration fails. A custom
 value selects a distinct Qt profile, including its personal dictionary. Always
 use the service's configured profile when importing or editing words.
 
