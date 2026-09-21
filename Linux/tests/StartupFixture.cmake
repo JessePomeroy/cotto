@@ -1,0 +1,5 @@
+include("${COTTO_SOURCE}/cmake/Startup.cmake")
+get_property(profile_type CACHE COTTO_QT_CONFIG_HOME PROPERTY TYPE)
+if(NOT profile_type STREQUAL "STRING")
+    message(FATAL_ERROR "Startup profile cache must preserve literal Linux paths")
+endif()

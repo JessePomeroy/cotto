@@ -7,7 +7,7 @@ import {
   processingRecord,
 } from "../src/domain/correction.ts";
 
-// The pairs below mirror SottoDomainTests/TextCorrectionPolicyTests.swift.
+// Inherited regression pairs protect the deterministic text-correction policy.
 const accept = (original: string, candidate: string, preferredTerms: string[] = []) => {
   expect(evaluateCorrection(original!, candidate!, preferredTerms).rejectionReason).toBeUndefined();
 };

@@ -111,7 +111,7 @@ export function dictionaryValidationError(dictionary: PersonalDictionary) {
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 
-/** Keep Swift's strict decoding and legacy defaults, returning errors as values. */
+/** Strict decoding with legacy defaults, returning validation errors as values. */
 export function decodePersonalDictionary(
   value: unknown,
 ): { value: PersonalDictionary; error?: never } | { error: string; value?: never } {

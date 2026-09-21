@@ -3,7 +3,7 @@ openapi: "3.1.0"
 info:
   title: "Sotto API"
   version: "1.0.0"
-  description: "Shared transport contract for the Swift client and TypeScript server. Optional properties are omitted rather than encoded as null. Dates use whole-second ISO8601 UTC timestamps."
+  description: "Transport contract for the native Linux Qt client and TypeScript server. Optional properties are omitted rather than encoded as null. Dates use whole-second ISO8601 UTC timestamps."
 servers:
   -
     url: "http://localhost:8391"
@@ -726,6 +726,9 @@ components:
           "$ref": "#/components/schemas/DeviceIdentity"
         mode:
           "$ref": "#/components/schemas/GenerationMode"
+        personalDictionary:
+          "$ref": "#/components/schemas/PersonalDictionary"
+          description: "Optional client-owned dictionary for this take only. Replaces shared dictionary and vocabulary hints without modifying server preferences."
       required:
         - "requestID"
         - "device"

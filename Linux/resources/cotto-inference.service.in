@@ -1,0 +1,14 @@
+[Unit]
+Description=cotto local inference
+PartOf=graphical-session.target
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+[Service]
+Type=exec
+ExecStart="@COTTO_ROOT@/build/server/sotto-server" --dev --host 127.0.0.1 --port 8392 --data-dir "@COTTO_ROOT@/.local/validation-server" --speech-helper "@COTTO_ROOT@/build/server/helpers/sotto-engine" --speech-model "@COTTO_ROOT@/.local/models/ggml-large-v3-turbo.bin" --vad-model "@COTTO_ROOT@/.build/models/silero-vad.bin" --proof-helper "@COTTO_ROOT@/build/server/helpers/sotto-text-engine" --proof-model "@COTTO_ROOT@/.local/models/Qwen3-4B-Instruct-2507-Q4_K_M.gguf"
+Environment=SOTTO_TEXT_GPU_LAYERS=24 SOTTO_TEXT_KV_TYPE=q8_0
+UMask=0077
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=15

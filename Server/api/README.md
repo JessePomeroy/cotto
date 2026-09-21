@@ -1,35 +1,25 @@
-# Sotto API contract
+# API contract and generation
 
-`openapi.yaml` is the transport contract for the TypeScript server and Swift client,
-including JSON models, float32 audio chunks, artifact uploads/downloads, Wispr Flow
-imports, and NDJSON generation updates.
+`openapi.yaml` defines cotto's loopback HTTP contract between the native Qt client
+and TypeScript server. Runtime validation and generated TypeScript types use the
+same schema. Native C++ transport parsing is tested against fixture responses;
+there is no Swift client or generator in this fork.
 
-From the repository root:
-
-```sh
-bun install --frozen-lockfile
+```zsh
 bun run generate:api
 bun run generate:api --check
 ```
 
-Generation uses `openapi-typescript` from the Bun lockfile and Apple Swift OpenAPI
-Generator 1.13.1 at a pinned Git revision. Its transitive Swift tooling dependencies
-are recorded in `swift-generator.Package.resolved`. The complete Swift package
-requires Swift 6.2 or newer.
-The generator checkout lives under `.build`; normal client builds use committed
-sources and only depend on the pinned Swift OpenAPI runtime.
+Generation uses `openapi-typescript` and Prettier from the existing Bun lockfile.
+The generated file is `Server/src/generated/api.ts`; do not edit it by hand.
+`--check` compares regenerated output without modifying the file. Unknown flags
+are rejected. Changing the schema requires regeneration and the server/native
+protocol gates.
 
-TypeScript transport types live in `Server/src/generated/api.ts` and are generated
-with the repository's Prettier configuration so formatting does not change the
-generation drift check. The public aliases
-in `Server/src/api.ts` make defaults required after archive/request normalization.
-Swift transport types live in `Sources/SottoAPIWire`; `SottoAPI.APIWireModel` bridges
-them to the existing public Swift models while retaining dictionary validation,
-default preferences, and conveniences used by the app. The client retains its
-existing URLSession transport and bounded NDJSON parser.
+API version 1 remains stable. Optional fields are omitted rather than encoded as
+null; dates use whole-second ISO-8601 UTC timestamps. `personalDictionary` is an
+optional admission-time override, not a mutation of shared preferences. Pi's
+Unix-socket protocol v2 and the recording-status file v1 are separate protocols.
 
-Optional values are normally omitted. Timestamps use whole-second UTC ISO8601.
-UUID components generate `Foundation.UUID` in Swift. UTF-16 diagnostic offsets retain
-their original units. The server separately enforces byte budgets, Unicode grapheme
-limits, cross-field audio constraints, and dictionary spelling uniqueness that JSON
-Schema alone cannot express.
+See the [HTTP guide](../../docs/client-server-contract.md) for routes and
+[architecture](../../docs/architecture.md) for ownership and data flow.

@@ -53,7 +53,7 @@ export function composeDictation(formatted: FormattedDictation, previous?: Dicta
   return { insertion: separator + body + suffix, preview, continuation };
 }
 
-/** Continuations commit only after delivery; retain Swift's bounded expiration. */
+/** Continuations commit only after delivery and expire after a bounded lifetime. */
 export class DictationContinuationMemory<Anchor> {
   private entries: { anchor: Anchor; continuation: DictationContinuation; timestamp: number }[] =
     [];

@@ -28,7 +28,7 @@ async function fixture(token?: string) {
 }
 
 describe("Fastify API contract", () => {
-  test("Swift-compatible JSON, binary uploads, NDJSON, artifacts and no-body actions", async () => {
+  test("Contract JSON, binary uploads, NDJSON, artifacts and no-body actions", async () => {
     const { app } = await fixture();
     const original = (await app.inject({ method: "GET", url: "/v1/preferences" })).json();
     original.preferences.keepOriginalAudio = false;
@@ -199,7 +199,7 @@ describe("Fastify API contract", () => {
     });
   });
 
-  test("imports accept the Swift client's JSON, WAV and PNG media types without parsing bytes", async () => {
+  test("imports accept JSON, WAV and PNG media types without parsing bytes", async () => {
     const { app } = await fixture();
     const sourceID = randomUUID();
     const artifacts = [

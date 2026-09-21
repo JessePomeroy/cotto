@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=cotto
+GenericName=Local voice dictation
+Comment=Local dictation for KDE Wayland — cotto development build
+Exec="@CMAKE_CURRENT_BINARY_DIR@/sotto-linux"
+Icon=audio-input-microphone
+Terminal=false
+StartupNotify=true
+Categories=Audio;Utility;

@@ -15,12 +15,8 @@
 #include <thread>
 #include <vector>
 #include <unistd.h>
-#if defined(__APPLE__)
-#include <sys/event.h>
-#elif defined(__linux__)
 #include <signal.h>
 #include <sys/prctl.h>
-#endif
 
 namespace {
 using json = nlohmann::json;
@@ -32,7 +28,7 @@ constexpr int contextSize = 8192;
 constexpr int maxOutputTokens = 2048;
 constexpr int batchSize = 512;
 constexpr auto inferenceLimit = std::chrono::seconds(15);
-constexpr auto engineVersion = "llama.cpp-b10516-b95502ba-sotto3";
+constexpr auto engineVersion = "llama.cpp-b10516-b95502ba-sotto3-linux1";
 
 void emit(const json &event) {
     std::cout << event.dump(-1, ' ', false, json::error_handler_t::replace) << '\n' << std::flush;
@@ -53,25 +49,10 @@ void libraryLog(ggml_log_level level, const char *message, void *) {
 void watchParent() {
     const pid_t parent = getppid();
     if (parent <= 1) std::_Exit(0);
-#if defined(__linux__)
     if (prctl(PR_SET_PDEATHSIG, SIGKILL) == 0) {
         if (getppid() != parent) std::_Exit(0);
         return;
     }
-#elif defined(__APPLE__)
-    const int queue = kqueue();
-    struct kevent change;
-    EV_SET(&change, parent, EVFILT_PROC, EV_ADD | EV_ONESHOT, NOTE_EXIT, 0, nullptr);
-    if (queue >= 0 && kevent(queue, &change, 1, nullptr, 0, nullptr) == 0) {
-        std::thread([queue] {
-            struct kevent event;
-            while (kevent(queue, nullptr, 0, &event, 1, nullptr) < 0 && errno == EINTR) {}
-            std::_Exit(0);
-        }).detach();
-        return;
-    }
-    if (queue >= 0) close(queue);
-#endif
     std::thread([parent] {
         while (getppid() == parent) std::this_thread::sleep_for(std::chrono::seconds(1));
         std::_Exit(0);
@@ -207,6 +188,20 @@ int main(int argc, char **argv) {
     watchParent();
     std::string modelPath;
     int threads = 4;
+    int gpuLayers = 99;
+    auto cacheType = GGML_TYPE_F16;
+    if (const char *configured = std::getenv("SOTTO_TEXT_GPU_LAYERS")) {
+        const std::string value(configured);
+        const auto parsed = std::from_chars(value.data(), value.data() + value.size(), gpuLayers);
+        if (parsed.ec != std::errc() || parsed.ptr != value.data() + value.size() || gpuLayers < 0 || gpuLayers > 99) {
+            emitError("SOTTO_TEXT_GPU_LAYERS must be an integer between 0 and 99."); return 1;
+        }
+    }
+    if (const char *configured = std::getenv("SOTTO_TEXT_KV_TYPE")) {
+        const std::string value(configured);
+        if (value == "q8_0") cacheType = GGML_TYPE_Q8_0;
+        else if (value != "f16") { emitError("SOTTO_TEXT_KV_TYPE must be f16 or q8_0."); return 1; }
+    }
     for (int i = 1; i < argc; ++i) {
         const std::string argument = argv[i];
         if (argument == "--help") {
@@ -228,7 +223,7 @@ int main(int argc, char **argv) {
     llama_log_set(libraryLog, nullptr);
     llama_backend_init();
     auto parameters = llama_model_default_params();
-    parameters.n_gpu_layers = 99;
+    parameters.n_gpu_layers = gpuLayers;
     const auto model = std::unique_ptr<llama_model, decltype(&llama_model_free)>(
         llama_model_load_from_file(modelPath.c_str(), parameters), llama_model_free);
     if (!model) { emitError("Could not load the local text model."); return 1; }
@@ -239,6 +234,13 @@ int main(int argc, char **argv) {
     contextParameters.n_threads = threads;
     contextParameters.n_threads_batch = threads;
     contextParameters.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_ENABLED;
+    contextParameters.type_k = cacheType;
+    contextParameters.type_v = cacheType;
+    // CPU mode must not opportunistically allocate GPU compute buffers.
+    if (gpuLayers == 0) {
+        contextParameters.offload_kqv = false;
+        contextParameters.op_offload = false;
+    }
     contextParameters.no_perf = true;
     const auto context = std::unique_ptr<llama_context, decltype(&llama_free)>(
         llama_init_from_model(model.get(), contextParameters), llama_free);

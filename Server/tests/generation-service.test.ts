@@ -10,6 +10,7 @@ class FakeInference implements InferenceBackend {
   failProof = false;
   blocked = false;
   text = "Hello Codex.";
+  lastTerms: string[] = [];
   readiness() {
     return Promise.resolve({
       available: true,
@@ -28,6 +29,7 @@ class FakeInference implements InferenceBackend {
     progress?: (value: number) => void,
     signal?: AbortSignal,
   ) {
+    this.lastTerms = [..._terms];
     if (this.blocked)
       await new Promise<void>((_resolve, reject) => {
         if (signal?.aborted) reject(new Error("Cancelled"));
@@ -108,6 +110,78 @@ test("serializes admission; repeated requests return same frozen generation", as
   await expect(service.updatePreferences(preferences)).rejects.toMatchObject({
     code: "stale_preferences",
   });
+});
+test("personal dictionaries are frozen per take and never become shared preferences", async () => {
+  const { service } = await setup();
+  const before = await service.getPreferences();
+  const personalDictionary = {
+    lists: [
+      {
+        id: "mine",
+        name: "Personal",
+        entries: [{ id: "herdr", term: "Herdr", aliases: [], isPriority: false }],
+      },
+    ],
+  };
+  const input = { ...request(), personalDictionary };
+  const first = await service.create(input);
+  expect(first.settings.preferences.dictionary).toEqual(personalDictionary);
+  expect(first.settings.preferences.vocabulary).toBe("");
+  personalDictionary.lists[0]!.entries[0]!.term = "Changed";
+  expect(
+    (await service.create(input)).settings.preferences.dictionary.lists[0]!.entries[0]!.term,
+  ).toBe("Herdr");
+  expect(await service.getPreferences()).toEqual(before);
+  await service.cancel(first.id);
+  const empty = await service.create({ ...request(), personalDictionary: { lists: [] } });
+  expect(empty.settings.preferences.dictionary.lists).toEqual([]);
+  await service.cancel(empty.id);
+  const otherClient = await service.create(request());
+  expect(otherClient.settings.preferences.dictionary).toEqual(before.preferences.dictionary);
+  expect(await service.getPreferences()).toEqual(before);
+});
+test("personal words reach recognition and deterministic correction", async () => {
+  const { service, inference } = await setup();
+  inference.text = "herdr.";
+  const input = {
+    ...request(),
+    personalDictionary: {
+      lists: [
+        {
+          id: "p",
+          name: "P",
+          entries: [{ id: "herdr", term: "Herdr", aliases: [], isPriority: false }],
+        },
+      ],
+    },
+  };
+  const record = await service.create(input);
+  await service.appendAudio(record.id, "inference", 0, format, pcm());
+  await service.finish(record.id, { inferenceFrames: 4000 });
+  const result = await completed(service, record.id);
+  expect(result.status).toBe("completed");
+  expect(inference.lastTerms).toEqual(["Herdr"]);
+  expect(result.insertionText).toBe("Herdr. ");
+});
+test("invalid personal dictionary cannot admit a take or alter shared preferences", async () => {
+  const { service } = await setup();
+  const before = await service.getPreferences();
+  await expect(
+    service.create({
+      ...request(),
+      personalDictionary: {
+        lists: [
+          {
+            id: "p",
+            name: "P",
+            entries: [{ id: "one", term: "hidden\u0001", aliases: [], isPriority: false }],
+          },
+        ],
+      },
+    }),
+  ).rejects.toMatchObject({ code: "invalid_dictionary" });
+  expect(await service.getPreferences()).toEqual(before);
+  expect((await service.create(request())).status).toBe("receiving");
 });
 test("concurrent competing creates have one winner", async () => {
   const { service } = await setup(),

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise the persistent GGUF helper with synthetic text on macOS or Linux."""
+"""Exercise the persistent Linux GGUF helper with synthetic text."""
 
 import argparse
 import json

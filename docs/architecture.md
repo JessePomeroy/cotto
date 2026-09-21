@@ -1,74 +1,229 @@
 # Architecture
 
-Sotto's native Swift macOS client handles microphone capture, shortcuts, and cursor insertion. An independent TypeScript/Fastify server, compiled with Bun, owns inference, shared settings, and history. Both processes use the same OpenAPI v1 contract whether they run on one machine or across the network.
+cotto has two long-lived application processes: a native Qt desktop client and an
+independent local inference server. The server supervises two native helpers.
+The UI does not load models, and the helpers do not access the microphone, desktop,
+clipboard, or Pi editor.
 
-## Code map
+## System map
+
+```mermaid
+flowchart TB
+    subgraph Desktop["Linux desktop · one user"]
+        KDE["KDE portals and session signals"]
+        UI["Qt Quick menu and settings"]
+        Tray["Qt Widgets tray"]
+        Control["DictationController"]
+        Capture["CaptureController + AudioConverter"]
+        Words[("Private dictionary.json")]
+        Client["GenerationClient"]
+        Bridge["PiDictationBridge · Unix socket"]
+        Paste["DesktopPaste · wl-clipboard + portal"]
+        Status["RecordingStatus · private file"]
+        KDE --> Control
+        UI --> Control
+        Tray --> UI
+        Bridge --> Control
+        Control --> Capture
+        Capture -->|"PCM chunks"| Client
+        Words -->|"Per-take snapshot"| Client
+        Control --> Paste
+        Capture --> Status
+    end
+    subgraph Service["Local inference service"]
+        HTTP["Fastify HTTP API"]
+        Generation["GenerationService"]
+        Speech["Whisper helper · whisper.cpp"]
+        Text["Optional Qwen helper · llama.cpp"]
+        Rules["Dictionary, lists, rewrite validation"]
+        Store[("Preferences and generation archive")]
+        HTTP --> Generation
+        Generation --> Speech
+        Generation --> Text
+        Generation --> Rules
+        Generation --> Store
+    end
+    subgraph Pi["Pi process"]
+        Voice["voice.ts + PiDictation"]
+        Editor["Owned editor / question adapter"]
+        Voice --> Editor
+    end
+    Client <-->|"Loopback HTTP + NDJSON"| HTTP
+    Voice <-->|"Explicit owner · protocol v2"| Bridge
+    Status -.->|"Read-only recording indicator"| Voice
+    Paste --> Destination["Currently focused application"]
+```
+
+The two delivery routes are intentionally separate. A failed Pi-owned take never
+falls back to global paste. The recording-status file is observation only; it does
+not identify a destination or grant control of capture or insertion.
+
+## Component ownership
 
 | Component | Responsibility |
 | --- | --- |
-| `Sources/Sotto` | SwiftUI/AppKit app, device settings, HTTP client, capture, and guarded delivery. |
-| `Sources/SottoCore` | Mac configuration, audio metering, microphone selection, and model manifests. |
-| `Sources/SottoAPI` | Shared wire types and limits. |
-| `Sources/SottoAPIWire` | Generated Swift transport types used through the API facade. |
-| `Server/api/openapi.yaml` | Language-neutral HTTP and wire-model contract. |
-| `Server/src` | Packaged TypeScript HTTP server, durable coordinator, text pipeline, and helper management. |
-| `Sources/SottoDomain` | Dictionary, list formatting, rewrite validation, and composition. |
-| `Sources/SottoServerKit` | Reference Swift server retained for migration parity tests. |
-| `Sources/SottoServer` | Reference Swift server command-line entry point. |
-| `Engine` | Persistent whisper.cpp speech helper; Metal on Mac, CPU/CUDA on Linux. |
-| `TextEngine` | Persistent Qwen helper; Swift MLX on Mac, llama.cpp on Linux. |
-
-The server talks to helpers over bounded JSON-lines pipes. Models warm at startup and stay loaded. The client contains no model helpers; it never starts or stops the server. The application has no Python runtime dependency.
-
-Bun manages all JavaScript dependencies and compiles the coordinator plus its correction worker into standalone platform executables. Heavy correction alignment runs outside the HTTP event loop. Native inference helpers still require platform builds; the Mac proofreader remains Swift MLX. Linux server packages require neither Swift nor an installed JavaScript runtime.
+| [`Linux/src/main.cpp`](../Linux/src/main.cpp) | Composition root: connects capture, transport, desktop services, tray, and QML. |
+| [`Main.qml`](../Linux/qml/Main.qml) / [`TrayController`](../Linux/src/TrayController.h) | Compact menu and settings; hide/reopen/quit policy and native tray. No inference logic. |
+| [`CaptureController`](../Linux/src/CaptureController.h) | Input selection, channel selection, microphone test, capture limits, and device-loss handling. |
+| [`AudioConverter`](../Linux/src/AudioConverter.h) / [`PcmMeter`](../Linux/src/PcmMeter.h) | Frame-boundary handling, selected-channel metering, and libsamplerate conversion to mono 16 kHz float32. |
+| [`DictationController`](../Linux/src/DictationController.h) | One active take, explicit ownership, cancellation, and the selected delivery route. |
+| [`GenerationClient`](../Linux/src/GenerationClient.h) | Admission before capture; bounded, sequenced audio uploads; completion events and delivery receipts. |
+| [`DesktopShortcuts`](../Linux/src/DesktopShortcuts.h) / [`DesktopPaste`](../Linux/src/DesktopPaste.h) | KDE shortcuts and lock/suspend signals; permissioned, guarded clipboard staging and paste dispatch. |
+| [`PersonalDictionary`](../Linux/src/PersonalDictionary.h) | Validated per-user words, owner-only atomic persistence, and fresh admission-time snapshots. |
+| [`PiDictationBridge`](../Linux/src/PiDictationBridge.h) | Private same-user socket, one owner, one-use take IDs, deadlines, and receipt handling. |
+| [`Linux/integrations/pi`](../Linux/integrations/pi) | Pi editor ownership, draft/cursor/revision checks, shortcut lifecycle, preferences, and recording observation. |
+| [`Server/src/main.ts`](../Server/src/main.ts) | Server entry point, configuration, archive lock, HTTP lifecycle, and helper supervision. |
+| [`GenerationService`](../Server/src/generation-service.ts) | Serialized admission, frozen settings, audio sealing, inference/text pipeline, durable results, and history. |
+| [`Engine`](../Engine) / [`TextEngine`](../TextEngine) | Separate persistent C++ processes for Whisper and Qwen; CPU or optional CUDA. Separate builds avoid conflicting ggml versions. |
 
 ## A recording
 
-1. The client asks the server to create a generation with its device identity. The server freezes shared settings and admits one active job at a time. Offline, busy, or unavailable speech recognition prevents capture.
-2. The client pins its microphone and uploads acknowledged, sequenced PCM chunks while recording. Inference audio is mono 16 kHz float32; optional original audio keeps the microphone rate/channels as float32.
-3. Release stops capture, drains uploads, and sends final frame counts. The server checks the complete intervals and seals WAV files. Recordings must be 0.25–180 seconds.
-4. The server runs Whisper, mechanical cleanup, dictionary rules, and list formatting. Optional Qwen output passes through dictionary rules and deterministic rewrite checks. Rejection or proofreading failure retains the pre-proofreading text.
-5. NDJSON events carry progress and the saved final result. The client verifies focus/caret safety, makes one delivery attempt, and reports the outcome separately from inference completion.
+```mermaid
+sequenceDiagram
+    actor User
+    participant Qt as Qt client
+    participant Mic as Microphone
+    participant API as Local server
+    participant Helpers as Native helpers
+    participant Target as Selected delivery route
+    User->>Qt: Hold shortcut, toggle, or request from Pi
+    Qt->>API: Admit generation + personal dictionary
+    alt Busy, offline, or unavailable
+        API-->>Qt: Reject admission
+        Note over Qt,Mic: Microphone remains closed
+    else Admitted
+        API-->>Qt: Frozen generation settings
+        Qt->>Mic: Start capture with fixed device/channel
+        loop While recording
+            Mic-->>Qt: Input frames
+            Qt->>API: Sequenced PCM chunks
+            API-->>Qt: Acknowledgements
+        end
+        User->>Qt: Release / Stop
+        Qt->>Mic: Stop and drain conversion
+        Qt->>API: Finish with exact frame counts
+        API->>API: Validate and seal WAV files
+        API->>Helpers: Transcribe and optionally proofread
+        Helpers-->>API: Results
+        API->>API: Validate text and persist result
+        API-->>Qt: Progress and finished transcript
+        Qt->>Target: One guarded delivery attempt
+        Qt->>API: Actual delivery outcome
+    end
+```
 
-Interrupted partial uploads expire; a complete upload can finish after the client disconnects. Reconnecting or opening history never pastes an old result. Restarting the server marks unfinished generations failed and retains completed history. There is no offline queue or automatic retry.
+Inference audio is mono 16 kHz little-endian float32. Optional original audio
+preserves the input rate and channels as float32. Each stream has its own sequence
+and acknowledgements; final frame counts must match the accepted recording.
+The server accepts complete takes from 0.25 to 180 seconds.
 
-## Text delivery
+Cancellation invalidates the active transaction and stops capture. Stale callbacks
+cannot deliver into a later take. There is no offline recording queue and no
+automatic replay of failed or uncertain insertion. A complete upload may finish
+on the server after disconnection; reading its history does not insert it.
 
-Only the new `insertionText` can be inserted; `previewText` may include earlier list items. Continuation requires a previous generation from the same device and a confirmed client-side cursor anchor. The server checks age and delivery state before reusing context. Invalid context falls back to a standalone take.
+## Delivery boundaries
 
-The Mac rechecks destination, selection, protected fields, modifiers, and clipboard state before delivery. Unsafe destinations use clipboard or preview fallback. Only confirmed insertion advances cursor-based continuation. Editor text and Accessibility handles stay on the Mac.
+### Global focused-app paste
 
-Microphone capture uses input-only Core Audio without changing system routing or playback volume. Route changes apply to the next take. Release, cancellation, sleep/lock, or device loss ends capture.
+KDE grants keyboard-only portal access. `wl-copy` owns the staged clipboard while
+`wl-paste` verifies it; the portal sends a fixed Ctrl+Shift+V chord. Cotto validates
+text, tracks clipboard ownership changes, and makes one attempt. It does not type
+arbitrary key sequences or send Enter.
 
-## Settings
+This route **does not prove the destination field or confirm insertion**. Keep the
+destination focused and release shortcut modifiers. Uncertain delivery retains the
+transcript for explicit recovery; it is never automatically retried.
 
-| Scope | Where to edit | What it owns |
-| --- | --- | --- |
-| This Mac | **This Mac** and **Microphone** | Endpoint/token, device name, shortcut, launch at login, microphone priority/selection. |
-| Shared server | **Server preferences** | Language, cleanup prompt, vocabulary, dictionary, proofreading toggle, original-audio retention. |
-| Server process | Command arguments or environment | Bind address, port, data directory, token file, helper/model paths. See [server setup](../Server/README.md). |
+### Pi-owned insertion
 
-Shared saves use revisions to reject stale concurrent edits. Settings are snapshotted when the server accepts a take; changes affect future recordings. Update shared settings through the UI/API rather than editing files while the server runs.
+Pi takes a snapshot of the requesting editor before connecting. The bridge issues
+a random, single-use UUID in its protocol-v2 hello. Only that connection can start
+that ID, and it is consumed before capture is requested. Each later take uses a
+new connection and ID: there is no lifetime replay cache or 4,096-take limit.
 
-The regular app uses `~/Library/Application Support/Sotto`; Dev uses `~/Library/Application Support/Sotto Dev`. `SOTTO_CLIENT_DATA_DIR` overrides either, and the dev runner selects `.local/client`. `config.json` stores shortcut/microphone settings; `client.json` stores endpoint/device identity. Tokens live in separate release/Dev Keychain services, scoped to the endpoint and client directory. `SOTTO_SERVER_URL` overrides the saved endpoint for a run. Valid manual `config.json` edits are reloaded; invalid files leave the last good configuration active.
+Before insertion, Pi checks the same editor instance, revision, text, cursor,
+focus/modal state, and session ownership. It inserts through the editor adapter,
+not terminal keystrokes. Missing receipts are uncertain, not grounds to retry.
+
+## Process and window lifecycle
+
+```mermaid
+stateDiagram-v2
+    [*] --> Visible: Start client
+    Visible --> Hidden: Close with tray available
+    Hidden --> Visible: Tray Open or application launcher
+    Visible --> Quitting: Explicit Quit or Close without tray
+    Hidden --> Quitting: Tray Quit
+    Quitting --> CancelPending: A take is active
+    CancelPending --> Stopped: Cancellation settles
+    Quitting --> Stopped: No active take
+    Stopped --> [*]
+```
+
+Hiding preserves active dictation and unsaved dictionary edits; a microphone test
+stops on hide. The app-menu launcher starts the managed client if necessary and
+calls its D-Bus `Show` method. That activation endpoint cannot request capture or
+quit the client.
+
+Quitting the client leaves inference running. Optional systemd **user** services
+manage startup and bounded failure restarts. Installing them does not enable login
+startup. KDE keyboard permission remains session-only. See [startup](linux/STARTUP.md).
+
+## Text processing
+
+The server runs Whisper → mechanical cleanup → dictionary → list formatting →
+optional Qwen → dictionary → rewrite validation → composition. A failed or rejected
+rewrite retains the pre-proofreading text. Model hints are bounded and cannot
+license arbitrary rewrites. See [dictionary and cleanup](text-correction.md).
+
+Helpers communicate over bounded JSON-lines pipes, retain warm models, and are
+replaced after protocol errors, cancellation, or deadlines. The server verifies
+pinned local model files; helpers have parent-death cleanup. No runtime model
+download, cloud fallback, or credentialed provider request occurs automatically.
 
 ## Storage
 
-The server's `--data-dir` (normally `.local/server` in development) contains:
+| Scope | Storage | Boundary |
+| --- | --- | --- |
+| User/device settings | Qt settings under the selected `XDG_CONFIG_HOME` | Microphone and other device-local configuration. Existing Sotto identifiers remain stable. |
+| Personal dictionary | `$XDG_CONFIG_HOME/Sotto/Sotto Linux Dev/dictionary.json` | Validated, owner-only, atomic saves. Empty means empty; no shared vocabulary inheritance for that take. |
+| Pi preference | Pi's user configuration | Enable/disable state, not transcript storage. |
+| Live recording indicator | `$XDG_RUNTIME_DIR/cotto-status/recording.json` | Private, timestamped, expiring boolean; no text or device identity. |
+| Pi bridge | `$XDG_RUNTIME_DIR/sotto-dictation/input.sock` | Explicit `--pi-dictation` only; private directory and same-user peer check. |
+| Server data | Configured `--data-dir` | Shared server preferences and durable generation artifacts, protected by one advisory directory lock. |
 
 ```text
-preferences.json
-generations/<UUID>/
-  metadata.json
-  transcript.txt
-  inference.wav
-  original.wav
+<data-dir>/
+  .server.lock
+  preferences.json
+  generations/<UUID>/
+    metadata.json
+    transcript.txt
+    inference.wav
+    original.wav       # only when retention was enabled
 ```
 
-Metadata includes device identity, settings snapshot, raw/final text, insertion/preview text, model and processing details, and any delivery receipt. `transcript.txt` contains the current take's final text. Inference audio is always retained for completed takes; original audio is optional and defaults on. The retention toggle does not remove existing files, and there is no automatic history expiry.
+Admission snapshots personal words into **that generation**, replacing its shared
+dictionary/vocabulary hints without modifying shared preferences. This is
+configuration isolation, not a multi-user authentication system: the generation
+archive retains those words and other take metadata. Data routes use the server's
+access policy, not per-account ACLs.
 
-All clients read shared, paginated history. Deleting an inactive generation deletes its server artifacts. Failed takes can retain metadata and sealed audio; partial upload files are internal and cannot be downloaded. Client audio copies are temporary.
+Completed inference audio and transcripts remain until explicitly deleted.
+Original-audio retention defaults on in server preferences; changing it affects
+future takes only. There is no automatic expiry or filesystem encryption. Logs
+must not contain transcripts or audio. Protect and back up the archive accordingly.
 
-Only one server may own a data directory. Back up preferences and generation directories together. Sotto does not add filesystem encryption; protect this directory as you would the recordings it contains. Authentication and remote transport are described in the [server guide](../Server/README.md#remote-access).
+## Supported scope
 
-See the [HTTP contract](client-server-contract.md) for request details and [text correction](text-correction.md) for behavior and limitations.
+KDE/Wayland is the desktop target. The server and helpers build for Linux x64 and
+arm64; CUDA is optional. The Linux client currently permits loopback server URLs,
+even though the server API can be configured for authenticated remote access.
+First-party Swift/macOS code, packaging, and CI are removed. Vendored libraries
+remain unmodified and may contain upstream code for other platforms.
+
+The [OpenAPI contract](../Server/api/openapi.yaml), [HTTP guide](client-server-contract.md),
+and [test gates](linux/TESTING.md) define the integration boundaries. Physical
+shortcut, lock/suspend/unplug, fresh-login, and acoustic acceptance are separate
+from provider-free automated tests; see [status](linux/STATUS.md).
