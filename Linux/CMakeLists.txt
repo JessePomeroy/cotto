@@ -43,28 +43,8 @@ target_link_libraries(sotto-linux PRIVATE sotto-linux-core sotto-desktop-tray Qt
 target_compile_options(sotto-linux PRIVATE -Wall -Wextra -Wpedantic)
 configure_file(resources/org.sotto.Sotto.Dev.desktop.in org.sotto.Sotto.Dev.desktop @ONLY)
 
-# Checkout-based user services. Installing this component never enables startup.
-get_filename_component(COTTO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/.." ABSOLUTE)
-set(COTTO_NATIVE "${CMAKE_CURRENT_BINARY_DIR}/sotto-linux")
-set(COTTO_DEFAULT_CONFIG_HOME "$ENV{HOME}/.config")
-if(IS_ABSOLUTE "$ENV{XDG_CONFIG_HOME}")
-    set(COTTO_DEFAULT_CONFIG_HOME "$ENV{XDG_CONFIG_HOME}")
-endif()
-set(COTTO_QT_CONFIG_HOME "${COTTO_DEFAULT_CONFIG_HOME}" CACHE PATH "Existing cotto Qt configuration root")
-set(COTTO_SETTINGS "${COTTO_QT_CONFIG_HOME}")
-foreach(value COTTO_ROOT COTTO_NATIVE COTTO_SETTINGS)
-    string(REPLACE "\\" "\\\\" ${value} "${${value}}")
-    string(REPLACE "\"" "\\\"" ${value} "${${value}}")
-    string(REPLACE "%" "%%" ${value} "${${value}}")
-    if("${${value}}" MATCHES "[\n\r]")
-        message(FATAL_ERROR "Startup configuration must not contain line breaks")
-    endif()
-endforeach()
-# ExecStart expands dollars; Environment does not.
-string(REPLACE "$" "$$" COTTO_ROOT "${COTTO_ROOT}")
-string(REPLACE "$" "$$" COTTO_NATIVE "${COTTO_NATIVE}")
-configure_file(resources/cotto.service.in cotto.service @ONLY)
-configure_file(resources/cotto-inference.service.in cotto-inference.service @ONLY)
+# Installing this component never enables startup.
+include(cmake/Startup.cmake)
 install(FILES "${CMAKE_CURRENT_BINARY_DIR}/cotto.service" "${CMAKE_CURRENT_BINARY_DIR}/cotto-inference.service"
     DESTINATION share/systemd/user COMPONENT cotto-startup)
 install(FILES resources/cotto-managed.desktop DESTINATION share/applications
@@ -75,7 +55,6 @@ if(BUILD_TESTING)
     add_test(NAME sotto-startup-config COMMAND ${CMAKE_COMMAND}
         "-DCOTTO_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}"
         "-DCOTTO_TEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/startup-config-tests"
-        "-DCOTTO_TEST_GENERATOR=${CMAKE_GENERATOR}"
         -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/StartupTests.cmake)
     set_tests_properties(sotto-startup-config PROPERTIES TIMEOUT 120)
     find_package(Qt6 REQUIRED COMPONENTS Test QuickTest)

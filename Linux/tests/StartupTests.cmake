@@ -1,11 +1,11 @@
 # Configure only: no build, installation, service activation, or application launch.
-foreach(required COTTO_SOURCE COTTO_TEST_ROOT COTTO_TEST_GENERATOR)
+foreach(required COTTO_SOURCE COTTO_TEST_ROOT)
     if(NOT DEFINED ${required} OR "${${required}}" STREQUAL "")
         message(FATAL_ERROR "Missing ${required}")
     endif()
 endforeach()
 
-foreach(case unset empty relative custom override)
+foreach(case unset empty relative custom override escaped)
     set(directory "${COTTO_TEST_ROOT}/${case}")
     set(expected "${COTTO_TEST_ROOT}/home/.config")
     set(environment)
@@ -21,23 +21,28 @@ foreach(case unset empty relative custom override)
     if(case STREQUAL "override")
         set(expected "${COTTO_TEST_ROOT}/explicit profile")
         set(options "-DCOTTO_QT_CONFIG_HOME=${expected}")
+    elseif(case STREQUAL "escaped")
+        set(expected "${COTTO_TEST_ROOT}/profile%with\"quotes\\and$dollars")
+        set(environment "XDG_CONFIG_HOME=${expected}")
     endif()
 
-    # Remove only this test's generated configure cache, so defaults are re-evaluated.
-    file(REMOVE_RECURSE "${directory}")
+    file(MAKE_DIRECTORY "${directory}")
     execute_process(
         COMMAND "${CMAKE_COMMAND}" -E env --unset=XDG_CONFIG_HOME
             "HOME=${COTTO_TEST_ROOT}/home" ${environment}
-            "${CMAKE_COMMAND}" -S "${COTTO_SOURCE}" -B "${directory}"
-            -G "${COTTO_TEST_GENERATOR}" -DBUILD_TESTING=OFF ${options}
+            "${CMAKE_COMMAND}" ${options} -P "${COTTO_SOURCE}/cmake/Startup.cmake"
+        WORKING_DIRECTORY "${directory}"
         RESULT_VARIABLE result OUTPUT_VARIABLE output ERROR_VARIABLE errors)
     if(NOT result EQUAL 0)
         message(FATAL_ERROR "${case} configuration failed: ${output}\n${errors}")
     endif()
     file(READ "${directory}/cotto.service" service)
-    string(FIND "${service}" "Environment=\"XDG_CONFIG_HOME=${expected}\"" match)
+    string(REPLACE "\\" "\\\\" serialized "${expected}")
+    string(REPLACE "\"" "\\\"" serialized "${serialized}")
+    string(REPLACE "%" "%%" serialized "${serialized}")
+    string(FIND "${service}" "Environment=\"XDG_CONFIG_HOME=${serialized}\"" match)
     if(match EQUAL -1)
         message(FATAL_ERROR "${case}: service did not preserve expected profile ${expected}")
     endif()
 endforeach()
-message(STATUS "Startup profiles: unset, empty, relative, custom, and explicit override passed")
+message(STATUS "Startup profiles: defaults, custom paths, explicit override, and escaping passed")
