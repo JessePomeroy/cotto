@@ -1,22 +1,34 @@
 # Dictionary and cleanup
 
-The server processes each complete take in this order: Whisper → mechanical cleanup → dictionary → list formatting → optional Qwen → dictionary → rewrite validation → composition. The Mac receives a finished result for insertion. Models and installation are covered in the [server guide](../Server/README.md#models).
+The server processes each complete take in this order: Whisper → mechanical cleanup → dictionary → list formatting → optional Qwen → dictionary → rewrite validation → composition. The Qt client receives a finished result for guarded delivery. Models and installation are covered in the [server guide](../Server/README.md#models).
 
 ## Dictionary and vocabulary
 
-Edit **Server preferences**, then **Save shared preferences**. All dictionary lists are active. Each generation freezes the settings when the server accepts it; later edits apply to future takes.
+Edit the desktop's **Dictionary** screen and save one word or phrase per line.
+These words belong to the user profile. Each generation freezes them at admission;
+shared server preferences remain unchanged, and an empty personal list stays empty.
+
+The server API also supports shared lists and explicit aliases for other clients.
+Those are separate from the compact desktop's plain word editor:
 
 - Preferred spellings normalize case. Explicit aliases replace whole words or phrases, such as `mini max → MiniMax`. Longer matches win, and replacements do not cascade.
 - Use narrow aliases like `off middleware → auth middleware`; a broad `off → auth` also changes legitimate “turn off.”
-- Star priority terms to suggest them first. Whisper fits whole terms into its token budget; history shows included and omitted hints. Qwen has a separate bounded hint budget. Dictionary replacements still apply to terms omitted from model hints.
+- The API supports priority terms. Whisper fits whole terms into its token budget;
+  generation metadata records included and omitted hints. Qwen has a separate
+  bounded hint budget. Replacements still apply to terms omitted from model hints.
 - **Recognition vocabulary** adds speech hints. Hints improve the odds of recognizing unusual names; they cannot reliably distinguish every homophone.
-- The initial Personal list contains MiniMax and Codex. You can delete them or save an empty dictionary. There is no automatic learning from edits or history.
+- Cotto's user-local dictionary starts empty; project names are not application
+  defaults. No automatic learning from edits or history occurs. Omitted API
+  overrides preserve the existing shared defaults for non-Qt clients.
 
 ## Cleanup instructions
 
-The shared **Cleanup instructions** field is the Qwen system prompt. Its default has four freely editable sections: Cleanup, Spoken corrections, Preserve, and Output. It keeps intentional “like,” repetition, answers, numbers, and negations, while allowing explicit spoken corrections. Examples distinguish “42, sorry, 24” from a contrast such as “42, not 24.” It also forbids translation and added information.
+The shared `proofreadingPrompt` API preference is the Qwen system prompt. Its default has four freely editable sections: Cleanup, Spoken corrections, Preserve, and Output. It keeps intentional “like,” repetition, answers, numbers, and negations, while allowing explicit spoken corrections. Examples distinguish “42, sorry, 24” from a contrast such as “42, not 24.” It also forbids translation and added information.
 
-**Reset to default** loads a draft; **Save shared preferences** applies it to future takes across clients. Existing custom prompts remain unchanged until edited or reset. Disabling **Proofread with Qwen** keeps the deterministic dictionary/list result, including fillers.
+Update shared preferences with their current revision through the API; the compact
+Qt interface does not yet provide this editor. Changes affect future takes.
+Disabling `textCorrectionEnabled` keeps the deterministic dictionary/list result,
+including fillers.
 
 The prompt guides Qwen; it cannot bypass the validation rules below.
 
@@ -35,7 +47,11 @@ The checks do not prove identical meaning. Whisper can omit words; Qwen can mish
 
 The prompt limit is 4,096 UTF-8 bytes. Qwen input is capped at 6,000 characters; its context is 8,192 tokens with 2,048 reserved for output. Oversized text, vocabulary, or validation work skips/rejects cleanup instead of accepting truncated output. The [helper protocol](../TextEngine/README.md) lists lower-level bounds.
 
-Run `swift test` for dictionary/validation tests and `scripts/test-corrections.sh` for the real packaged Qwen helper. To test the built-in default directly, pass `--server build/server/sotto-server` to either Python helper harness. An explicit `--prompt FILE` preserves the file's contents, including trailing newlines. A redirected CLI prompt export includes an extra delimiter newline; use `--server` to avoid accidentally testing different prompt bytes.
+Run `bun run test` for provider-free dictionary/validation tests.
+`SOTTO_TEXT_MODEL=/path/to/model.gguf scripts/test-corrections.sh` explicitly runs
+the real packaged Qwen helper; it is not an automatic test gate. To test the
+built-in prompt directly, pass `--server build/server/sotto-server` to the Linux
+Python helper harness. An explicit `--prompt FILE` preserves the file's contents, including trailing newlines. A redirected CLI prompt export includes an extra delimiter newline; use `--server` to avoid accidentally testing different prompt bytes.
 
 ## Open question: omitted negations
 

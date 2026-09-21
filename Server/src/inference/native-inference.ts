@@ -6,7 +6,7 @@ import type { ModelHintUsage } from "../api";
 import { HelperProcess, type HelperResponse } from "./helper-process";
 import { checkCancellation, InferenceError } from "./inference-error";
 import { ModelVerifier, type ModelPin } from "./model-verification";
-import { linuxProofModelPin, macProofManifestSHA256, speechModelPin } from "./model-pins";
+import { linuxProofModelPin, speechModelPin } from "./model-pins";
 
 export { InferenceError } from "./inference-error";
 
@@ -151,7 +151,6 @@ export class NativeInference implements InferenceBackend {
   private readonly verifier = new ModelVerifier();
   private readonly speechPin?: ModelPin;
   private readonly proofPin?: ModelPin;
-  private readonly proofManifestSHA256?: string;
 
   constructor(
     configuration: ConfigurationInput,
@@ -161,13 +160,7 @@ export class NativeInference implements InferenceBackend {
     // Constructor-only fixture injection is never exposed by server configuration
     // or the CLI. Production always enforces the immutable native-model pins.
     this.speechPin = fixturePins ? fixturePins.speech : speechModelPin;
-    this.proofPin = fixturePins
-      ? fixturePins.proof
-      : process.platform === "darwin"
-        ? undefined
-        : linuxProofModelPin;
-    this.proofManifestSHA256 =
-      !fixturePins && process.platform === "darwin" ? macProofManifestSHA256 : undefined;
+    this.proofPin = fixturePins ? fixturePins.proof : linuxProofModelPin;
     const config = this.configuration;
     this.speech = new HelperProcess({
       name: "Whisper",
@@ -220,8 +213,7 @@ export class NativeInference implements InferenceBackend {
       }
     }
     const speechVerified = await this.verifier.isVerified(config.speechModel, this.speechPin);
-    const proofFileVerified = await this.verifier.isVerified(config.proofModel, this.proofPin);
-    const proofVerified = proofFileVerified && (!this.proofManifestSHA256 || proofState.loaded);
+    const proofVerified = await this.verifier.isVerified(config.proofModel, this.proofPin);
     const warm = speechState.loaded && (!proofreadingEnabled || proofState.loaded);
     return {
       available: !missing && speechVerified && (!proofreadingEnabled || proofVerified),
@@ -383,7 +375,7 @@ export class NativeInference implements InferenceBackend {
       throw new InferenceError("invalidResponse", "Qwen returned an invalid correction.");
     }
     const state = this.proof.snapshot();
-    const modelSHA256 = digest ?? this.proofManifestSHA256;
+    const modelSHA256 = digest;
     return {
       text: response.text,
       processingSeconds: response.elapsed,

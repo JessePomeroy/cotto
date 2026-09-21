@@ -25,7 +25,7 @@ const makeDictionary = (entries: DictionaryEntry[]): PersonalDictionary => ({
 const compose = (text: string, previous?: DictationContinuation) =>
   composeDictation(formatSpokenList(text, previous?.list), previous);
 
-describe("personal dictionary Swift parity", () => {
+describe("personal dictionary", () => {
   test("defaults normalize only explicit preferred spellings", () => {
     expect(dictionaryVocabularyTerms(defaultDictionary)).toEqual(["MiniMax", "Codex"]);
     expect(
@@ -253,7 +253,7 @@ describe("transcript cleaning", () => {
   });
 });
 
-describe("dictation composition Swift parity", () => {
+describe("dictation composition", () => {
   test("later holds insert new items and preserve combined preview", () => {
     const first = compose("Make a list. One, apples. Two, bananas.");
     expect(first.insertion).toBe("1. apples\n2. bananas");

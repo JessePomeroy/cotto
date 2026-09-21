@@ -359,6 +359,8 @@ export interface components {
       requestID: components["schemas"]["UUID"];
       device: components["schemas"]["DeviceIdentity"];
       mode: components["schemas"]["GenerationMode"];
+      /** @description Optional client-owned dictionary for this take only. Replaces shared dictionary and vocabulary hints without modifying server preferences. */
+      personalDictionary?: components["schemas"]["PersonalDictionary"];
     };
     AudioStreamFormat: {
       sampleRate: number;

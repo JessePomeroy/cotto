@@ -1,6 +1,10 @@
 # HTTP API
 
-API version 1, default port **8391**. [`Server/api/openapi.yaml`](../Server/api/openapi.yaml) defines the transport contract and generates TypeScript and Swift types. [`Sources/SottoAPI/API.swift`](../Sources/SottoAPI/API.swift) preserves the Swift client-facing facade and defaults. JSON uses whole-second ISO-8601 UTC dates. macOS and Linux expose the same API. See [server setup](../Server/README.md#remote-access) for authentication and endpoint configuration.
+API version 1, CLI default port **8391** (the Linux desktop's development service
+uses **8392**). [`Server/api/openapi.yaml`](../Server/api/openapi.yaml) defines the
+contract for the native Qt client and TypeScript server and generates TypeScript
+types. JSON uses whole-second ISO-8601 UTC dates. See
+[server setup](../Server/README.md#remote-access) for authentication and endpoints.
 
 ## Routes
 
@@ -30,14 +34,29 @@ Errors are `APIErrorResponse`; relevant codes 400 invalid input, 401 auth, 404 m
 
 ## Generation semantics
 
-- Server owns settings/dictionary, inference, formatting, proofreading, rewrite guards, composition, artifacts and history. Client owns only ephemeral capture/AX anchors and device preferences.
+- Server owns shared settings, inference, formatting, rewrite guards, composition,
+  artifacts and history. The client owns capture, delivery safety, device preferences,
+  and its personal dictionary. Admission snapshots supplied personal words into that
+  take without changing shared preferences; omission preserves the API defaults.
 - Inference audio is mono 16k float32. Original is input microphone format normalized to interleaved float32, retained/uploaded only if the accepted settings snapshot says keepOriginalAudio. Both audio intervals must match. Min take 0.25 s, max 180 s. Only sealed complete uploads run inference.
 - Sequence counts are independent for each audio kind. Server handles incomplete upload expiry, bounded disk and request buffers, validates byte/frame counts and formats, and never accepts caller filesystem paths.
-- Native helpers remain separate persistent processes (independent ggml versions). Whisper everywhere; macOS Qwen MLX; Linux Qwen llama.cpp/GGUF. Server applies current deterministic domain logic; client inserts returned insertionText once with existing destination/caret checks.
-- ContinuationID references a completed prior generation from the same device and is sent only if the client has an exact confirmed caret anchor. Server checks age and valid delivery or test/control-only state before reusing its stored continuation. Deleted, stale, or invalid context falls back to standalone composition without discarding the new recording. No editor text/AX handles go over the wire.
+- Native helpers remain separate persistent processes (independent ggml versions). Whisper and Qwen llama.cpp/GGUF on Linux. Server applies current deterministic domain logic; client inserts returned insertionText once with existing destination/caret checks.
+- ContinuationID references a completed prior generation from the same device and is sent only if the client has an exact confirmed caret anchor. Server checks age and valid delivery or test/control-only state before reusing its stored continuation. Deleted, stale, or invalid context falls back to standalone composition without discarding the new recording. No editor text or native editor handles go over the wire.
 - A lost connection during capture/upload stops capture, clears client temporary buffers, and leaves the server to cancel/expire the partial generation. No offline queue or retry UI. Once upload is complete, server may finish independently; later viewing history does not paste.
 - API result bytes and metadata are server-owned. All clients read the same history, tagged with the original device ID/name.
 - Shared original-audio setting defaults on; inference audio always retained for completed generations. Changes affect future takes. Local server storage is a configurable persistent data directory; hosted deployments mount durable storage.
+
+## Personal words per take
+
+`CreateGenerationRequest.personalDictionary` is optional and uses the normal
+`PersonalDictionary` schema. If supplied, it replaces the take's shared dictionary
+and clears that take's shared freeform vocabulary before admission is persisted.
+An empty dictionary is an explicit empty override. Invalid words cannot admit a
+take. Idempotent admission returns the already-frozen generation, not new words.
+
+The Qt client reloads its user-local dictionary for each new take. The server
+retains that snapshot in generation metadata; per-take hints do not provide
+account-level access control on shared history.
 
 ## Shared preferences
 

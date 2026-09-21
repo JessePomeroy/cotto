@@ -2,7 +2,10 @@
 **/.git
 .build
 .local
-.swiftpm
+node_modules
+**/node_modules
+.21st
+.impeccable
 build
 .env
 .env.*

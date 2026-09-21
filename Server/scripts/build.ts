@@ -2,12 +2,11 @@ import { mkdir } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { standaloneBuildSettings } from "./standalone-build-settings.ts";
 
-const targets = ["bun-darwin-arm64", "bun-linux-x64", "bun-linux-arm64"] as const;
+const targets = ["bun-linux-x64", "bun-linux-arm64"] as const;
 function currentTarget() {
-  if (process.platform === "darwin" && process.arch === "arm64") return targets[0];
-  if (process.platform === "linux" && process.arch === "x64") return targets[1];
-  if (process.platform === "linux" && process.arch === "arm64") return targets[2];
-  throw new Error("Supported server packages are Apple Silicon macOS and Linux x64/arm64.");
+  if (process.platform === "linux" && process.arch === "x64") return targets[0];
+  if (process.platform === "linux" && process.arch === "arm64") return targets[1];
+  throw new Error("Supported server packages are Linux x64/arm64.");
 }
 function options(arguments_: string[]) {
   let all = false;

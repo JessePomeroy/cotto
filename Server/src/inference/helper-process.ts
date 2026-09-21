@@ -70,7 +70,7 @@ function decodeResponse(line: Buffer): HelperResponse | undefined {
     )
       return;
   }
-  // JSON null is the same as an absent optional field in Swift's decoder.
+  // The helper contract treats null as an absent optional field.
   for (const key of Object.keys(response)) if (response[key] === null) delete response[key];
   return response as unknown as HelperResponse;
 }

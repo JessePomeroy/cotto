@@ -2,15 +2,12 @@ import { dlopen } from "bun:ffi";
 import { closeSync, constants, fstatSync, mkdirSync, openSync } from "node:fs";
 import { join } from "node:path";
 
-// Keep the same inode and advisory lock used by the Swift server. An exclusive
-// create/PID file would not prevent the two implementations sharing an archive.
+// Keep one stable inode for the advisory lock. A PID file cannot protect an
+// archive from concurrent processes or recover reliably after a crash.
 export function acquireDataDirectoryLock(directory: string) {
   mkdirSync(directory, { recursive: true, mode: 0o700 });
-  const libraryPath = process.platform === "darwin" ? "/usr/lib/libSystem.B.dylib" : "libc.so.6";
-  if (process.platform !== "darwin" && process.platform !== "linux") {
-    throw new Error("The Sotto server supports macOS and Linux.");
-  }
-  const library = dlopen(libraryPath, {
+  if (process.platform !== "linux") throw new Error("The cotto server requires Linux.");
+  const library = dlopen("libc.so.6", {
     flock: { args: ["i32", "i32"], returns: "i32" },
   });
   let descriptor: number | undefined;

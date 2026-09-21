@@ -6,8 +6,8 @@ cd "$project_dir"
 build_jobs="${SOTTO_BUILD_JOBS:-8}"
 server_platform=$(uname -s)
 server_architecture=$(uname -m)
-if [[ "$server_platform" != Darwin && "$server_platform" != Linux ]]; then
-    printf 'The Sotto server supports macOS and Linux.\n' >&2
+if [[ "$server_platform" != Linux ]]; then
+    printf 'The cotto server requires Linux.\n' >&2
     exit 1
 fi
 if [[ "$server_platform" == Linux && "$server_architecture" != x86_64 && \
@@ -18,7 +18,6 @@ fi
 dependencies=(bun)
 if [[ "${SOTTO_SKIP_NATIVE:-0}" != 1 ]]; then
     dependencies+=(cmake)
-    if [[ "$server_platform" == Darwin ]]; then dependencies+=(swift); fi
 fi
 for dependency in "${dependencies[@]}"; do
     if ! command -v "$dependency" >/dev/null; then
@@ -32,13 +31,6 @@ if [[ "${SOTTO_SKIP_NATIVE:-0}" != 1 && \
 fi
 
 native_flags=(-DCMAKE_BUILD_TYPE=Release "-DSOTTO_CUDA=${SOTTO_CUDA:-OFF}")
-if [[ "$server_platform" == Darwin ]]; then
-    if [[ "$server_architecture" != arm64 ]]; then
-        printf 'The macOS server uses MLX and requires Apple Silicon.\n' >&2
-        exit 1
-    fi
-    native_flags+=(-DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 -DCMAKE_OSX_ARCHITECTURES=arm64)
-fi
 if [[ -n "${SOTTO_CUDA_ARCHITECTURES:-}" ]]; then
     native_flags+=("-DCMAKE_CUDA_ARCHITECTURES=$SOTTO_CUDA_ARCHITECTURES")
 fi
@@ -58,14 +50,9 @@ if [[ "${SOTTO_SKIP_NATIVE:-0}" == 1 ]]; then
 else
     cmake -S . -B .build/server-native "${native_flags[@]}"
     cmake --build .build/server-native --target sotto-engine --parallel "$build_jobs"
-    if [[ "$server_platform" == Darwin ]]; then
-        ./scripts/build-text-engine.sh
-        text_helper_dir="$project_dir/.build/text-native"
-    else
-        cmake -S TextEngine -B .build/server-llama "${native_flags[@]}"
-        cmake --build .build/server-llama --target sotto-text-engine --parallel "$build_jobs"
-        text_helper_dir="$project_dir/.build/server-llama"
-    fi
+    cmake -S TextEngine -B .build/server-llama "${native_flags[@]}"
+    cmake --build .build/server-llama --target sotto-text-engine --parallel "$build_jobs"
+    text_helper_dir="$project_dir/.build/server-llama"
     ./scripts/download-vad.sh
     speech_helper="$project_dir/.build/server-native/Engine/sotto-engine"
     text_helper="$text_helper_dir/sotto-text-engine"
@@ -83,17 +70,6 @@ mkdir -p "$staging_dir/helpers" "$staging_dir/resources"
 bun run --cwd Server build --outfile "$staging_dir/sotto-server"
 cp "$speech_helper" "$staging_dir/helpers/sotto-engine"
 cp "$text_helper" "$staging_dir/helpers/sotto-text-engine"
-if [[ "$server_platform" == Darwin ]]; then
-    cp "$text_helper_dir/mlx.metallib" "$staging_dir/helpers/mlx.metallib"
-    for bundle in "$text_helper_dir/resources/"*.bundle "$text_helper_dir/"*.bundle; do
-        [[ -d "$bundle" ]] || continue
-        ditto "$bundle" "$staging_dir/helpers/$(basename "$bundle")"
-    done
-    codesign --force --sign - "$staging_dir/helpers/sotto-engine"
-    codesign --force --sign - "$staging_dir/helpers/sotto-text-engine"
-    # Preserve Bun's JIT permissions when signing the bundled runtime.
-    codesign --force --sign - --entitlements Server/entitlements.plist "$staging_dir/sotto-server"
-fi
 cp "$vad_model" "$staging_dir/resources/silero-vad.bin"
 for library in whisper llama; do
     license_path="$project_dir/vendor/$library.cpp/LICENSE"

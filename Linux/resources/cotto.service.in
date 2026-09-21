@@ -1,0 +1,19 @@
+[Unit]
+Description=cotto dictation
+Wants=cotto-inference.service
+After=graphical-session.target cotto-inference.service
+PartOf=graphical-session.target
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+[Service]
+Type=exec
+ExecStart="@COTTO_NATIVE@" --pi-dictation --global-dictation
+Environment="XDG_CONFIG_HOME=@COTTO_SETTINGS@"
+UMask=0077
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=15
+
+[Install]
+WantedBy=graphical-session.target

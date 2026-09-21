@@ -14,6 +14,16 @@ node_modules/
 .local/
 __pycache__/
 
+# Local design tooling and uninstalled receiver experiments
+.21st/
+.impeccable/
+/PRODUCT.md
+Linux/integrations/pi/index.ts
+Linux/integrations/pi/receiver.ts
+Linux/integrations/pi/herdr.ts
+Linux/integrations/zsh/
+Linux/tests/PiAdapterProbe.mjs
+
 # Local credentials and model artifacts
 .env
 .env.*

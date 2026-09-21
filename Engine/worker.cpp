@@ -2,7 +2,7 @@
 #include "json.hpp"
 
 // whisper.cpp vendors dr_wav inside miniaudio. Compile only its file decoder;
-// microphone ownership and recording permissions stay in the macOS app.
+// microphone ownership and recording permissions stay in the Qt client.
 #define MA_NO_DEVICE_IO
 #define MA_NO_THREADING
 #define MA_NO_ENCODING
@@ -33,12 +33,8 @@
 #include <variant>
 #include <vector>
 #include <unistd.h>
-#if defined(__APPLE__)
-#include <sys/event.h>
-#elif defined(__linux__)
 #include <signal.h>
 #include <sys/prctl.h>
-#endif
 
 namespace {
 
@@ -71,26 +67,11 @@ void libraryLog(ggml_log_level level, const char *message, void *) {
 void watchParent() {
     const pid_t parent = getppid();
     if (parent <= 1) std::_Exit(0);
-#if defined(__linux__)
-    // Kill even during an uninterruptible model call if the supervisor dies.
+    // Arrange cleanup even if a model call hangs when the supervisor dies.
     if (prctl(PR_SET_PDEATHSIG, SIGKILL) == 0) {
         if (getppid() != parent) std::_Exit(0);
         return;
     }
-#elif defined(__APPLE__)
-    const int queue = kqueue();
-    struct kevent change;
-    EV_SET(&change, parent, EVFILT_PROC, EV_ADD | EV_ONESHOT, NOTE_EXIT, 0, nullptr);
-    if (queue >= 0 && kevent(queue, &change, 1, nullptr, 0, nullptr) == 0) {
-        std::thread([queue] {
-            struct kevent event;
-            while (kevent(queue, nullptr, 0, &event, 1, nullptr) < 0 && errno == EINTR) {}
-            std::_Exit(0);
-        }).detach();
-        return;
-    }
-    if (queue >= 0) close(queue);
-#endif
     std::thread([parent] {
         while (getppid() == parent) std::this_thread::sleep_for(std::chrono::seconds(1));
         std::_Exit(0);
@@ -348,6 +329,12 @@ int main(int argc, char **argv) {
     std::ios::sync_with_stdio(false);
     std::string model;
     std::string vadModel;
+    bool useGPU = true;
+    if (const char *configured = std::getenv("SOTTO_SPEECH_DEVICE")) {
+        const std::string value(configured);
+        if (value == "cpu") useGPU = false;
+        else if (value != "gpu") { emitError("SOTTO_SPEECH_DEVICE must be cpu or gpu."); return 2; }
+    }
     int threads = static_cast<int>(std::clamp(std::thread::hardware_concurrency(), 1u, 8u));
     for (int i = 1; i < argc; ++i) {
         const std::string argument = argv[i];
@@ -386,7 +373,7 @@ int main(int argc, char **argv) {
     whisper_log_set(libraryLog, nullptr);
     ggml_log_set(libraryLog, nullptr);
     auto parameters = whisper_context_default_params();
-    parameters.use_gpu = true;
+    parameters.use_gpu = useGPU;
     parameters.flash_attn = true;
     const std::unique_ptr<whisper_context, decltype(&whisper_free)> context(
         whisper_init_from_file_with_params(model.c_str(), parameters), whisper_free);

@@ -235,7 +235,7 @@ export class GenerationService {
       if (!isUUID(name)) continue;
       const id = name.toUpperCase();
       await requireRegularDirectory(join(data, "generations", name));
-      // Swift UUID filenames are uppercase; normalize migrated lowercase dirs.
+      // Archive UUID filenames are uppercase; normalize migrated lowercase dirs.
       if (name !== id) await rename(join(data, "generations", name), this.directory(id));
       let record: GenerationRecord;
       try {
@@ -452,6 +452,16 @@ export class GenerationService {
         request.mode,
         now(),
       );
+      if (request.personalDictionary !== undefined) {
+        const dictionary = decodePersonalDictionary(request.personalDictionary);
+        if (dictionary.value === undefined)
+          throw new ServiceError(400, "invalid_dictionary", dictionary.error);
+        // Freeze this client's words for this take; never merge them into shared settings.
+        record.settings.preferences.dictionary = copy(dictionary.value);
+        record.settings.preferences.vocabulary = "";
+        const error = preferencesValidationError(record.settings.preferences);
+        if (error) throw new ServiceError(400, "invalid_dictionary", error);
+      }
       await mkdir(this.directory(record.id), { mode: 0o700 });
       await this.save(record);
       this.activeID = record.id;
@@ -1270,9 +1280,9 @@ export class GenerationService {
       });
   }
   private get speechBackend() {
-    return process.platform === "darwin" ? "whisper.cpp/Metal" : "whisper.cpp";
+    return "whisper.cpp";
   }
   private get proofBackend() {
-    return process.platform === "darwin" ? "MLX" : "llama.cpp";
+    return "llama.cpp";
   }
 }

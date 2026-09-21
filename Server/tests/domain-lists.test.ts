@@ -3,7 +3,7 @@ import { formatSpokenList, replaceFormattedText } from "../src/domain/lists.ts";
 
 const numbered = (nextNumber = 1) => ({ style: "numbered" as const, nextNumber });
 
-describe("spoken-list grammar parity with the Swift client", () => {
+describe("spoken-list grammar", () => {
   const formattedExamples = [
     ["One, apples. Two, bananas.", "1. apples\n2. bananas"],
     ["First, apples. Second, bananas.", "1. apples\n2. bananas"],

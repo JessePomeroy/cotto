@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Name=cotto
+Comment=Local dictation — Meta+grave to record, never automatically submit
+Exec=sh -c "systemctl --user start cotto.service && gdbus wait --session --timeout 10 org.sotto.Sotto.Dev && gdbus call --session --dest org.sotto.Sotto.Dev --object-path /org/sotto/Sotto --method org.sotto.Sotto.Show"
+Icon=audio-input-microphone
+Terminal=false
+Categories=Utility;Accessibility;
+StartupNotify=false
+Actions=Stop;
+
+[Desktop Action Stop]
+Name=Quit cotto and stop inference
+Exec=systemctl --user stop cotto.service cotto-inference.service
