@@ -4,12 +4,11 @@ Run `bun run lint:anti-slop` to check the baseline rules, or `bun run lint` to r
 all configured lint checks. The active severities and file exclusions live in
 `.oxlintrc.json`.
 
-The initial profile reports these rules as warnings while existing findings are
-reviewed for migration:
+`no-widen-then-assert` is enforced as an error. These rules remain reviewed
+warnings while their contract-specific exceptions are retained:
 
 - `no-chained-type-assertions`
 - `no-known-value-widening`
-- `no-widen-then-assert`
 
 These rules inspect TypeScript/JavaScript, including script blocks in Svelte
 components. They do not lint Svelte template expressions. Legitimate boundary
