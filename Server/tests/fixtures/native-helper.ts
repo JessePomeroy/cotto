@@ -64,16 +64,18 @@ for await (const chunk of process.stdin) {
     const result = {
       type: "result",
       id: request.id,
-      text: mode === "invalid-result" ? "\0bad" : "Hello world.",
+      text:
+        mode === "invalid-result" ? "\0bad" : mode === "invalid-utf16" ? "\ud800" : "Hello world.",
       duration: 2,
       elapsed: 0.1,
       language: "en",
       ...(request.type === "transcribe"
         ? {
-            includedTerms: mode === "invalid-hints" ? ["invented"] : terms,
-            omittedTerms: [],
-            tokenCount: 1,
-            tokenBudget: 223,
+            includedTerms:
+              mode === "null-optionals" ? null : mode === "invalid-hints" ? ["invented"] : terms,
+            omittedTerms: mode === "null-optionals" ? null : [],
+            tokenCount: mode === "null-optionals" ? null : mode === "invalid-field-type" ? "1" : 1,
+            tokenBudget: mode === "null-optionals" ? null : 223,
           }
         : {}),
     };

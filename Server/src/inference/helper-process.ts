@@ -48,31 +48,39 @@ function decodeResponse(line: Buffer): HelperResponse | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return;
   const response = value as Record<string, unknown>;
   if (typeof response.type !== "string") return;
-  const strings = ["id", "message", "text", "language", "engineVersion"];
-  const numbers = ["duration", "elapsed", "value"];
-  const integers = ["tokenCount", "tokenBudget"];
-  if (
-    strings.some(
-      (key) =>
-        response[key] != null &&
-        (typeof response[key] !== "string" || /[\uD800-\uDFFF]/u.test(response[key])),
-    )
-  )
-    return;
-  if (numbers.some((key) => response[key] != null && typeof response[key] !== "number")) return;
-  if (integers.some((key) => response[key] != null && !Number.isSafeInteger(response[key]))) return;
-  for (const key of ["includedTerms", "omittedTerms"]) {
+  const decoded: HelperResponse = { type: response.type };
+  // The helper contract treats null as an absent optional field.
+  for (const key of ["id", "message", "text", "language", "engineVersion"] as const) {
+    const field = response[key];
+    if (field == null) continue;
+    if (typeof field !== "string" || /[\uD800-\uDFFF]/u.test(field)) return;
+    decoded[key] = field;
+  }
+  for (const key of ["duration", "elapsed", "value"] as const) {
+    const field = response[key];
+    if (field == null) continue;
+    if (typeof field !== "number") return;
+    decoded[key] = field;
+  }
+  for (const key of ["tokenCount", "tokenBudget"] as const) {
+    const field = response[key];
+    if (field == null) continue;
+    if (typeof field !== "number" || !Number.isSafeInteger(field)) return;
+    decoded[key] = field;
+  }
+  for (const key of ["includedTerms", "omittedTerms"] as const) {
     const terms = response[key];
+    if (terms == null) continue;
     if (
-      terms != null &&
-      (!Array.isArray(terms) ||
-        terms.some((term) => typeof term !== "string" || /[\uD800-\uDFFF]/u.test(term)))
+      !Array.isArray(terms) ||
+      !terms.every(
+        (term): term is string => typeof term === "string" && !/[\uD800-\uDFFF]/u.test(term),
+      )
     )
       return;
+    decoded[key] = terms;
   }
-  // The helper contract treats null as an absent optional field.
-  for (const key of Object.keys(response)) if (response[key] === null) delete response[key];
-  return response as unknown as HelperResponse;
+  return decoded;
 }
 
 /** A warm, bounded JSON-lines subprocess. Only one request may be outstanding. */
