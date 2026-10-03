@@ -25,10 +25,11 @@ profiles are not enabled.
 ## Source and updates
 
 `anti-slop/` is a vendored copy from the shared `install-anti-slop` skill,
-originating from <https://github.com/dmmulroy/anti-slop>. The bundled snapshot was
-copied on 2026-10-02; its exact upstream commit was not recorded in the installed
-bundle. Its source-file inventory SHA-256 is `4d3dd6afb28099dbea6f9d9a0e065b0568198099ec2ecab0db4e2536463ccb9f`.
-The upstream MIT license is preserved in `anti-slop/LICENSE`.
+originating from <https://github.com/dmmulroy/anti-slop> at reviewed revision
+`6d538555cb151d4121ed51a27db81890eacf8ae9`. `anti-slop/PROVENANCE.json` records
+SHA-256 hashes for all 21 TypeScript sources and the upstream MIT license in
+`anti-slop/LICENSE`. These files match that revision exactly; the provenance
+metadata does not change the rule implementation.
 
 The copy's TypeScript sources are unmodified. Keep the original copy available
 through version control when updating, review upstream changes, and preserve
