@@ -11,7 +11,13 @@
     "generate:api": "bun run --cwd Server generate",
     "fmt": "bun run --cwd Server fmt",
     "fmt:check": "bun run --cwd Server fmt:check",
-    "check": "bun run --cwd Server typecheck",
-    "test": "bun run --cwd Server test"
+    "check": "bun run lint && bun run --cwd Server typecheck",
+    "test": "bun run --cwd Server test",
+    "lint:anti-slop": "bun run --bun oxlint .",
+    "lint": "bun run lint:anti-slop"
+  },
+  "devDependencies": {
+    "@oxlint/plugins": "1.86.0",
+    "oxlint": "1.86.0"
   }
 }

@@ -1,0 +1,26 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "categories": {
+    "correctness": "off"
+  },
+  "plugins": [],
+  "jsPlugins": [
+    {
+      "name": "anti-slop",
+      "specifier": "./tools/oxlint/anti-slop/index.ts"
+    }
+  ],
+  "ignorePatterns": [
+    "tools/oxlint/anti-slop/**",
+    ".local/**",
+    "build/**",
+    "Server/src/generated/**",
+    "Server/dist/**",
+    "vendor/**"
+  ],
+  "rules": {
+    "anti-slop/no-chained-type-assertions": "warn",
+    "anti-slop/no-known-value-widening": "warn",
+    "anti-slop/no-widen-then-assert": "warn"
+  }
+}
