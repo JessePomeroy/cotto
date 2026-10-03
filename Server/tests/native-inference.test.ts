@@ -114,13 +114,21 @@ describe("native inference subprocess protocol", () => {
   });
 
   test("malformed vocabulary diagnostics and result content invalidate the helper", async () => {
-    for (const mode of ["invalid-hints", "invalid-result"]) {
+    for (const mode of ["invalid-hints", "invalid-result", "invalid-field-type", "invalid-utf16"]) {
       const { inference, model } = await fixture(mode);
       await expect(inference.transcribe(model, "en", ["auth"])).rejects.toMatchObject({
         code: "invalidResponse",
       });
       expect((await inference.readiness(false)).speechLoaded).toBe(false);
     }
+  });
+
+  test("null optional helper diagnostics remain absent", async () => {
+    const { inference, model } = await fixture("null-optionals");
+    const result = await inference.transcribe(model, "en", []);
+    expect(result.text).toBe("Hello world.");
+    expect(result.hints).toBeUndefined();
+    expect((await inference.readiness(false)).speechLoaded).toBe(true);
   });
 
   test("loading and inference deadlines resolve waiters and reset processes", async () => {

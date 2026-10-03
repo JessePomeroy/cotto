@@ -31,10 +31,15 @@ Selections use `--no-tests=error`. CMake reports when Bun is missing; install th
 pinned Bun version rather than treating missing Pi coverage as success. The gate
 script can use an existing local Bun tool copy, but does not download one.
 
-The suite currently has 188 server tests and 12 CTest entries. Fast takes
+The suite currently has 189 server tests and 12 CTest entries. Fast takes
 roughly five seconds; the broad native portion takes roughly 30 seconds. Timings
 are illustrative, not thresholds. The optional acoustic test normally **skips**
 without explicit inputs; a passing CTest entry does not prove live inference.
+
+The helper decoder checks null-as-absent optional diagnostics, malformed field
+types, and unpaired UTF-16 through the fixture subprocess. The October 3
+assertion-cleanup run passed 189 server tests in 10.41 seconds and all 12 native
+CTest entries in 26.18 seconds; opt-in live inference remained unavailable.
 
 Additional developer checks:
 
