@@ -21,6 +21,6 @@
   "rules": {
     "anti-slop/no-chained-type-assertions": "warn",
     "anti-slop/no-known-value-widening": "warn",
-    "anti-slop/no-widen-then-assert": "warn"
+    "anti-slop/no-widen-then-assert": "error"
   }
 }
